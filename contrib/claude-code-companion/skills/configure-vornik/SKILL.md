@@ -39,11 +39,21 @@ Drop `--user` for a packaged system-unit install. That gives you
 with:
 
 ```
-vornikctl config show      # effective config, secrets redacted
+vornikctl config show                              # effective config, secrets redacted
+vornikctl config show --provenance --json=false    # ...and WHERE each value came from
+vornikctl config show --trees --json=false         # which file supplied each project/swarm/workflow/role
 ```
 
 "Effective" is the point — it reflects what the daemon actually loaded,
-which is the only claim worth making.
+which is the only claim worth making. `--provenance` is the fastest answer to
+"did the daemon read my change": every key prints with its origin — `file`,
+`env`, `placeholder`, `alias`, `default`, `derived`, `secret_file`, or
+`unset`, the zero value nothing touched, which is exactly how a key written to
+a tree the daemon never reads looks. `env_invalid` names a variable that was
+set and did not parse. `--trees` lists every registry object with the file and
+layer that supplied it, and the files the strict loader REFUSED with the
+decoder's error — a project with a typo'd key is in that list, not in
+`project list`. Both follow a hot reload (the dump did not, before 2026-09-04).
 
 The **registry tree is not a single environment variable**. It is resolved
 by a fallback chain, and the daemon's chain is not identical to
@@ -167,8 +177,10 @@ and tasks are live, say so plainly and let the operator choose when.
 
 ## Step 7 — Verify, then say what you did
 
-Re-run `vornikctl config show` and, for registry changes, confirm the object
-is actually being served:
+Re-run `vornikctl config show --provenance --json=false` and check the keys
+you changed read `file` (or `env`, if that was the intent) rather than
+`default` or `unset`; for registry changes, `--trees` shows the object's file
+and layer, and confirm it is actually being served:
 
 ```
 vornikctl project list      # projects the daemon is serving

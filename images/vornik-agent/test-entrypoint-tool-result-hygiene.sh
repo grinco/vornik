@@ -6,6 +6,10 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ep="$here/entrypoint.sh"
+# The Go helper implements the filesystem/git tools; outside the image the Go
+# test wrapper (or make) builds it into VORNIK_HELPER_DIR.
+if [ -n "${VORNIK_HELPER_DIR:-}" ]; then export PATH="$VORNIK_HELPER_DIR:$PATH"; fi
+
 tmp="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp"

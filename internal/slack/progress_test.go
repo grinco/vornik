@@ -199,6 +199,17 @@ func TestProgressSignal_FirstRealMessageConsumesIt(t *testing.T) {
 		now = now.Add(2 * time.Second)
 	}
 
+	// The delete may run on the timer goroutine rather than inside Send: when the
+	// first real message lands while the placeholder POST is still in flight,
+	// finishProgressSignal sees no ts yet and the goroutine deletes after it
+	// stores one. The stub observed the POST before the goroutine stored ts, so
+	// that ordering is reachable here, and under a loaded `go test ./...` it was
+	// (2026-09-03: "chat.delete calls = 0"). Wait for the delete, then assert it
+	// happened exactly once.
+	deadline = time.Now().Add(2 * time.Second)
+	for stub.callsTo("/chat.delete") == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if got := stub.callsTo("/chat.delete"); got != 1 {
 		t.Fatalf("chat.delete calls = %d, want exactly 1 — the placeholder is removed "+
 			"once, by whichever real message lands first", got)

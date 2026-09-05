@@ -78,6 +78,7 @@ var Contract = map[string]MissBehavior{
 	"ForgePRReviewStateRepository.Get":               MissNilNil,      // *ForgePRReviewState
 	"ExecutionQualityScoreRepository.GetByExecution": MissErrNotFound, // *ExecutionQualityScore
 	"ExecutionRepository.GetByTaskID":                MissErrNotFound, // *Execution
+	"StepPromptRepository.Get":                       MissErrNotFound, // *StepPrompt — a pruned or never-landed part
 	"ExecutionRepository.Get":                        MissErrNotFound, // *Execution
 	"ExecutionToolGrantRepository.Current":           MissErrNotFound, // *ExecutionToolGrant
 	"ExtractedDocumentRepository.GetByArtifact":      MissErrNotFound, // *ExtractedDocument

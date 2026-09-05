@@ -2,7 +2,6 @@
 package config
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -31,6 +30,13 @@ import (
 // while older docs and some CI configs use `vornik.yaml`. Supporting
 // both avoids a silent "CLI can't find what the daemon uses" gap.
 func Load() (*Config, string, error) {
+	cfg, path, _, err := LoadWithProvenance()
+	return cfg, path, err
+}
+
+// LoadWithProvenance is Load, keeping the provenance the loader recorded so
+// the daemon can serve it (`config show --provenance`) without a second load.
+func LoadWithProvenance() (*Config, string, *Provenance, error) {
 	// Parse flags
 	var (
 		configPath  = flag.String("config", "", "Path to configuration file")
@@ -39,17 +45,17 @@ func Load() (*Config, string, error) {
 	flag.Parse()
 
 	if *showVersion {
-		return nil, "", ErrVersionRequested
+		return nil, "", nil, ErrVersionRequested
 	}
 
 	// Determine config path with precedence
 	path := resolveConfigPath(*configPath)
 
-	cfg, err := LoadFromPath(path)
+	cfg, prov, err := LoadFromPathWithProvenance(path)
 	if err != nil {
-		return nil, path, err
+		return nil, path, nil, err
 	}
-	return cfg, path, nil
+	return cfg, path, prov, nil
 }
 
 // LoadFromPath parses and validates the config at path (or returns a validated
@@ -60,116 +66,8 @@ func Load() (*Config, string, error) {
 // the keys that are safe to change live). Load delegates to it after resolving
 // the path from flags/env.
 func LoadFromPath(path string) (*Config, error) {
-	cfg := DefaultConfig()
-
-	// Kept at function scope so the placeholder diagnostic below can inspect
-	// the pre-expansion text.
-	var rawConfigBytes []byte
-
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
-		}
-		rawConfigBytes = data
-
-		// Parse based on file extension
-		if strings.HasSuffix(path, ".json") {
-			if err := json.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse JSON config: %w", err)
-			}
-		} else {
-			// Default to YAML
-			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, fmt.Errorf("failed to parse YAML config: %w", err)
-			}
-		}
-	}
-
-	// Accept both the current `storage.artifacts_path` shape and the guide's
-	// `artifacts.storagePath` shape.
-	if cfg.Artifacts.ArtifactsPath != "" {
-		cfg.Storage.ArtifactsPath = cfg.Artifacts.ArtifactsPath
-	}
-	// Mirror the new backend selector + S3 block from the alias section
-	// (`artifacts.backend`/`artifacts.s3`) into the canonical Storage
-	// block, so callers that read cfg.Storage see both shapes.
-	if cfg.Artifacts.Backend != "" && cfg.Storage.Backend == "" {
-		cfg.Storage.Backend = cfg.Artifacts.Backend
-	}
-	if cfg.Storage.S3.Endpoint == "" && cfg.Artifacts.S3.Endpoint != "" {
-		cfg.Storage.S3.Endpoint = cfg.Artifacts.S3.Endpoint
-	}
-	if cfg.Storage.S3.Region == "" && cfg.Artifacts.S3.Region != "" {
-		cfg.Storage.S3.Region = cfg.Artifacts.S3.Region
-	}
-	if cfg.Storage.S3.Bucket == "" && cfg.Artifacts.S3.Bucket != "" {
-		cfg.Storage.S3.Bucket = cfg.Artifacts.S3.Bucket
-	}
-	if cfg.Storage.S3.Prefix == "" && cfg.Artifacts.S3.Prefix != "" {
-		cfg.Storage.S3.Prefix = cfg.Artifacts.S3.Prefix
-	}
-	if cfg.Storage.S3.AccessKeyID == "" && cfg.Artifacts.S3.AccessKeyID != "" {
-		cfg.Storage.S3.AccessKeyID = cfg.Artifacts.S3.AccessKeyID
-	}
-	if cfg.Storage.S3.SecretAccessKey == "" && cfg.Artifacts.S3.SecretAccessKey != "" {
-		cfg.Storage.S3.SecretAccessKey = cfg.Artifacts.S3.SecretAccessKey
-	}
-	if !cfg.Storage.S3.UsePathStyle && cfg.Artifacts.S3.UsePathStyle {
-		cfg.Storage.S3.UsePathStyle = true
-	}
-	if cfg.Storage.S3.ForceSSL == nil && cfg.Artifacts.S3.ForceSSL != nil {
-		cfg.Storage.S3.ForceSSL = cfg.Artifacts.S3.ForceSSL
-	}
-
-	// Source `<configDir>/secrets/*.env` into the process environment
-	// before resolving placeholders + env overrides, so secrets written
-	// by onboarding (e.g. chat.env's VORNIK_CHAT_API_KEY) activate on
-	// every deployment without relying on systemd EnvironmentFile= or a
-	// compose env_file. Idempotent + fill-empties-only (see the function
-	// doc), so explicit deployment env still wins and re-running on a hot
-	// reload is safe.
-	sourceSecretsEnvFiles(path)
-
-	// Recorded AFTER sourcing the env files (so a variable supplied by
-	// vornik.env / secrets is not reported) and before expansion, which
-	// destroys the evidence by turning ${VAR} into "".
-	cfg.unresolvedPlaceholders = unresolvedPlaceholderNames(rawConfigBytes)
-
-	expandEnvPlaceholders(cfg)
-
-	// Override with environment variables
-	applyEnvOverrides(cfg)
-
-	// Apply defaults that depend on the parsed (and env-overridden) config.
-	applyAuthDefaults(cfg)
-
-	// Resolve provider secret files → inline ClientSecret.
-	if err := resolveAuthSecrets(cfg); err != nil {
-		return nil, err
-	}
-
-	// Resolve the trading-auth HMAC secret file → inline Secret.
-	if err := resolveTradingSecret(cfg); err != nil {
-		return nil, err
-	}
-
-	// Resolve the gateway key-auth token file → inline Token.
-	if err := resolveGatewaySecret(cfg); err != nil {
-		return nil, err
-	}
-
-	// Fill composer zero-fields from the shipped conservative defaults
-	// so an operator who sets only `composer.enabled: true` still gets
-	// the full default budget + tier caps (§5.4).
-	cfg.Composer.applyDefaults()
-
-	// Validate configuration
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	return cfg, nil
+	cfg, _, err := LoadFromPathWithProvenance(path)
+	return cfg, err
 }
 
 // ValidateFile reads the YAML at path into a DefaultConfig and calls Validate.
@@ -342,152 +240,6 @@ func parseEnvBool(v string) (val bool, ok bool) {
 		return false, true
 	default:
 		return false, false
-	}
-}
-
-func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("VORNIK_SERVER_ADDRESS"); v != "" {
-		cfg.Server.Address = v
-	}
-	if v := os.Getenv("VORNIK_SERVER_UNIX_SOCKET"); v != "" {
-		cfg.Server.UnixSocket = v
-	}
-	if v := os.Getenv("VORNIK_DATABASE_HOST"); v != "" {
-		cfg.Database.Host = v
-	}
-	if v := os.Getenv("VORNIK_DATABASE_PORT"); v != "" {
-		var port int
-		if _, err := fmt.Sscanf(v, "%d", &port); err == nil {
-			cfg.Database.Port = port
-		}
-	}
-	if v := os.Getenv("VORNIK_DATABASE_NAME"); v != "" {
-		cfg.Database.Name = v
-	}
-	if v := os.Getenv("VORNIK_DATABASE_USER"); v != "" {
-		cfg.Database.User = v
-	}
-	if v := os.Getenv("VORNIK_DATABASE_PASSWORD"); v != "" {
-		cfg.Database.Password = v
-	}
-	if v := os.Getenv("VORNIK_DATABASE_SSLMODE"); v != "" {
-		cfg.Database.SSLMode = v
-	}
-
-	// VORNIK_DATA_DIR is a base data directory used as a fallback for artifact
-	// storage when no explicit path is configured. An explicit artifacts path
-	// (from the config file or VORNIK_ARTIFACTS_PATH) always wins.
-	if v := os.Getenv("VORNIK_ARTIFACTS_PATH"); v != "" {
-		cfg.Storage.ArtifactsPath = v
-		cfg.Artifacts.ArtifactsPath = v
-	} else if cfg.Storage.ArtifactsPath == "" {
-		if v := os.Getenv("VORNIK_DATA_DIR"); v != "" {
-			artifactsPath := v + "/artifacts"
-			cfg.Storage.ArtifactsPath = artifactsPath
-			cfg.Artifacts.ArtifactsPath = artifactsPath
-		}
-	}
-
-	// Storage backend selection + S3 credentials. The pattern mirrors
-	// VORNIK_DATABASE_PASSWORD: secrets prefer env over file. A
-	// non-empty VORNIK_STORAGE_BACKEND flips the backend; empty
-	// preserves whatever the config file said.
-	if v := os.Getenv("VORNIK_STORAGE_BACKEND"); v != "" {
-		cfg.Storage.Backend = v
-		cfg.Artifacts.Backend = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_ENDPOINT"); v != "" {
-		cfg.Storage.S3.Endpoint = v
-		cfg.Artifacts.S3.Endpoint = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_REGION"); v != "" {
-		cfg.Storage.S3.Region = v
-		cfg.Artifacts.S3.Region = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_BUCKET"); v != "" {
-		cfg.Storage.S3.Bucket = v
-		cfg.Artifacts.S3.Bucket = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_PREFIX"); v != "" {
-		cfg.Storage.S3.Prefix = v
-		cfg.Artifacts.S3.Prefix = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_ACCESS_KEY_ID"); v != "" {
-		cfg.Storage.S3.AccessKeyID = v
-		cfg.Artifacts.S3.AccessKeyID = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_SECRET_ACCESS_KEY"); v != "" {
-		cfg.Storage.S3.SecretAccessKey = v
-		cfg.Artifacts.S3.SecretAccessKey = v
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_USE_PATH_STYLE"); v != "" {
-		if on, ok := parseEnvBool(v); ok {
-			cfg.Storage.S3.UsePathStyle = on
-			cfg.Artifacts.S3.UsePathStyle = on
-		}
-	}
-	if v := os.Getenv("VORNIK_STORAGE_S3_FORCE_SSL"); v != "" {
-		if on, ok := parseEnvBool(v); ok {
-			cfg.Storage.S3.ForceSSL = &on
-			cfg.Artifacts.S3.ForceSSL = &on
-		}
-	}
-
-	if v := os.Getenv("VORNIK_METRICS_ENABLED"); v != "" {
-		if on, ok := parseEnvBool(v); ok {
-			cfg.Metrics.Enabled = on
-		}
-	}
-	if v := os.Getenv("VORNIK_METRICS_ADDR"); v != "" {
-		cfg.Metrics.Addr = v
-	}
-	if v := os.Getenv("VORNIK_TRACING_ENABLED"); v != "" {
-		if on, ok := parseEnvBool(v); ok {
-			cfg.Tracing.Enabled = on
-		}
-	}
-	if v := os.Getenv("VORNIK_TRACING_ENDPOINT"); v != "" {
-		cfg.Tracing.Endpoint = v
-	}
-	if v := os.Getenv("VORNIK_LOG_LEVEL"); v != "" {
-		cfg.Logging.Level = v
-	}
-	if v := os.Getenv("VORNIK_RUNTIME_USERNS_MODE"); v != "" {
-		cfg.Runtime.UserNSMode = v
-	}
-	if v := os.Getenv("VORNIK_RUNTIME_RUN_AS_USER"); v != "" {
-		cfg.Runtime.RunAsUser = v
-	}
-
-	if v := os.Getenv("VORNIK_GATEWAY_ENABLED"); v != "" {
-		if on, ok := parseEnvBool(v); ok {
-			cfg.Gateway.Enabled = on
-		}
-	}
-	if v := os.Getenv("VORNIK_GATEWAY_ADDRESS"); v != "" {
-		cfg.Gateway.Address = v
-	}
-	if v := os.Getenv("VORNIK_GATEWAY_TOKEN"); v != "" {
-		cfg.Gateway.Token = v
-	}
-	// Agent-write policy override. Set the raw value; AgentWritesMode() (called
-	// from Validate below) does the normalize+validate, so an invalid env value
-	// is a startup error via the SAME path as YAML — never a silent off.
-	if v := os.Getenv("VORNIK_GATEWAY_AGENT_WRITES"); v != "" {
-		cfg.Gateway.AgentWrites = v
-	}
-	// Taint-lineage enforcement override. Set the raw value; TaintLineageMode()
-	// (called from Validate below) normalizes+validates, so an invalid env value
-	// is a startup error via the SAME path as YAML — never a silent advisory.
-	if v := os.Getenv("VORNIK_TAINT_LINEAGE_MODE"); v != "" {
-		cfg.TaintLineage.EnforcementMode = v
-	}
-	// Daemon↔scraper web_submit capability secret (shared C1 contract). Env
-	// override wins over YAML so operators can inject it from the daemon
-	// environment (mirroring the same value passed to the scraper's
-	// SCRAPER_WEB_SUBMIT_SECRET) without committing it to config.
-	if v := os.Getenv("VORNIK_WEB_SUBMIT_SECRET"); v != "" {
-		cfg.Web.SubmitSecret = v
 	}
 }
 

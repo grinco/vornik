@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // unclassifiedShareWindowDays bounds the check to recent evidence. Long enough
@@ -68,13 +69,20 @@ func (h *DoctorHandlers) checkUnclassifiedShare(ctx context.Context) DoctorCheck
 		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no database; cannot measure the unclassified share"}
 	}
 
+	// PORTABLE (doctor design, Extension 2026-09-04 E2). This query carried
+	// two Postgres-only constructs — `COUNT(*) FILTER` and `now() - interval
+	// '%d days'` — and was missed by the first inventory because they are
+	// spelled in lower case. On SQLite it reported `near "'30 days'": syntax
+	// error` as an ERROR verdict on every run. The window is computed in Go
+	// and bound; FILTER becomes SUM(CASE …), which is exact for integer counts.
 	var unclassified, failures int
-	err := h.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COUNT(*) FILTER (WHERE error_class = 'unclassified'),
+	err := h.db.QueryRowContext(ctx, `
+		SELECT SUM(CASE WHEN error_class = 'unclassified' THEN 1 ELSE 0 END),
 		       COUNT(*)
 		  FROM execution_step_outcomes
 		 WHERE error_class IS NOT NULL AND error_class <> ''
-		   AND recorded_at > now() - interval '%d days'`, unclassifiedShareWindowDays),
+		   AND recorded_at > $1`,
+		time.Now().UTC().AddDate(0, 0, -unclassifiedShareWindowDays),
 	).Scan(&unclassified, &failures)
 	if err != nil {
 		return DoctorCheck{Name: name, Status: "ERROR", Message: fmt.Sprintf("query failed: %v", err)}

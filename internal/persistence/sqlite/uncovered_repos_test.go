@@ -16,11 +16,16 @@ func TestChatAuditRepository_RoundTrip(t *testing.T) {
 	repo := sqlite.NewChatAuditRepository(db.DB)
 	ctx := context.Background()
 
-	// Save + Get prompt cache.
-	if err := repo.SavePrompt(ctx, "hash-1", "system prompt body"); err != nil {
+	// Save + Get prompt cache. The repository hashes what it stores and hands
+	// the digest back, so the caller cannot name bytes the store does not hold.
+	hash, err := repo.SavePrompt(ctx, "system prompt body")
+	if err != nil {
 		t.Fatalf("SavePrompt: %v", err)
 	}
-	body, err := repo.GetPrompt(ctx, "hash-1")
+	if hash != persistence.HashChatSystemPrompt("system prompt body") {
+		t.Errorf("SavePrompt returned %q, want the digest of the stored body", hash)
+	}
+	body, err := repo.GetPrompt(ctx, hash)
 	if err != nil {
 		t.Fatalf("GetPrompt: %v", err)
 	}
@@ -28,9 +33,15 @@ func TestChatAuditRepository_RoundTrip(t *testing.T) {
 		t.Errorf("body = %q", body)
 	}
 
-	// Idempotent SavePrompt — second call must not error.
-	if err := repo.SavePrompt(ctx, "hash-1", "second body"); err != nil {
-		t.Fatalf("SavePrompt idempotent: %v", err)
+	// Idempotent SavePrompt — the same body re-saves to the same hash, and
+	// a different body gets its own row rather than overwriting.
+	again, err := repo.SavePrompt(ctx, "system prompt body")
+	if err != nil || again != hash {
+		t.Fatalf("SavePrompt idempotent: %q %v", again, err)
+	}
+	second, err := repo.SavePrompt(ctx, "second body")
+	if err != nil || second == hash {
+		t.Fatalf("a different body must get its own hash: %q %v", second, err)
 	}
 
 	// GetPrompt for missing hash returns ErrNotFound.
@@ -103,8 +114,8 @@ func TestChatAuditRepository_NilEntry(t *testing.T) {
 	if err := repo.Insert(context.Background(), nil); err == nil {
 		t.Fatal("Insert(nil) should error")
 	}
-	if err := repo.SavePrompt(context.Background(), "", "body"); err == nil {
-		t.Fatal("SavePrompt with empty hash should error")
+	if _, err := repo.SavePrompt(context.Background(), ""); err == nil {
+		t.Fatal("SavePrompt with an empty body should error")
 	}
 }
 

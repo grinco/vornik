@@ -56,6 +56,23 @@ type breakerSample struct {
 	ok bool
 }
 
+// Trip reasons. Two rules can open a circuit and an operator reading a trip
+// needs to know which: a rate breach describes a share of recent traffic, a
+// consecutive run describes a model that has stopped answering at all.
+const (
+	// TripReasonRate — the in-window failure RATE breached (§5.2).
+	TripReasonRate = "rate"
+	// TripReasonConsecutive — MinSamples calls in a row failed with no
+	// intervening success, regardless of how far apart they were.
+	TripReasonConsecutive = "consecutive"
+	// TripReasonProbeFailed — the half-open probe failed, re-opening the
+	// circuit. Neither rule was consulted: the probe IS the test. Named
+	// rather than left at the previous trip's reason, which would have
+	// counted every re-open as another instance of whatever opened it first
+	// (review-20260904-bef3, suggestion 3).
+	TripReasonProbeFailed = "probe_failed"
+)
+
 // Breaker is the per-(route, model) circuit-breaker state machine (LLD
 // 2026-07-11-model-health-circuit-breaker §5). It has no Provider coupling —
 // it just allows a call and folds its outcome — so the executor-side
@@ -70,6 +87,20 @@ type Breaker struct {
 	ring     []breakerSample
 	state    CircuitState
 	openedAt time.Time
+	// consecutive counts failures since the last success. It exists because
+	// the rolling window CANNOT see a slow model: samples are stamped at call
+	// completion and evicted by age, so a model slower than
+	// Window/(MinSamples-1) — 30s on the agent defaults — has its first
+	// failure evicted before its third is recorded and can never accumulate
+	// MinSamples. That is the regime the breaker was written for (the
+	// 2026-07-11 incident was a model HANGING at 247-564s), and the window
+	// was blind to exactly it. See
+	// https://docs.vornik.io §3.
+	//
+	// It is per-breaker, and a breaker is per-model: a success from ANY caller
+	// resets it, because what it protects is every caller of that model.
+	consecutive int
+	tripReason  string
 }
 
 // NewBreaker constructs a breaker. `now` may be nil (defaults to time.Now).
@@ -132,21 +163,49 @@ func (b *Breaker) Record(ok, probe bool) (state CircuitState, tripped, changed b
 		if ok {
 			b.state = CircuitClosed
 			b.ring = b.ring[:0]
+			// Clear the run too: a model that just answered a probe is
+			// recovered, and leaving the pre-trip failures on the counter
+			// would leave it one failure away from tripping again.
+			b.consecutive = 0
 			return CircuitClosed, false, prev != CircuitClosed
 		}
 		b.state = CircuitOpen
 		b.openedAt = b.now()
+		b.tripReason = TripReasonProbeFailed
 		return CircuitOpen, true, prev != CircuitOpen // re-open counts as a trip
 	}
 	// Normal (closed-state) outcome.
 	b.ring = append(b.ring, breakerSample{t: b.now(), ok: ok})
 	b.evictLocked()
-	if b.state == CircuitClosed && !ok && b.breachedLocked() {
+	if ok {
+		b.consecutive = 0
+	} else {
+		b.consecutive++
+	}
+	if b.state == CircuitClosed && !ok {
+		// Rate first, so a breach that satisfies both reports the rule that
+		// has always described it.
+		switch {
+		case b.breachedLocked():
+			b.tripReason = TripReasonRate
+		case b.cfg.MinSamples > 0 && b.consecutive >= b.cfg.MinSamples:
+			b.tripReason = TripReasonConsecutive
+		default:
+			return b.state, false, false
+		}
 		b.state = CircuitOpen
 		b.openedAt = b.now()
 		return CircuitOpen, true, true
 	}
 	return b.state, false, false
+}
+
+// TripReason returns why the circuit opened most recently — TripReasonRate or
+// TripReasonConsecutive. Empty before the first trip.
+func (b *Breaker) TripReason() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tripReason
 }
 
 // evictLocked drops window entries older than cfg.Window.

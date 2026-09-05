@@ -16,7 +16,8 @@ type Metrics struct {
 	// 0 closed / 1 half-open / 2 open.
 	ModelHealthState *prometheus.GaugeVec
 	// ModelHealthTrips counts circuit-open transitions (closed→open and
-	// a half-open probe failure re-opening).
+	// a half-open probe failure re-opening), labelled by the rule that
+	// tripped it.
 	ModelHealthTrips *prometheus.CounterVec
 }
 
@@ -41,9 +42,9 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Namespace: "vornik",
 				Subsystem: "agent",
 				Name:      "model_health_trips_total",
-				Help:      "Agent-container LLM circuit-open transitions per model (closed→open and half-open probe failure).",
+				Help:      "Agent-container LLM circuit-open transitions per model and trip reason (rate | consecutive).",
 			},
-			[]string{"model"},
+			[]string{"model", "reason"},
 		),
 	}
 }
@@ -57,9 +58,15 @@ func (m *Metrics) SetStateGauge(model string, state chat.CircuitState) {
 }
 
 // IncTrips implements MetricsSink.
-func (m *Metrics) IncTrips(model string) {
+func (m *Metrics) IncTrips(model, reason string) {
 	if m == nil || m.ModelHealthTrips == nil {
 		return
 	}
-	m.ModelHealthTrips.WithLabelValues(model).Inc()
+	if reason == "" {
+		// Defensive: every trip sets a reason (chat.Breaker.Record), so this
+		// only guards a future caller that forgets. An empty label would
+		// silently create a second, unnamed series.
+		reason = "unknown"
+	}
+	m.ModelHealthTrips.WithLabelValues(model, reason).Inc()
 }

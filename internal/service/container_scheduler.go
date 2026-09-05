@@ -456,6 +456,7 @@ func (c *Container) initScheduler() error {
 		executor.WithBudgetReservationRepository(c.repos.BudgetReservations),
 		executor.WithSteeringNotifier(c.combinedSteeringNotifier()),
 		executor.WithStepOutcomeRepository(c.repos.StepOutcomes),
+		executor.WithStepPromptRepository(c.repos.StepPrompts),
 		// Per-task scoped API keys: mint on container start, revoke on
 		// teardown. Wired whenever the API-key repo is available —
 		// BOTH sqlite and postgres provide one (storage.go wires

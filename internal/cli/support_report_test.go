@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -25,6 +26,10 @@ type fakeDaemon struct {
 	status   int
 	bundle   []byte
 	lastBody map[string]any
+	// caps is the /api/v1/capabilities body the version probe reads. Empty
+	// means "no daemon there": Get reports a transport failure, which is the
+	// unreachable case §4.1 distinguishes.
+	caps string
 }
 
 func (f *fakeDaemon) Post(_ string, body interface{}) (*http.Response, error) {
@@ -35,6 +40,17 @@ func (f *fakeDaemon) Post(_ string, body interface{}) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: f.status,
 		Body:       rc,
+		Header:     http.Header{},
+	}, nil
+}
+
+func (f *fakeDaemon) Get(_ string) (*http.Response, error) {
+	if strings.TrimSpace(f.caps) == "" {
+		return nil, errors.New("connection refused")
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(f.caps)),
 		Header:     http.Header{},
 	}, nil
 }
@@ -438,7 +454,8 @@ func TestRewriteManifestAndTar_NilManifest(t *testing.T) {
 	}
 	final := filepath.Join(dir, "out.tar.gz")
 	// nil manifest + non-raw: still writes a MANIFEST.json + archive.
-	if err := rewriteManifestAndTar(bundleDir, final, nil, map[string]int{}, supportReportOptions{}); err != nil {
+	if err := rewriteManifestAndTar(bundleDir, final, nil, map[string]int{}, supportReportOptions{},
+		collectionProvenance{Path: "daemon", VersionSource: "daemon"}); err != nil {
 		t.Fatalf("rewrite: %v", err)
 	}
 	files := readArchive(t, final)

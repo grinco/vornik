@@ -115,14 +115,21 @@ reranker active — so its variance was a model reordering results between runs,
 corpus differing. Take the model out and the RRF path is deterministic cold, exactly as
 it is warm.
 
-> **A gap this exposed, recorded rather than smoothed over.** The warm row above and
-> the cold row here carry the **same comparability key** `e865104e9959`.
-> `ComparabilityFields` does not encode whether the corpus was warm or cold, so two runs
-> on opposite sides of the 2026-08-21 clear fix compare clean and the tooling would
-> merge them without complaint. It went unnoticed because on these six items the two
-> regimes give identical numbers — but a key that cannot express an axis the
-> documentation calls decisive is a guard that looks protective and is not. Tracked as
-> a defect; until it is fixed, warm-versus-cold has to be checked by hand against the
+> **A gap this exposed — FIXED 2026-09-03.** The warm row above and the cold row here
+> carry the **same comparability key** `e865104e9959`, because `ComparabilityFields`
+> did not encode whether the corpus was warm or cold. Two runs on opposite sides of the
+> 2026-08-21 clear fix compared clean, and the tooling would have merged them without
+> complaint. It went unnoticed because on these six items the two regimes give identical
+> numbers — but a key that cannot express an axis this documentation calls decisive is a
+> guard that looks protective and is not.
+>
+> The key now carries `corpus_regime`, observed rather than declared, alongside
+> `daemon_revision` (two releases with the same config also keyed identically).
+> HarnessVersion is 4 → 5, so every key changes and the incomparability is explicit
+> rather than left to a field older runs never carried. **The rows above keep their v4
+> keys as history** — they are not recomputed, because a key is a record of what a run
+> could say about itself at the time. Until a v5 run exists for each row, warm-versus-cold
+> across these published figures still has to be checked by hand against the
 > run date.
 
 ## LongMemEval — retrieval, all six abilities (tier 2, cold corpus)
@@ -277,6 +284,7 @@ each is stated:
 | `2026.8.9` | none *at the tag* | No run was taken at `2026.8.9` itself. The tree past it is measured on both memory axes above. |
 | `2026.9.0` | **agent row only** | The agent arm above was taken on the release candidate (`2026.8.9-70-g5d247f72`). No LongMemEval row: the memory axes were measured 50 commits earlier in the same cycle and nothing in the intervening work touches the retrieval path. Stated rather than left as a silent gap. |
 | `2026.9.1` | none | No run was taken. The cycle is bug fixes and the forge re-review feature; nothing in it touches ingestion, embedding, retrieval or the agent harness, so the axes stand where `2026.8.9-50-g4b343821` (memory, both axes) and `2026.8.9-70-g5d247f72` (agent arm) left them. A row measured on an unchanged path would add a data point without adding evidence, and the cost of a 120-item n=3 run is not free. Stated rather than left as a silent gap. |
+| `2026.9.2` | none | No run was taken. The cycle moves the agent loop's eleven filesystem/git tools from bash into a Go helper with behaviour pinned by a 64-case golden, and adds persistence and replay instruments; it does not touch ingestion, embedding, retrieval or the harness's scoring path, so the axes stand where the rows above left them. The agent arm *should* be re-measured on the Go helper before the next loop slice moves more of it — that is filed as work, not claimed here. Stated rather than left as a silent gap. |
 
 A missing row stated as missing is honest. An absent row is not — which is the whole
 reason this section exists.

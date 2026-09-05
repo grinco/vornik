@@ -42,8 +42,10 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 			context_source,
 			complexity_tier, effective_tool_budget, tool_calls_used,
 			untrusted_content_used, untrusted_sources, requires_review,
-			container_exit_code
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+			container_exit_code,
+			prompt_system_hash, prompt_user_hash, prompt_tools_hash,
+			input_hash, result_hash
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)`,
 		o.ID, o.ProjectID, o.TaskID, o.ExecutionID, o.StepID,
 		o.Role, o.Model, emptyStringToNullable(o.AgentImageID), o.Outcome, nullableString(o.AttributedToStepID),
 		o.ErrorClass, o.ErrorDetail, nullableInt64(o.DurationMS),
@@ -53,6 +55,8 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 		emptyStringToNullable(o.ComplexityTier), nullableInt(o.EffectiveToolBudget), nullableInt(o.ToolCallsUsed),
 		o.UntrustedContentUsed, nullableJSONB(o.UntrustedSources), o.RequiresReview,
 		nullableInt(o.ContainerExitCode),
+		o.PromptHashes.System, o.PromptHashes.User, o.PromptHashes.Tools,
+		o.PromptHashes.Input, o.PromptHashes.Result,
 	)
 	return mapDBError(err)
 }
@@ -187,7 +191,7 @@ func (r *ExecutionStepOutcomeRepository) SweepPendingForTerminalExecutions(ctx c
 		    ORDER BY o2.recorded_at ASC
 		    LIMIT $3
 		)`,
-		string(stepoutcome.Superseded), cutoff, limit,
+		string(stepoutcome.Orphaned), cutoff, limit,
 	)
 	if err != nil {
 		return 0, mapDBError(err)
@@ -200,6 +204,51 @@ func (r *ExecutionStepOutcomeRepository) SweepPendingForTerminalExecutions(ctx c
 }
 
 // List returns outcome rows matching the filter, newest first.
+
+// SweepPendingForTaskOrphans finalizes the pending outcomes under a task's
+// TERMINAL executions, to `orphaned`, with no settle grace.
+//
+// Called by the two paths that terminalise a task's leftover executions —
+// supersedeStaleExecutions and cascadeOrphanExecutions — immediately after they
+// do it, so the fact is recorded by the code that knows it rather than inferred
+// minutes later by the watchdog backstop. No grace, because the caller has just
+// finished terminalising these rows itself: there is nothing to race with.
+//
+// Scoped by TASK, not by execution id, because the supersede sweeps report a
+// COUNT rather than the ids they touched. It is idempotent and bounded to one
+// task.
+//
+// It does NOT replace the backstop: a step can be writing its outcome row while
+// its execution is being cancelled, and that row commits after this sweep has
+// run. The backstop is for exactly that race.
+//
+// https://docs.vornik.io
+func (r *ExecutionStepOutcomeRepository) SweepPendingForTaskOrphans(ctx context.Context, taskID string) (int64, error) {
+	if taskID == "" {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE execution_step_outcomes o
+		SET outcome = $1,
+		    finalized_at = NOW()
+		WHERE o.outcome = 'pending_validation'
+		  AND o.execution_id IN (
+		      SELECT e.id FROM executions e
+		      WHERE e.task_id = $2
+		        AND e.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+		  )`,
+		string(stepoutcome.Orphaned), taskID,
+	)
+	if err != nil {
+		return 0, mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence.ExecutionStepOutcomeFilter) ([]*persistence.ExecutionStepOutcome, error) {
 	query := `
 		SELECT id, project_id, task_id, execution_id, step_id,
@@ -208,7 +257,9 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		       finalized_at, recorded_at, hallucination_signals,
 		       complexity_tier, effective_tool_budget, tool_calls_used,
 		       untrusted_content_used, untrusted_sources, requires_review,
-		       container_exit_code
+		       container_exit_code,
+		       prompt_system_hash, prompt_user_hash, prompt_tools_hash,
+		       input_hash, result_hash
 		FROM execution_step_outcomes WHERE 1=1`
 	args := make([]any, 0, 10)
 	pos := 1
@@ -316,6 +367,8 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			&complexityTier, &effectiveToolBudget, &toolCallsUsed,
 			&untrustedUsed, &untrustedSources, &requiresReview,
 			&containerExitCode,
+			&o.PromptHashes.System, &o.PromptHashes.User, &o.PromptHashes.Tools,
+			&o.PromptHashes.Input, &o.PromptHashes.Result,
 		); err != nil {
 			return nil, err
 		}

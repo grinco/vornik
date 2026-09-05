@@ -638,6 +638,17 @@ type agentBudgetStamp struct {
 	// nil → NULL, meaning no container ran — which is NOT the same as a
 	// container that exited 0, so this is never defaulted.
 	ContainerExitCode *int
+	// StepPrompt is the step's first model input as the container wrote it
+	// (step_prompt.json), or nil when no file was written — an image predating
+	// the contract, or a step that died before its first request. Persisted
+	// content-addressed by recordStepOutcomeWithSignalsAndBudget, whose
+	// hashes then ride the outcome row (migration 175).
+	StepPrompt *stepPromptFile
+	// StepIO is the pair of boundary files — task.json as written, result.json
+	// as read back after the result_json secrets checkpoint — persisted the
+	// same way, whose hashes ride the row's input_hash/result_hash (migration
+	// 178, step-I/O persistence design §3). Nil bytes = no file.
+	StepIO stepIOFiles
 }
 
 // taintStamp carries the three migration-137 taint-lineage columns, populated
@@ -766,6 +777,13 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 		now := time.Now().UTC()
 		entry.FinalizedAt = &now
 	}
+	// Model-visible means persisted: the three parts are stored (redacted at
+	// the seam, hash taken after) BEFORE the outcome row, so a row that carries
+	// a hash always has its body; a body without a row is what retention
+	// removes.
+	entry.PromptHashes = e.persistStepPrompt(ctx, execution.ID, stepID, budget.StepPrompt)
+	io := e.persistStepIO(ctx, execution.ID, stepID, budget.StepIO)
+	entry.PromptHashes.Input, entry.PromptHashes.Result = io.Input, io.Result
 	if err := e.outcomeRepo.Record(ctx, entry); err != nil {
 		e.logger.Warn().Err(err).
 			Str("execution_id", execution.ID).

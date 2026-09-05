@@ -184,20 +184,29 @@ func (r *ChatAuditRepository) List(ctx context.Context, filter persistence.ChatA
 	return out, nil
 }
 
-// SavePrompt stores a system prompt body keyed by its sha256 hex
-// digest. ON CONFLICT DO NOTHING is the idempotent-by-hash
-// contract — the digest IS the identity.
-func (r *ChatAuditRepository) SavePrompt(ctx context.Context, hash, body string) error {
-	if hash == "" {
-		return fmt.Errorf("chat_audit: empty hash")
+// SavePrompt stores a system prompt body under the digest of the bytes it is
+// storing, and returns that digest. ON CONFLICT DO NOTHING is the
+// idempotent-by-hash contract — the digest IS the identity.
+func (r *ChatAuditRepository) SavePrompt(ctx context.Context, body string) (string, error) {
+	if body == "" {
+		return "", fmt.Errorf("chat_audit: empty prompt body")
 	}
+	hash := persistence.HashChatSystemPrompt(body)
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO chat_system_prompts (hash, body, created_at)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (hash) DO NOTHING`,
 		hash, body, time.Now().UTC(),
 	)
-	return mapDBError(err)
+	if err != nil {
+		// The hash goes back WITH the error. The caller records it on the
+		// audit row either way, so a turn whose body write failed still
+		// points at bytes a later successful save lands under — without it
+		// the row is stranded permanently even though the body reaches the
+		// store on the next turn that renders the same prompt.
+		return hash, mapDBError(err)
+	}
+	return hash, nil
 }
 
 // GetPrompt returns the body for the given hash, or

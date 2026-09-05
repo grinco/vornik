@@ -41,7 +41,13 @@ type Config struct {
 // wraps its vornik_agent_model_health_state gauge + _trips_total counter.
 type MetricsSink interface {
 	SetStateGauge(model string, state chat.CircuitState)
-	IncTrips(model string)
+	// IncTrips counts one circuit-open transition. The reason
+	// (chat.TripReasonRate / chat.TripReasonConsecutive) is a label because
+	// the two rules describe different conditions — a share of recent traffic
+	// versus a model that has stopped answering at all — and the trip that
+	// finally catches a SLOW model would otherwise be indistinguishable from
+	// the ones that were already firing.
+	IncTrips(model, reason string)
 }
 
 // Registry holds the per-model agent-LLM circuit breakers. One shared
@@ -160,7 +166,13 @@ func (r *Registry) Record(model string, probe bool, err error) {
 	newState, tripped, _ := b.Record(ok, probe)
 	r.setGauge(model, newState)
 	if tripped {
-		r.incTrips(model)
+		// TripReason is read after Record releases its lock. A concurrent
+		// re-trip could in principle move the label, but only through a full
+		// probe cycle (the circuit is OPEN from the line above until a probe
+		// succeeds), so the window is not reachable in practice — and the
+		// circuit STATE, which is what gates calls, is authoritative either
+		// way. Reviewed 2026-09-04 (review-20260904-bef3, finding 3).
+		r.incTrips(model, b.TripReason())
 	}
 }
 
@@ -170,8 +182,8 @@ func (r *Registry) setGauge(model string, s chat.CircuitState) {
 	}
 }
 
-func (r *Registry) incTrips(model string) {
+func (r *Registry) incTrips(model, reason string) {
 	if r != nil && r.metrics != nil {
-		r.metrics.IncTrips(model)
+		r.metrics.IncTrips(model, reason)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"vornik.io/vornik/internal/agentbench"
 	"vornik.io/vornik/internal/membench"
 )
 
@@ -216,7 +217,15 @@ func init() {
 // run predates both, so nothing in a stored v3 key can distinguish which corpus it
 // read or which embedding model produced its vectors — the same reason v3 itself was
 // not merely a new field. The bump is what makes that incomparability explicit.
-const harnessVersion = "4"
+//
+// v5 (2026-09-03): the key gained corpus_regime and daemon_revision. A v4 key
+// could not tell a warm corpus from a cold one — bench-runs/reproduce-1..3
+// (warm) and head-20260827-tr6-r1..3 (cold) both keyed e865104e9959, and
+// aggregate would have merged them — nor could it tell two releases apart, so
+// runs of different builds with the same config compared clean. Existing
+// published rows keep their v4 keys as history; they are not recomputed, because
+// a key is a record of what a run could say about itself at the time.
+const harnessVersion = "5"
 
 func runBenchMemory(cmd *cobra.Command, _ []string) error {
 	// The destructive-run guard comes FIRST, before any dataset is read or any
@@ -278,7 +287,8 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 	// deposits fell 426 -> 426 -> 209 over three runs of the same 120 items
 	// until two items lost their whole haystack, and accuracy moved
 	// 0.692 -> 0.750 on a manual wipe. See design §5.8.
-	if err := clearBenchStore(cmd.Context(), sys, "membench/%"); err != nil {
+	regime, err := clearBenchStore(cmd.Context(), sys, "membench/%")
+	if err != nil {
 		return err
 	}
 
@@ -329,6 +339,9 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 		SingleSystem:         benchSystem != "external",
 		RecallMethod:         benchRecallMethod,
 		DeclaredEmbedder:     benchExtractionModel,
+		CorpusRegime:         regime,
+		DaemonRevision:       benchDaemonRevision(cmd.Context(), sys),
+		HarnessRevision:      agentbench.HarnessBuild(),
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running %s on %s (run dir %s)\n", sys.Name(), ds.Name(), runDir)
@@ -662,6 +675,22 @@ func loadResult(runDir string) (membench.Result, error) {
 	return res, nil
 }
 
+// benchDaemonRevision asks the system under test which build it is, or returns
+// "" when it cannot say.
+//
+// Optional-interface rather than a field on MemorySystem: an external competitor
+// has no vornik revision to report, and widening the interface would oblige
+// every adapter to answer a question only one of them can. Empty marks the
+// comparability key PARTIAL, which is the honest reading — a run that cannot
+// name its build must not compare clean against one that can.
+func benchDaemonRevision(ctx context.Context, sys membench.MemorySystem) string {
+	rep, ok := sys.(interface{ DaemonRevision(context.Context) string })
+	if !ok {
+		return ""
+	}
+	return rep.DaemonRevision(ctx)
+}
+
 // clearBenchStore resets the benchmark project's retrievable memory before a run.
 //
 // The project is read from the daemon (companion whoami) rather than taken from
@@ -673,42 +702,47 @@ func loadResult(runDir string) (membench.Result, error) {
 // and it is read HERE rather than at startup so it is only needed by a run that
 // has already passed both guards. Its database must match the verified target;
 // a DSN pointing elsewhere is the 2026-08-12 incident with an extra step.
-func clearBenchStore(ctx context.Context, sys membench.MemorySystem, scopePrefix string) error {
+func clearBenchStore(ctx context.Context, sys membench.MemorySystem, scopePrefix string) (membench.CorpusRegime, error) {
 	reporter, ok := sys.(interface {
 		WriteTargetProject(context.Context) (string, error)
 	})
 	if !ok {
-		return fmt.Errorf("refusing to run: the %q system cannot report its project, so the "+
+		return membench.CorpusRegimeUnknown, fmt.Errorf("refusing to run: the %q system cannot report its project, so the "+
 			"per-run clear cannot know which store to reset. An uncleared store dedups the "+
 			"run against itself and the score drifts silently", sys.Name())
 	}
 	project, err := reporter.WriteTargetProject(ctx)
 	if err != nil {
-		return fmt.Errorf("refusing to run: could not establish which project to clear (%w)", err)
+		return membench.CorpusRegimeUnknown, fmt.Errorf("refusing to run: could not establish which project to clear (%w)", err)
 	}
 	if strings.TrimSpace(project) == "" {
-		return fmt.Errorf("refusing to run: the daemon reported an EMPTY project, which names " +
+		return membench.CorpusRegimeUnknown, fmt.Errorf("refusing to run: the daemon reported an EMPTY project, which names " +
 			"no store to clear. Treating empty as 'nothing to do' is how the absent clear " +
 			"stayed invisible")
 	}
 
 	dsn := strings.TrimSpace(os.Getenv("VORNIK_BENCH_DSN"))
 	if dsn == "" {
-		return fmt.Errorf("refusing to run: VORNIK_BENCH_DSN is required so the run can clear " +
+		return membench.CorpusRegimeUnknown, fmt.Errorf("refusing to run: VORNIK_BENCH_DSN is required so the run can clear " +
 			"the benchmark store before it starts. Without the clear the store accumulates " +
 			"across runs and the run dedups against itself (design §5.8)")
 	}
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return fmt.Errorf("clear: open %s: %w", benchDatabase, err)
+		return membench.CorpusRegimeUnknown, fmt.Errorf("clear: open %s: %w", benchDatabase, err)
 	}
 	defer func() { _ = db.Close() }()
 
 	res, err := membench.ClearBenchmarkStore(ctx, db, project, scopePrefix)
 	if err != nil {
-		return err
+		return membench.CorpusRegimeUnknown, err
 	}
 	fmt.Printf("cleared benchmark store for project %q: %d chunks, %d entities, %d edges, %d mentions\n",
 		project, res.Chunks, res.Entities, res.Edges, res.Mentions)
-	return nil
+	// COLD is an OBSERVATION, and this is where it is made: the clear ran to
+	// completion against the verified project, so the corpus this run scores is
+	// exactly what this run ingests. Returning it — rather than having the caller
+	// assume cold because it called a function named clear — is what keeps
+	// ComparabilityFields.CorpusRegime observed rather than declared.
+	return membench.CorpusRegimeCold, nil
 }

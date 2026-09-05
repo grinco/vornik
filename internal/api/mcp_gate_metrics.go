@@ -34,9 +34,28 @@ const (
 	mcpGapNoExecution mcpGapReason = "no_execution"
 	// mcpGapNoWorkflow — the project or its workflow could not be loaded.
 	mcpGapNoWorkflow mcpGapReason = "no_workflow"
-	// mcpGapNoStepRole — the current step is unknown to the workflow, or names
-	// no role.
+	// mcpGapNoStepRole — the current step exists in the workflow and names no
+	// role. A system/gate step, typically: there is no agent and so no role to
+	// enforce against.
 	mcpGapNoStepRole mcpGapReason = "no_step_role"
+	// mcpGapExecutionTerminal — the execution's current step id names a
+	// TERMINAL, not a step. The execution has finished.
+	//
+	// Split out of no_step_role on 2026-09-04, because it was the whole
+	// distribution and it is not a resolution gap at all. Measured on the
+	// reference deployment: every fail-open in the census (12 of 12 across both
+	// paths) was an execution parked at `delegated` or `done` — adaptive's
+	// terminals — while role_declares_none, role_not_found and deps_unwired
+	// were all ZERO. Conflated under one reason, that reads as "the gate could
+	// not resolve a role 12 times"; split, it reads as "12 calls arrived for
+	// finished executions", which is a different question with a different
+	// answer. A census whose dominant bucket means two things cannot size the
+	// decision it exists to size.
+	mcpGapExecutionTerminal mcpGapReason = "execution_terminal"
+	// mcpGapStepNotFound — the current step id is neither a step nor a
+	// terminal. Unlike the two above this IS an unexplained state, and it is
+	// the one worth alerting on.
+	mcpGapStepNotFound mcpGapReason = "step_not_found"
 	// mcpGapNoSwarm — the project's swarm could not be loaded.
 	mcpGapNoSwarm mcpGapReason = "no_swarm"
 	// mcpGapRoleNotFound — the step's role is not in the swarm. A misconfigured
@@ -52,7 +71,8 @@ const (
 func allMCPGapReasons() []mcpGapReason {
 	return []mcpGapReason{
 		mcpGapNoTaskID, mcpGapDepsUnwired, mcpGapNoExecution, mcpGapNoWorkflow,
-		mcpGapNoStepRole, mcpGapNoSwarm, mcpGapRoleNotFound, mcpGapRoleDeclaresNone,
+		mcpGapNoStepRole, mcpGapExecutionTerminal, mcpGapStepNotFound,
+		mcpGapNoSwarm, mcpGapRoleNotFound, mcpGapRoleDeclaresNone,
 	}
 }
 
@@ -90,7 +110,8 @@ func NewMCPGateMetrics(registerer prometheus.Registerer) *MCPGateMetrics {
 					"This is a fail-open census, NOT a refusal count: every one of these calls was " +
 					"PERMITTED, by design (the project gate remains in force). A rising number means " +
 					"roles are not resolving, not that something was blocked. path = call|advertise; " +
-					"reason = no_task_id|deps_unwired|no_execution|no_workflow|no_step_role|no_swarm|" +
+					"reason = no_task_id|deps_unwired|no_execution|no_workflow|no_step_role|" +
+					"execution_terminal|step_not_found|no_swarm|" +
 					"role_not_found|role_declares_none.",
 			},
 			[]string{"path", "reason"},

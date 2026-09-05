@@ -19,6 +19,16 @@ set -eu
 # INPUT_FILE / WORKSPACE / etc. pointed at a temp dir.
 INPUT_FILE="${INPUT_FILE:-/app/input/task.json}"
 
+# The tool registries — BUILTIN_TOOL_NAMES_JSON, UNGATED_TOOL_NAMES_JSON,
+# UNGATED_TOOL_PREFIXES_JSON, ADVERTISE_TOKENS_JSON, TOOL_REGISTRY_JSON — are
+# GENERATED from internal/agenttools.Tools by `go run ./cmd/docs-gen tools` and
+# sourced here, before their first use. Copied beside this script by the
+# Containerfile; the tests source this script from the repo, where the
+# generated file sits next to it. A missing file is a loud failure (set -e):
+# a container with no registry must not start with empty gates.
+# shellcheck source=tool_registry.generated.sh
+source "${VORNIK_TOOL_REGISTRY:-$(dirname "${BASH_SOURCE[0]}")/tool_registry.generated.sh}"
+
 # output_contract_satisfied reports whether a file matching the step's declared
 # REQUIRE_OUTPUT_GLOB exists in the workspace.
 #
@@ -77,7 +87,13 @@ plausibility_violations() {
 
 OUTPUT_FILE="${OUTPUT_FILE:-/app/output/result.json}"
 CANCEL_FILE="${CANCEL_FILE:-/app/input/CANCEL}"
-WORKSPACE="${WORKSPACE:-/app/workspace}"
+# Exported, not merely assigned: vornik-agent-helper is a subprocess and reads
+# WORKSPACE from its environment to anchor every path it resolves. The executor
+# sets no WORKSPACE in the container env, so this line is the only source. It
+# was a plain assignment until 2026-09-05, and every helper-dispatched tool then
+# failed with "path escapes workspace" (easeit-companion ingest
+# task_20260905101846, three attempts to the tool cap).
+export WORKSPACE="${WORKSPACE:-/app/workspace}"
 AGENT_HELPER="${VORNIK_AGENT_HELPER:-vornik-agent-helper}"
 START_TIME="${START_TIME:-$(if command -v "$AGENT_HELPER" >/dev/null 2>&1; then "$AGENT_HELPER" now-seconds; else date +%s; fi)}"
 
@@ -221,66 +237,43 @@ allowed_builtin_tools_json() {
         || printf '%s\n' '["current_time","file_read","file_write","run_shell"]'
 }
 
-# The declared builtin vocabulary. Since 2026-08-20 this list no longer DECIDES
-# anything on its own — tool_call_permitted() fails closed against the role's
-# allowlist — but it stays load-bearing in two ways: it separates "not allowed
-# for this role" from "unknown tool" in the refusal, and lint-lld-contracts
-# requires it to agree with the other three registries.
+# The declared builtin vocabulary — BUILTIN_TOOL_NAMES_JSON, sourced from the
+# GENERATED registry at the top of this file. Since 2026-08-20 it no longer
+# DECIDES anything on its own — tool_call_permitted() fails closed against the
+# role's allowlist — but it stays load-bearing in two ways: it separates "not
+# allowed for this role" from "unknown tool" in the refusal, and it is the
+# "declared" set the advertisement filter consults.
 #
-# The consequence of an omission is now INVERTED. Until 2026-08-20 the gate
-# refused only when
+# The consequence of an omission is INVERTED since the flip. Until 2026-08-20
+# the gate refused only when
 #   is_builtin_tool "$name" && ! builtin_tool_allowed "$name"
-# so a name MISSING here made the first conjunct false, the allowlist check was
-# skipped entirely, and the tool ran for every role regardless of allowedTools —
-# the gate failed OPEN on omission. A name missing here now yields a tool that
-# is refused for every role and never advertised: a capability loss, visible,
-# rather than a silent privilege grant.
+# so a name MISSING from the vocabulary made the first conjunct false, the
+# allowlist check was skipped, and the tool ran for every role — fail-open on
+# omission. A name missing now is refused for every role and never advertised:
+# a capability loss, visible, rather than a silent privilege grant.
 #
 # memory_search, skill_fetch, get_conversation_window and summarize_thread were
-# each implemented with an exec_tool dispatch case and absent from this list,
-# so every role could call them irrespective of allowedTools — defeating the
-# role-library capability boundary that
-# https://docs.vornik.io §5.3 documents as the
-# outer bound of every composed automation.
-#
-# Do not add a dispatch case without adding the name here AND to
-# BUILTIN_TOOL_NAMES_JSON AND to internal/agenttools.builtinTools.
-# internal/contractreg's registry-disagreement check enforces that on every
-# `make lint`; deliberate exemptions live in contractreg.UngatedByDesign with a
-# stated reason, not as silent omissions.
+# each implemented with an exec_tool dispatch case and absent from the
+# hand-written vocabulary, so every role could call them irrespective of
+# allowedTools (2026.8.1). Until 2026-09-03 this function was a SECOND
+# hand-written copy of the same list, a case statement kept in step by lint.
+# It now reads the one registry, so it cannot disagree with it; what
+# lint-lld-contracts checks is the thing generation cannot know — that every
+# declared tool has an exec_tool dispatch case and every case is declared.
 is_builtin_tool() {
-    case "$1" in
-        file_read|file_write|run_shell|current_time) return 0 ;;
-        file_edit|read_many_files|grep|glob) return 0 ;;
-        git_status|git_diff|git_log|git_show) return 0 ;;
-        test_run|lint_run|typecheck_run) return 0 ;;
-        backlog_deposit|tool_result_read) return 0 ;;
-        query_api|list_apis) return 0 ;;
-        memory_search|skill_fetch) return 0 ;;
-        get_conversation_window|summarize_thread) return 0 ;;
-        *) return 1 ;;
-    esac
+    printf '%s' "$BUILTIN_TOOL_NAMES_JSON" | jq -e --arg n "$1" 'index($n) != null' >/dev/null 2>&1
 }
-
-# Canonical list of built-in tool names — single source of truth used by the
-# allowlist gate in tool_definitions() and by builtin_tool_allowed(). Keep
-# this aligned with is_builtin_tool() above.
-BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit","tool_result_read","query_api","list_apis","memory_search","skill_fetch","get_conversation_window","summarize_thread"]'
 
 builtin_tool_allowed() {
     local tool="$1"
     allowed_builtin_tools_json | jq -e --arg tool "$tool" 'index($tool) != null' >/dev/null 2>&1
 }
 
-# Exact tool names exempt from BOTH gates. Mirrors contractreg.UngatedByDesign;
-# lint-lld-contracts parses this JSON and fails the build if the two drift, so
-# an exemption stays a reviewed decision recorded with a reason rather than a
-# silent omission. Do not add a name here without adding it there.
-UNGATED_TOOL_NAMES_JSON='["tool_search","tool_result_read"]'
-
-# Name PREFIXES gated somewhere other than here. Mirrors
-# contractreg.UngatedPrefixesByDesign, checked the same way. A prefix is a wider
-# grant than a name, so it carries the same requirement.
+# UNGATED_TOOL_NAMES_JSON — exact names exempt from BOTH gates — and
+# UNGATED_TOOL_PREFIXES_JSON — prefixes gated somewhere other than here — are
+# sourced from the same generated registry. Each exemption carries its reason
+# in internal/agenttools.Tools (Gate == GateExemptByDesign) and
+# agenttools.UngatedPrefixes; adding one is a security decision made there.
 #
 # mcp__ is gated daemon-side by roleAllowsMCPTool. The container deliberately
 # does not reproduce that decision: it cannot see the daemon's
@@ -289,7 +282,6 @@ UNGATED_TOOL_NAMES_JSON='["tool_search","tool_result_read"]'
 # and re-implementing the daemon's four-shape matcher in jq would put a second
 # copy of one security predicate in a second language — the anti-pattern that
 # produced the 2026.8.1 bypass. See agent runtime contract LLD section 7.1.
-UNGATED_TOOL_PREFIXES_JSON='["mcp__"]'
 
 tool_name_ungated() {
     printf '%s' "$UNGATED_TOOL_NAMES_JSON" | jq -e --arg n "$1" 'index($n) != null' >/dev/null 2>&1
@@ -297,6 +289,14 @@ tool_name_ungated() {
 
 tool_prefix_ungated() {
     printf '%s' "$UNGATED_TOOL_PREFIXES_JSON" | jq -e --arg n "$1" 'any(.[]; . as $p | $n | startswith($p))' >/dev/null 2>&1
+}
+
+# tool_runs_in_helper — is this declared tool's dispatch the Go helper's?
+# Reads the generated HELPER_TOOL_NAMES_JSON (agenttools.HelperNames()); the
+# branch that consults it sits in exec_tool AFTER tool_call_permitted, and
+# contractreg holds it there (agent-tool dispatch design §4).
+tool_runs_in_helper() {
+    printf '%s' "${HELPER_TOOL_NAMES_JSON:-[]}" | jq -e --arg n "$1" 'index($n) != null' >/dev/null 2>&1
 }
 
 # SECURITY: the permit predicate for both gates. It FAILS CLOSED — a name is
@@ -731,6 +731,10 @@ vornik_resolve_url() {
 # Uses stdin to avoid shell ARG_MAX limits with large payloads.
 llm_call() {
     local request_body="$1"
+    # The loop passes its iteration counter; the proxy records it beside the
+    # exchange when the project opted in (llm-exchange record/replay design
+    # §2.1). Callers outside the loop pass nothing and the header is absent.
+    local iteration="${2:-}"
     vornik_resolve_url "${LLM_ENDPOINT}/chat/completions"
     local url="$VORNIK_URL"
     local task_id project_id execution_id role
@@ -749,6 +753,13 @@ llm_call() {
     if [ -n "$role" ]; then
         role_hdr=(-H "X-Vornik-Role: ${role}")
     fi
+    # Step and iteration identify the exchange for the recorder; informational
+    # to every other reader of the proxy. STEP_ID is read from task.json at
+    # start-up ("unknown" outside a task step).
+    local exchange_hdr=(-H "X-Vornik-Step-ID: ${STEP_ID:-unknown}")
+    if [ -n "$iteration" ]; then
+        exchange_hdr+=(-H "X-Vornik-Iteration: ${iteration}")
+    fi
     # Log to stderr — stdout is captured by the caller as the response.
     [ "${VORNIK_LOG_LEVEL:-info}" = "debug" ] && echo "[vornik-agent] calling $url (model=$LLM_MODEL)" >&2 || true
     local curl_err
@@ -763,6 +774,7 @@ llm_call() {
         -H "X-Vornik-Task-ID: ${task_id:-${VORNIK_TASK_ID:-}}" \
         -H "X-Vornik-Execution-ID: ${execution_id:-${VORNIK_EXECUTION_ID:-}}" \
         "${role_hdr[@]}" \
+        "${exchange_hdr[@]}" \
         -d @- 2>"$curl_err")
     local rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -776,6 +788,42 @@ llm_call() {
     fi
     rm -f "$curl_err"
     printf '%s' "$result"
+}
+
+# write_step_prompt_file <msgs_file> <tools_file> — writes
+# $(dirname "$OUTPUT_FILE")/step_prompt.json once per step, on the FIRST request
+# only: the three parts of what the model is told (system, user, tools), each
+# with its sha256, from the very files build_llm_request_file reads. Later
+# iterations append tool results already persisted in tool_audit_log, so the
+# first request is the step's input; the daemon reads the file at step end,
+# redacts, and stores it content-addressed (step-prompt persistence design).
+# Never fails the step: a prompt that could not be recorded is a log line, not
+# a lost task.
+STEP_PROMPT_WRITTEN=0
+write_step_prompt_file() {
+    local msgs_file="$1" tools_file="$2"
+    [ "${STEP_PROMPT_WRITTEN:-0}" = "1" ] && return 0
+    local out_dir
+    out_dir=$(dirname "$OUTPUT_FILE")
+    local system_part user_part tools_part
+    system_part=$(jq -r '.[0].content // ""' "$msgs_file" 2>/dev/null) || system_part=""
+    user_part=$(jq -r '.[1].content // ""' "$msgs_file" 2>/dev/null) || user_part=""
+    tools_part=$(jq -c '.' "$tools_file" 2>/dev/null) || tools_part="[]"
+    local sys_hash user_hash tools_hash
+    sys_hash=$(printf '%s' "$system_part" | sha256sum | cut -d' ' -f1)
+    user_hash=$(printf '%s' "$user_part" | sha256sum | cut -d' ' -f1)
+    tools_hash=$(printf '%s' "$tools_part" | sha256sum | cut -d' ' -f1)
+    if jq -n --arg s "$system_part" --arg sh "$sys_hash" \
+             --arg u "$user_part" --arg uh "$user_hash" \
+             --arg t "$tools_part" --arg th "$tools_hash" \
+             '{system:{sha256:$sh,body:$s},user:{sha256:$uh,body:$u},tools:{sha256:$th,body:$t}}' \
+             2>/dev/null > "$out_dir/step_prompt.json.tmp" \
+       && mv "$out_dir/step_prompt.json.tmp" "$out_dir/step_prompt.json" 2>/dev/null; then
+        STEP_PROMPT_WRITTEN=1
+    else
+        log "step prompt: could not write $out_dir/step_prompt.json (prompt not persisted for this step)"
+        rm -f "$out_dir/step_prompt.json.tmp" 2>/dev/null
+    fi
 }
 
 build_llm_request_file() {
@@ -973,509 +1021,74 @@ emit_tool_definitions() {
         > "$out_file"
 }
 
-# Build a tool definition JSON array for the LLM.
-# When VORNIK_MEM_URL is set, memory_search is appended so agents can query
-# project memory. It is omitted when the endpoint is not available to avoid
-# confusing the model with a non-functional tool.
+# ----- Tool definitions: a view of the generated registry --------------------
+#
+# Until 2026-09-03 this function held ~480 lines of hand-written JSON heredocs
+# plus two "extras" buckets appended under ad-hoc environment tests — a fourth
+# hand-mirrored copy of the tool vocabulary, and the place the 2026-08-22
+# bypass lived (an append that consulted no registry). Every definition now
+# comes from TOOL_REGISTRY_JSON, generated from internal/agenttools.Tools, and
+# there is no append step: a definition that is not in the registry has no way
+# to reach the model. Design of record:
+# https://docs.vornik.io §3.
+#
+# Two decisions per tool, in this order:
+#   1. tool_advertised_now <token>  — is the backing service present? A CLOSED
+#      token set (ADVERTISE_TOKENS_JSON); lint-lld-contracts holds this case's
+#      labels equal to it in both directions, and the default arm refuses, so
+#      an unknown token advertises nothing.
+#   2. the fail-closed filter (2026-08-20): exempt by design, or declared AND
+#      on the role's allowlist. It runs AFTER step 1, so advertisement can only
+#      narrow — a token that always says yes still cannot offer a role a tool it
+#      may not call. test/agent/tool_definitions_golden_test.sh pins every cell.
+tool_advertised_now() {
+    case "$1" in
+        always) return 0 ;;
+        never) return 1 ;;
+        when_memory_url) [ -n "${VORNIK_MEM_URL:-}" ] ;;
+        when_api_url) [ -n "${VORNIK_API_URL:-}" ] ;;
+        when_task_bound) [ -n "${VORNIK_API_URL:-}" ] && [ -n "${VORNIK_TASK_ID:-}" ] ;;
+        when_result_hygiene) tool_result_hygiene_enabled ;;
+        *) return 1 ;;
+    esac
+}
+
+# live_advertise_tokens_json prints the JSON array of tokens that hold right
+# now, evaluated once per call rather than once per tool.
+live_advertise_tokens_json() {
+    local live='[]' tok
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        if tool_advertised_now "$tok"; then
+            live=$(printf '%s' "$live" | jq -c --arg t "$tok" '. + [$t]')
+        fi
+    done < <(printf '%s' "$ADVERTISE_TOKENS_JSON" | jq -r '.[]')
+    printf '%s' "$live"
+}
+
+# tool_definition_for <name> prints one declared tool's OpenAI definition from
+# the registry, for the paths that append a definition by name rather than
+# through tool_definitions() (tool_search, from rebuild_tools_file when MCP
+# deferral is on). Prints nothing and returns 1 for an undeclared name.
+tool_definition_for() {
+    printf '%s' "$TOOL_REGISTRY_JSON" | jq -e --arg n "$1" '.[] | select(.name == $n) | .definition' 2>/dev/null
+}
+
+# Build the tool definition JSON array for the LLM: every registry entry whose
+# advertise token holds, then the fail-closed filter. Registry order is the
+# order the model sees.
 tool_definitions() {
-    local base_tools
-    base_tools=$(cat <<'TOOLS_EOF'
-[
-  {
-    "type": "function",
-    "function": {
-      "name": "file_read",
-      "description": "Read the contents of a file. Paths are relative to /app/workspace/ (the working directory); the persistent project folder is at project/ (e.g. 'project/src/main.py'). Output is capped at 30KB per file — for larger files use grep to find specific lines, run_shell with `head -c 200000` for a bigger window (200KB), or read_many_files which has the same per-file cap but lets you pull a directory in one call.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder." }
-        },
-        "required": ["path"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "file_write",
-      "description": "Write content to a file. Creates parent directories as needed. Paths are relative to /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder." },
-          "content": { "type": "string", "description": "File content to write" }
-        },
-        "required": ["path", "content"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "run_shell",
-      "description": "Run a shell command in the workspace directory. Use for tasks like listing files, running builds, etc. stdout+stderr is capped at 200KB; if you need more, pipe through grep/awk/tail to filter at the source (e.g. `go tool cover -func=cov.out | grep ^github.com/myorg/mypkg/`). gcc + libc6-dev are installed so `go test -race` works.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "command": { "type": "string", "description": "Shell command to execute" }
-        },
-        "required": ["command"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "current_time",
-      "description": "Return the current date and time in a requested IANA timezone, with UTC included for verification. Use this whenever the task depends on today's date, current time, market hours, deadlines, or timezone conversion. Do not calculate timezone offsets yourself.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "timezone": { "type": "string", "description": "IANA timezone name such as 'UTC', 'Europe/Prague', 'America/New_York', or 'Asia/Tokyo'. Defaults to UTC." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "file_edit",
-      "description": "Edit a file by replacing an exact string. Prefer this over file_write for modifying existing files — it only sends the diff region and fails fast if old_string is absent or ambiguous. Fails if old_string does not match exactly once (unless replace_all is true). Paths are relative to /app/workspace/ — use 'project/' prefix for the persistent project folder.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Relative path from /app/workspace/." },
-          "old_string": { "type": "string", "description": "Exact string to replace. Must match byte-for-byte including whitespace and indentation." },
-          "new_string": { "type": "string", "description": "Replacement string. May be empty to delete the match." },
-          "replace_all": { "type": "boolean", "description": "Replace every occurrence instead of requiring exactly one. Default: false." }
-        },
-        "required": ["path", "old_string", "new_string"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "read_many_files",
-      "description": "Read multiple files in one call. Returns a concatenated blob with '===== FILE: <path> =====' headers per file. Each file is capped at 30KB; total output is capped at 120KB (later files are truncated or dropped). Prefer this over N sequential file_read calls when exploring a directory.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Relative paths from /app/workspace/." }
-        },
-        "required": ["paths"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "grep",
-      "description": "Search file contents for a regex pattern. Faster and more token-efficient than run_shell 'grep -r'. Default output is files_with_matches; switch to content mode only when you need line numbers and the matching lines themselves. Results are capped at head_limit lines (default 200) — if a search returns 'truncated' or you want narrower results, supply a more specific pattern, scope via path/glob, or raise head_limit.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "pattern": { "type": "string", "description": "Regex pattern (POSIX extended)." },
-          "path": { "type": "string", "description": "Directory to search under. Default: workspace root." },
-          "glob": { "type": "string", "description": "Filename glob filter (e.g. '*.go', '**/*.py'). Default: all files." },
-          "output_mode": { "type": "string", "enum": ["files_with_matches", "content", "count"], "description": "files_with_matches (default): paths only. content: matching lines with line numbers. count: per-file match counts." },
-          "ignore_case": { "type": "boolean", "description": "Case-insensitive match." },
-          "head_limit": { "type": "integer", "description": "Max result lines. Default: 200." }
-        },
-        "required": ["pattern"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "glob",
-      "description": "List files matching a glob pattern. Supports '**' for recursive matching. Faster than run_shell 'find'. Returns paths sorted by modification time (newest first), capped at 500 entries.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "pattern": { "type": "string", "description": "Glob pattern (e.g. '**/*.go', 'project/src/*.ts')." },
-          "path": { "type": "string", "description": "Root directory. Default: workspace root." }
-        },
-        "required": ["pattern"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "git_status",
-      "description": "Show git working-tree status as typed JSON {branch, ahead, behind, files:[{path,status}]}. Use this before committing or when assessing what a prior role changed.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Repo root. Default: 'project'." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "git_diff",
-      "description": "Show a unified diff. Default compares working tree to index (unstaged changes); set staged=true to compare index to HEAD, or revision to diff arbitrary refs.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Repo root. Default: 'project'." },
-          "staged": { "type": "boolean", "description": "Diff index vs HEAD instead of working tree vs index." },
-          "revision": { "type": "string", "description": "Revision spec (e.g. 'HEAD~3..HEAD', 'main'). Overrides staged." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Restrict diff to these paths." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "git_log",
-      "description": "Show commit history as typed JSON [{sha, short_sha, author, date, subject}]. More token-efficient than parsing run_shell 'git log' output.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Repo root. Default: 'project'." },
-          "max": { "type": "integer", "description": "Max commits. Default: 20." },
-          "revision": { "type": "string", "description": "Revision range (e.g. 'main..HEAD'). Default: HEAD." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit history to commits touching these paths." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "git_show",
-      "description": "Show a commit's metadata plus its diff. Use when inspecting what a specific commit changed.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Repo root. Default: 'project'." },
-          "revision": { "type": "string", "description": "Revision to show (e.g. 'HEAD', 'abc1234'). Default: HEAD." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Restrict diff to these paths." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "test_run",
-      "description": "Detect project language and run the test suite. Returns {language, runner, passed, failed, skipped, failures:[{test,message}], output}. Gracefully reports when the required toolchain is not installed in the agent image.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Project root. Default: 'project'." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit to specific test files/packages." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "lint_run",
-      "description": "Detect project language and run the configured linter (go vet / eslint / ruff). Returns {language, linter, issues:[{file,line,message}], output}.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Project root. Default: 'project'." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit to specific files or packages." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "typecheck_run",
-      "description": "Detect project language and run type checking (go build / tsc --noEmit / mypy). Returns {language, checker, errors:[{file,line,message}], output}.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "Project root. Default: 'project'." },
-          "paths": { "type": "array", "items": { "type": "string" }, "description": "Limit to specific files or packages." }
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "backlog_deposit",
-      "description": "Record an OFF-SCOPE finding (bug, optimisation opportunity, code inefficiency, refactor candidate) into the project backlog WITHOUT changing any code. Use when you notice something worth fixing that is outside your current task's scope. Never use it for work you are currently assigned.",
-      "parameters": {
-        "type": "object",
-        "required": ["kind", "title", "detail"],
-        "properties": {
-          "kind":   {"type": "string", "enum": ["bug", "optimisation", "inefficiency", "refactor"]},
-          "title":  {"type": "string", "maxLength": 140, "description": "Specific, imperative, self-contained (a future task prompt)"},
-          "detail": {"type": "string", "maxLength": 2000, "description": "What is wrong / suboptimal and what better looks like"},
-          "evidence": {"type": "string", "maxLength": 500, "description": "file:line reference(s) plus one-sentence proof"},
-          "regression": {"type": "boolean", "description": "Set ONLY when re-reporting a previously-fixed finding that has returned; requires evidence"}
-        }
-      }
-    }
-  }
-]
-TOOLS_EOF
-)
-
-    # Two extras buckets: ungated (memory_search — opt-in by env
-    # only, matches pre-Phase-32 behaviour) and gated (lifecycle
-    # tools — opt-in via allowedTools so only roles that ask for
-    # them see them; the lead is typical; researchers/coders
-    # don't need the conversation window).
-    local extras_ungated='[]'
-    local extras_gated='[]'
-
-    if [ -n "${VORNIK_MEM_URL:-}" ]; then
-        local memory_tool
-        memory_tool=$(cat <<'MEM_EOF'
-{
-    "type": "function",
-    "function": {
-      "name": "memory_search",
-      "description": "Search project memory for relevant past findings, research notes, and task outputs from previous tasks in this project.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": {"type": "string", "description": "Natural language query to search for"},
-          "limit": {"type": "integer", "description": "Max results to return (default 5, max 20)"}
-        },
-        "required": ["query"]
-      }
-    }
-  }
-MEM_EOF
-)
-        # GATED, not ungated (2026-08-16). memory_search is in
-        # is_builtin_tool, so the execution gate applies the per-role
-        # allowlist to it — advertising it ungated meant every role SAW a
-        # tool most of them could not call. That made it the second most
-        # refused tool grant on this deployment (12), and one adaptive route
-        # step reached for it twice, the second time as the invented
-        # "/memory_search", because it could see the tool and could not use
-        # it.
-        #
-        # Same defect and same fix as grant_step_tools on 2026-08-14: the
-        # advertisement must follow the ceiling (RoleMayGrantTools), not
-        # bypass it. Ungating it instead would revert the 2026.8.1 security
-        # fix (356e74cd) that closed exactly this allowlist bypass for
-        # memory_search, skill_fetch, get_conversation_window and
-        # summarize_thread.
-        #
-        # A role that should search memory declares memory_search in its
-        # allowedTools; per-chunk `permitted_roles` in the Memory Firewall
-        # remains the finer-grained control.
-        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tool "$memory_tool" '. + [$tool]')
-    fi
-
-    # Phase 32 — task-lifecycle working-memory tools.
-    if [ -n "${VORNIK_API_URL:-}" ] && [ -n "${VORNIK_TASK_ID:-}" ]; then
-        local lifecycle_tools
-        lifecycle_tools=$(cat <<'LC_EOF'
-[
-  {
-    "type": "function",
-    "function": {
-      "name": "get_conversation_window",
-      "description": "Read messages from THIS task's conversation thread. Returns chronological messages (operator + lead exchanges, checkpoints, answers, directives, phase markers). Use this to recall older content the prompt's recent-window may have summarised away.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "after": {"type": "string", "description": "Optional cursor: only return messages created after this message ID"},
-          "limit": {"type": "integer", "description": "Max messages to return (default 50, max 200)"},
-          "kind": {"type": "string", "description": "Optional comma-separated message kinds to filter by (e.g. 'directive,answer')"}
-        }
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "summarize_thread",
-      "description": "Compress a span of older conversation messages into a single 'note' summary that travels with the task. The originals are filtered out of future prompt windows; this summary is shown in their place. You write the summary text yourself — this tool just persists it. Use when the conversation grows long and older details no longer need to be quoted verbatim.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "messageIds": {"type": "array", "items": {"type": "string"}, "description": "IDs of messages this summary covers (the originals are hidden from future prompt windows)"},
-          "summary": {"type": "string", "description": "The summary text. One paragraph; cap 4 KB."}
-        },
-        "required": ["messageIds", "summary"]
-      }
-    }
-  }
-]
-LC_EOF
-)
-        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$lifecycle_tools" '. + $tools')
-    fi
-
-    if tool_result_hygiene_enabled; then
-        local tool_result_read_tool
-        tool_result_read_tool=$(cat <<'TR_EOF'
-{
-    "type": "function",
-    "function": {
-      "name": "tool_result_read",
-      "description": "Read the full saved body for a prior compacted tool result by tool_call_id. Use only when the retained head/tail preview is insufficient.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "tool_call_id": {"type": "string", "description": "The tool_call_id shown in the compacted tool result placeholder."}
-        },
-        "required": ["tool_call_id"]
-      }
-    }
-  }
-TR_EOF
-)
-        extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$tool_result_read_tool" '. + [$tool]')
-    fi
-
-    # skill_fetch — progressive-disclosure knowledge skills (LLD
-    # 2026-07-12-skill-progressive-disclosure-design). The system
-    # prompt carries a compact LEARNED SKILLS index; this tool pulls a
-    # listed skill's full instructions on demand.
-    #
-    # GATED, since 2026-08-22. It used to ride extras_ungated with the comment
-    # "Ungated (like memory_search)" — stale on the day it was written:
-    # memory_search was re-gated on 2026-08-16 exactly so advertisement would
-    # follow execution, and this was left behind. It looked harmless because
-    # agenttools.alwaysGranted puts skill_fetch on every role's effective
-    # allowlist, so advertisement matched execution BY ACCIDENT. That holds only
-    # for input the daemon built: allowed_builtin_tools_json falls back to
-    # file_read/file_write/run_shell/current_time when
-    # .config.permissions.allowedTools is absent, and in that state the tool was
-    # advertised and then refused — see-but-cannot-call, which is what the
-    # fail-closed flip exists to prevent. Gating it here costs nothing on the
-    # daemon path and makes the match a rule.
-    if [ -n "${VORNIK_API_URL:-}" ]; then
-        local skill_fetch_tool
-        skill_fetch_tool=$(cat <<'SF_EOF'
-{
-    "type": "function",
-    "function": {
-      "name": "skill_fetch",
-      "description": "Fetch the full instructions of a learned skill listed in the LEARNED SKILLS index of your system prompt. Call this BEFORE doing work a listed skill covers, then follow the returned instructions.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "name": {"type": "string", "description": "Exact skill name as shown in the LEARNED SKILLS index"}
-        },
-        "required": ["name"]
-      }
-    }
-  }
-SF_EOF
-)
-        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tool "$skill_fetch_tool" '. + [$tool]')
-    fi
-
-    # query_api / list_apis — authenticated third-party API access via the
-    # shipped gateway (LLD 2026-07-21-query-api-task-agents-design §3). Exposed
-    # only when the daemon API is reachable (VORNIK_API_URL); gated further by
-    # allowedTools (they are normal builtins, so the extras_gated allowlist
-    # filter below applies). The daemon injects the credential, enforces the
-    # per-project provider allowlist, agent read-only policy, per-task budget,
-    # redaction and the response byte cap — all server-side, so the agent
-    # cannot opt out.
-    if [ -n "${VORNIK_API_URL:-}" ]; then
-        local api_query_tools
-        api_query_tools=$(cat <<'API_EOF'
-[
-  {
-    "type": "function",
-    "function": {
-      "name": "query_api",
-      "description": "Call an authenticated third-party API through the vornik gateway. The daemon injects the provider credential server-side — NEVER put API keys, tokens, or secrets in the arguments. Use list_apis first to discover available providers. Responses are redacted and size-capped by the daemon.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "provider": {"type": "string", "description": "Provider id as shown by list_apis (e.g. 'maps')"},
-          "method": {"type": "string", "description": "HTTP method (default GET). Writes are refused for agents unless the role is explicitly granted write access."},
-          "path": {"type": "string", "description": "Request path on the provider (e.g. '/maps/api/place/textsearch/json')"},
-          "query": {"type": "object", "description": "Optional query-string parameters as a JSON object"},
-          "body": {"type": "object", "description": "Optional request body as a JSON object (for write methods)"}
-        },
-        "required": ["provider", "path"]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "list_apis",
-      "description": "List the third-party API providers reachable from this project via the vornik gateway, with the paths/methods each allows. Call before query_api to discover the correct provider id and path.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": {"type": "string", "description": "Optional filter to narrow the provider list"}
-        }
-      }
-    }
-  }
-]
-API_EOF
-)
-        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$api_query_tools" '. + $tools')
-    fi
-
-    # FAILS CLOSED (2026-08-20): a base definition is advertised only when it is
-    # BOTH declared in BUILTIN_TOOL_NAMES_JSON and on the role's allowlist (or
-    # ungated by design). The previous filter kept a tool when
-    # `$builtin | index($name) | not` — absence from the registry SATISFIED it,
-    # so an unregistered tool went to every role's model regardless of
-    # allowedTools. Absence now means "never advertised", which is a visible
-    # capability loss rather than a silent privilege grant.
-    #
-    # $ungated is filtered against UNGATED_TOOL_NAMES_JSON (2026-08-22). It used
-    # to be appended UNCONDITIONALLY — a third advertisement path neither gate
-    # covered, so anything appended to extras_ungated reached the model whatever
-    # the role's allowlist said, and whatever the registries said.
-    #
-    # Reusing the both-gates registry rather than declaring a second one is the
-    # point: an exemption from advertisement and an exemption from execution are
-    # ONE decision. The contract already says so — "an ungated tool is ungated in
-    # both, never one" (agent runtime contract LLD section 7.1) — and a separate
-    # advertisement registry would have made that sentence false by construction.
-    #
-    # An unregistered extra is now DROPPED rather than advertised: a visible
-    # capability loss instead of a silent bypass, which is the same direction
-    # every other gate here fails.
-    printf '%s' "$base_tools" | jq \
-        --argjson ungated "$extras_ungated" \
-        --argjson gated "$extras_gated" \
+    printf '%s' "$TOOL_REGISTRY_JSON" | jq \
+        --argjson live "$(live_advertise_tokens_json)" \
         --argjson allowed "$(allowed_builtin_tools_json)" \
         --argjson builtin "$BUILTIN_TOOL_NAMES_JSON" \
         --argjson exempt "$UNGATED_TOOL_NAMES_JSON" \
-        '([.[] | select(.function.name as $name | ($exempt | index($name) != null) or (($builtin | index($name) != null) and ($allowed | index($name) != null)))]) + ($ungated | map(select(.function.name as $name | $exempt | index($name) != null))) + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
+        '[.[] | select(.advertise as $a | $live | index($a) != null) | .definition]
+         | [.[] | select(.function.name as $name | ($exempt | index($name) != null) or (($builtin | index($name) != null) and ($allowed | index($name) != null)))]'
 }
 
 tool_search_definition() {
-    cat <<'TOOLS_EOF'
-{
-  "type": "function",
-  "function": {
-    "name": "tool_search",
-    "description": "Search the deferred MCP tool catalogue and expose matching tools for the next turn. Use this when you need an MCP/integration tool that is not currently visible.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "query": {"type": "string", "description": "Natural language description or exact MCP tool name to search for."},
-        "limit": {"type": "integer", "description": "Maximum matches to expose. Default 8."}
-      },
-      "required": ["query"]
-    }
-  }
-}
-TOOLS_EOF
+    tool_definition_for tool_search
 }
 
 defer_mcp_tools_enabled() {
@@ -2073,67 +1686,19 @@ exec_tool() {
         fi
         return
     fi
+    # Declared tools whose dispatch lives in the Go helper (agent-tool dispatch
+    # design §2). Reached only past the gate above; the helper does not gate
+    # again, and refuses any name outside HELPER_TOOL_NAMES_JSON.
+    if tool_runs_in_helper "$name"; then
+        vornik-agent-helper exec-tool "$name" "$arguments"
+        return
+    fi
     case "$name" in
         tool_search)
             handle_tool_search "$arguments"
             ;;
         tool_result_read)
             handle_tool_result_read "$arguments"
-            ;;
-        file_read)
-            local path
-            path=$(printf '%s' "$arguments" | jq -r '.path // empty')
-            if [ -z "$path" ] || [ "$path" = "null" ]; then
-                echo "ERROR: path is required"
-            else
-                if ! path="$(resolve_path "$path" 2>&1)"; then
-                    echo "$path"
-                    return
-                fi
-                case "$path" in
-                    "$WORKSPACE"/.tool_results/*)
-                        echo "ERROR: .tool_results is only readable through tool_result_read"
-                        return
-                        ;;
-                esac
-                if [ -f "$path" ]; then
-                    # Cap file output to 30KB to avoid blowing up the LLM
-                    # context window. Large files cause degenerate tool loops.
-                    local size
-                    size=$(wc -c < "$path")
-                    if [ "$size" -gt 30000 ]; then
-                        head -c 30000 "$path"
-                        printf '\n\n[... truncated at 30KB, total %d bytes]' "$size"
-                    else
-                        cat "$path"
-                    fi
-                else
-                    echo "ERROR: file not found: $path"
-                fi
-            fi
-            # Cache state is maintained by the caller loop (see the
-            # file_read cache block around `if [ "$tc_name" = "file_read" ]`).
-            # exec_tool runs inside a $(...) subshell so any array writes
-            # here are lost when it returns — we deliberately keep this
-            # function pure and let the parent own the cache.
-            ;;
-        file_write)
-            local path content
-            path=$(printf '%s' "$arguments" | jq -r '.path // empty')
-            content=$(printf '%s' "$arguments" | jq -r '.content // empty')
-            if [ -z "$path" ] || [ "$path" = "null" ]; then
-                echo "ERROR: path is required"
-            elif [ -z "$content" ] || [ "$content" = "null" ]; then
-                echo "ERROR: content is required for file_write. If the content was cut off, your context window may be exhausted — try writing a shorter version of the file, or break it into multiple smaller file_write calls."
-            else
-                if ! path="$(resolve_path "$path" 2>&1)"; then
-                    echo "$path"
-                    return
-                fi
-                mkdir -p "$(dirname "$path")"
-                printf '%s' "$content" > "$path"
-                echo "OK: wrote $(wc -c < "$path") bytes to $path"
-            fi
             ;;
         run_shell)
             local cmd
@@ -2178,46 +1743,6 @@ exec_tool() {
                 fi
             fi
             ;;
-        current_time)
-            local timezone
-            timezone=$(printf '%s' "$arguments" | jq -r '.timezone // "UTC"')
-            if [ -z "$timezone" ] || [ "$timezone" = "null" ]; then
-                timezone="UTC"
-            fi
-            TIMEZONE="$timezone" python3 <<'PY'
-import datetime as dt
-import json
-import os
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-tz_name = os.environ.get("TIMEZONE") or "UTC"
-try:
-    tz = ZoneInfo(tz_name)
-except ZoneInfoNotFoundError:
-    print(f"ERROR: invalid timezone: {tz_name}")
-    raise SystemExit(0)
-
-now_utc = dt.datetime.now(dt.timezone.utc)
-local = now_utc.astimezone(tz)
-offset = local.utcoffset() or dt.timedelta()
-offset_seconds = int(offset.total_seconds())
-sign = "+" if offset_seconds >= 0 else "-"
-abs_seconds = abs(offset_seconds)
-utc_offset = f"{sign}{abs_seconds // 3600:02d}:{(abs_seconds % 3600) // 60:02d}"
-
-print(json.dumps({
-    "timezone": tz_name,
-    "date": local.date().isoformat(),
-    "time": local.strftime("%H:%M:%S"),
-    "weekday": local.strftime("%A"),
-    "rfc3339": local.isoformat(),
-    "utc": now_utc.isoformat().replace("+00:00", "Z"),
-    "utc_offset": utc_offset,
-    "is_dst": bool(local.dst() and local.dst().total_seconds() != 0),
-    "unix": int(now_utc.timestamp()),
-}, indent=2))
-PY
-            ;;
         memory_search)
             handle_memory_search "$arguments"
             ;;
@@ -2238,389 +1763,6 @@ PY
             ;;
         summarize_thread)
             handle_summarize_thread "$arguments"
-            ;;
-        file_edit)
-            local path old_string new_string replace_all
-            path=$(printf '%s' "$arguments" | jq -r '.path // empty')
-            old_string=$(printf '%s' "$arguments" | jq -r '.old_string // ""')
-            new_string=$(printf '%s' "$arguments" | jq -r '.new_string // ""')
-            replace_all=$(printf '%s' "$arguments" | jq -r '.replace_all // false')
-            if [ -z "$path" ] || [ "$path" = "null" ]; then
-                echo "ERROR: path is required"
-            elif [ -z "$old_string" ]; then
-                echo "ERROR: old_string is required (empty match would match everywhere)"
-            else
-                if ! path="$(resolve_path "$path" 2>&1)"; then
-                    echo "$path"
-                    return
-                fi
-                if [ ! -f "$path" ]; then
-                    echo "ERROR: file not found: $path"
-                    return
-                fi
-                # Strings pass through env to avoid any shell interpolation of
-                # the user payload. Python handles exact-string matching +
-                # atomic replace without sed's escape hell.
-                OLD_STR="$old_string" NEW_STR="$new_string" REPLACE_ALL="$replace_all" \
-                python3 - "$path" <<'PY'
-import os, sys
-path = sys.argv[1]
-old = os.environ["OLD_STR"]
-new = os.environ["NEW_STR"]
-replace_all = os.environ.get("REPLACE_ALL", "false").lower() == "true"
-with open(path, "r", encoding="utf-8", errors="replace") as f:
-    content = f.read()
-count = content.count(old)
-if count == 0:
-    print("ERROR: old_string not found in file")
-    sys.exit(0)
-if count > 1 and not replace_all:
-    print(f"ERROR: old_string matches {count} times — pass replace_all=true to replace every occurrence, or provide a longer old_string that uniquely identifies the location")
-    sys.exit(0)
-if replace_all:
-    new_content = content.replace(old, new)
-    replaced = count
-else:
-    new_content = content.replace(old, new, 1)
-    replaced = 1
-tmp = path + ".tmp.edit"
-with open(tmp, "w", encoding="utf-8") as f:
-    f.write(new_content)
-os.replace(tmp, path)
-print(f"OK: replaced {replaced} occurrence(s) in {path} ({len(new_content)} bytes)")
-PY
-            fi
-            ;;
-        read_many_files)
-            local paths_json
-            paths_json=$(printf '%s' "$arguments" | jq -c '.paths // []')
-            if [ "$paths_json" = "[]" ] || [ "$paths_json" = "null" ]; then
-                echo "ERROR: paths array is required"
-            else
-                WORKSPACE="$WORKSPACE" PATHS_JSON="$paths_json" python3 <<'PY'
-import json, os
-workspace = os.path.realpath(os.environ["WORKSPACE"])
-paths = json.loads(os.environ["PATHS_JSON"])
-PER_FILE_CAP = 30_000
-TOTAL_CAP = 120_000
-out_parts = []
-total = 0
-for raw in paths:
-    if total >= TOTAL_CAP:
-        out_parts.append(f"===== SKIPPED (total cap reached): {raw} =====")
-        continue
-    if os.path.isabs(raw):
-        if raw == workspace or raw.startswith(workspace + os.sep):
-            candidate = raw
-        else:
-            candidate = os.path.join(workspace, raw.lstrip(os.sep))
-    else:
-        candidate = os.path.join(workspace, raw)
-    resolved = os.path.realpath(os.path.normpath(candidate))
-    if resolved != workspace and not resolved.startswith(workspace + os.sep):
-        out_parts.append(f"===== ERROR: path escapes workspace: {raw} =====")
-        continue
-    if not os.path.isfile(resolved):
-        out_parts.append(f"===== FILE: {raw} =====")
-        out_parts.append("ERROR: file not found")
-        continue
-    try:
-        with open(resolved, "rb") as f:
-            data = f.read(PER_FILE_CAP + 1)
-    except OSError as e:
-        out_parts.append(f"===== FILE: {raw} =====")
-        out_parts.append(f"ERROR: {e}")
-        continue
-    text = data.decode("utf-8", errors="replace")
-    truncated = len(data) > PER_FILE_CAP
-    if truncated:
-        text = text[:PER_FILE_CAP]
-        size = os.path.getsize(resolved)
-    out_parts.append(f"===== FILE: {raw} =====")
-    out_parts.append(text)
-    if truncated:
-        out_parts.append(f"[... truncated at 30KB, total {size} bytes]")
-    total += len(text)
-body = "\n".join(out_parts)
-if len(body) > TOTAL_CAP:
-    body = body[:TOTAL_CAP] + "\n[... output truncated at 120KB]"
-print(body)
-PY
-            fi
-            ;;
-        grep)
-            local pattern search_path glob_pat output_mode ignore_case head_limit
-            pattern=$(printf '%s' "$arguments" | jq -r '.pattern // empty')
-            search_path=$(printf '%s' "$arguments" | jq -r '.path // empty')
-            glob_pat=$(printf '%s' "$arguments" | jq -r '.glob // empty')
-            output_mode=$(printf '%s' "$arguments" | jq -r '.output_mode // "files_with_matches"')
-            ignore_case=$(printf '%s' "$arguments" | jq -r '.ignore_case // false')
-            head_limit=$(printf '%s' "$arguments" | jq -r '.head_limit // 200')
-            if [ -z "$pattern" ] || [ "$pattern" = "null" ]; then
-                echo "ERROR: pattern is required"
-            else
-                if [ -z "$search_path" ] || [ "$search_path" = "null" ]; then
-                    search_path="$WORKSPACE"
-                else
-                    if ! search_path="$(resolve_path "$search_path" 2>&1)"; then
-                        echo "$search_path"
-                        return
-                    fi
-                fi
-                PATTERN="$pattern" SEARCH_PATH="$search_path" GLOB_PAT="$glob_pat" \
-                OUTPUT_MODE="$output_mode" IGNORE_CASE="$ignore_case" HEAD_LIMIT="$head_limit" \
-                python3 <<'PY'
-import os, re, fnmatch
-pattern = os.environ["PATTERN"]
-root = os.environ["SEARCH_PATH"]
-glob_pat = os.environ.get("GLOB_PAT", "") or ""
-mode = os.environ.get("OUTPUT_MODE", "files_with_matches") or "files_with_matches"
-ignore_case = os.environ.get("IGNORE_CASE", "false").lower() == "true"
-try:
-    head = int(os.environ.get("HEAD_LIMIT", "200") or "200")
-except ValueError:
-    head = 200
-flags = re.IGNORECASE if ignore_case else 0
-try:
-    regex = re.compile(pattern, flags)
-except re.error as e:
-    print(f"ERROR: invalid regex: {e}")
-    raise SystemExit(0)
-def matches_glob(relpath):
-    if not glob_pat:
-        return True
-    if fnmatch.fnmatch(relpath, glob_pat):
-        return True
-    if fnmatch.fnmatch(os.path.basename(relpath), glob_pat):
-        return True
-    # ** handling: fnmatch doesn't do recursive; approximate by allowing
-    # any depth when pattern starts with **/
-    if glob_pat.startswith("**/"):
-        return fnmatch.fnmatch(relpath, glob_pat[3:]) or fnmatch.fnmatch(os.path.basename(relpath), glob_pat[3:])
-    return False
-results = []
-file_counts = {}
-SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".mypy_cache", "dist", "build"}
-done = False
-for dirpath, dirnames, filenames in os.walk(root):
-    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-    for fname in filenames:
-        fpath = os.path.join(dirpath, fname)
-        rel = os.path.relpath(fpath, root)
-        if not matches_glob(rel):
-            continue
-        try:
-            matched_here = 0
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                for lineno, line in enumerate(f, 1):
-                    if regex.search(line):
-                        matched_here += 1
-                        if mode == "content":
-                            results.append(f"{rel}:{lineno}:{line.rstrip()}")
-                            if len(results) >= head:
-                                done = True
-                                break
-            if matched_here > 0:
-                if mode == "files_with_matches":
-                    results.append(rel)
-                elif mode == "count":
-                    file_counts[rel] = matched_here
-                if mode == "files_with_matches" and len(results) >= head:
-                    done = True
-        except OSError:
-            continue
-        if done:
-            break
-    if done:
-        break
-if mode == "count":
-    for path, n in sorted(file_counts.items()):
-        results.append(f"{path}:{n}")
-if not results:
-    print("(no matches)")
-else:
-    shown = results[:head]
-    print("\n".join(shown))
-    if len(results) > head:
-        print(f"[... truncated at {head} of {len(results)} results]")
-PY
-            fi
-            ;;
-        glob)
-            local pattern glob_root
-            pattern=$(printf '%s' "$arguments" | jq -r '.pattern // empty')
-            glob_root=$(printf '%s' "$arguments" | jq -r '.path // empty')
-            if [ -z "$pattern" ] || [ "$pattern" = "null" ]; then
-                echo "ERROR: pattern is required"
-            else
-                if [ -z "$glob_root" ] || [ "$glob_root" = "null" ]; then
-                    glob_root="$WORKSPACE"
-                else
-                    if ! glob_root="$(resolve_path "$glob_root" 2>&1)"; then
-                        echo "$glob_root"
-                        return
-                    fi
-                fi
-                PATTERN="$pattern" GLOB_ROOT="$glob_root" python3 <<'PY'
-import os, glob
-pattern = os.environ["PATTERN"]
-root = os.environ["GLOB_ROOT"]
-cwd = os.getcwd()
-try:
-    os.chdir(root)
-    matches = glob.glob(pattern, recursive=True)
-finally:
-    os.chdir(cwd)
-entries = []
-for p in matches:
-    full = os.path.join(root, p)
-    if os.path.isfile(full):
-        try:
-            entries.append((os.path.getmtime(full), p))
-        except OSError:
-            continue
-entries.sort(reverse=True)
-paths = [p for _, p in entries][:500]
-if not paths:
-    print("(no matches)")
-else:
-    print("\n".join(paths))
-    if len(entries) > 500:
-        print(f"[... truncated at 500 of {len(entries)} matches]")
-PY
-            fi
-            ;;
-        git_status)
-            local repo_path
-            repo_path=$(printf '%s' "$arguments" | jq -r '.path // "project"')
-            if ! repo_path="$(resolve_path "$repo_path" 2>&1)"; then
-                echo "$repo_path"
-                return
-            fi
-            if ! (cd "$repo_path" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1); then
-                echo "ERROR: not a git repository: $repo_path"
-                return
-            fi
-            REPO_PATH="$repo_path" python3 <<'PY'
-import os, subprocess, json
-repo = os.environ["REPO_PATH"]
-def run(args):
-    return subprocess.run(args, cwd=repo, capture_output=True, text=True)
-branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
-ahead, behind = 0, 0
-ab = run(["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"])
-if ab.returncode == 0:
-    parts = ab.stdout.strip().split()
-    if len(parts) == 2:
-        ahead, behind = int(parts[0]), int(parts[1])
-porc = run(["git", "status", "--porcelain=v1"]).stdout
-files = []
-for line in porc.splitlines():
-    if len(line) < 3:
-        continue
-    files.append({"path": line[3:], "status": line[:2]})
-print(json.dumps({"branch": branch, "ahead": ahead, "behind": behind, "files": files}, indent=2))
-PY
-            ;;
-        git_diff)
-            local repo_path staged revision paths_json
-            repo_path=$(printf '%s' "$arguments" | jq -r '.path // "project"')
-            staged=$(printf '%s' "$arguments" | jq -r '.staged // false')
-            revision=$(printf '%s' "$arguments" | jq -r '.revision // empty')
-            paths_json=$(printf '%s' "$arguments" | jq -c '.paths // []')
-            if ! repo_path="$(resolve_path "$repo_path" 2>&1)"; then
-                echo "$repo_path"
-                return
-            fi
-            local git_args=(diff)
-            if [ -n "$revision" ] && [ "$revision" != "null" ]; then
-                git_args+=("$revision")
-            elif [ "$staged" = "true" ]; then
-                git_args+=(--cached)
-            fi
-            if [ "$paths_json" != "[]" ] && [ "$paths_json" != "null" ]; then
-                git_args+=(--)
-                while IFS= read -r p; do
-                    git_args+=("$p")
-                done < <(printf '%s' "$paths_json" | jq -r '.[]')
-            fi
-            local diff_out
-            diff_out=$( (cd "$repo_path" && git "${git_args[@]}" 2>&1) || true )
-            local diff_len=${#diff_out}
-            if [ "$diff_len" -gt 30000 ]; then
-                printf '%.30000s\n\n[... truncated at 30KB, total %d bytes]' "$diff_out" "$diff_len"
-            else
-                printf '%s' "$diff_out"
-            fi
-            ;;
-        git_log)
-            local repo_path log_max revision paths_json
-            repo_path=$(printf '%s' "$arguments" | jq -r '.path // "project"')
-            log_max=$(printf '%s' "$arguments" | jq -r '.max // 20')
-            revision=$(printf '%s' "$arguments" | jq -r '.revision // empty')
-            paths_json=$(printf '%s' "$arguments" | jq -c '.paths // []')
-            if ! repo_path="$(resolve_path "$repo_path" 2>&1)"; then
-                echo "$repo_path"
-                return
-            fi
-            REPO_PATH="$repo_path" MAX="$log_max" REVISION="$revision" PATHS_JSON="$paths_json" \
-            python3 <<'PY'
-import os, subprocess, json
-repo = os.environ["REPO_PATH"]
-try:
-    n = int(os.environ.get("MAX", "20") or "20")
-except ValueError:
-    n = 20
-if n < 1: n = 1
-if n > 200: n = 200
-rev = os.environ.get("REVISION", "") or ""
-paths = json.loads(os.environ.get("PATHS_JSON", "[]") or "[]")
-fmt = "%H%x1f%h%x1f%an%x1f%aI%x1f%s"
-args = ["git", "log", f"-{n}", f"--pretty=format:{fmt}"]
-if rev:
-    args.append(rev)
-if paths:
-    args.append("--")
-    args.extend(paths)
-r = subprocess.run(args, cwd=repo, capture_output=True, text=True)
-if r.returncode != 0:
-    print(f"ERROR: {r.stderr.strip()}")
-    raise SystemExit(0)
-commits = []
-for line in r.stdout.splitlines():
-    parts = line.split("\x1f")
-    if len(parts) == 5:
-        commits.append({
-            "sha": parts[0], "short_sha": parts[1],
-            "author": parts[2], "date": parts[3], "subject": parts[4],
-        })
-print(json.dumps(commits, indent=2))
-PY
-            ;;
-        git_show)
-            local repo_path revision paths_json
-            repo_path=$(printf '%s' "$arguments" | jq -r '.path // "project"')
-            revision=$(printf '%s' "$arguments" | jq -r '.revision // "HEAD"')
-            paths_json=$(printf '%s' "$arguments" | jq -c '.paths // []')
-            if ! repo_path="$(resolve_path "$repo_path" 2>&1)"; then
-                echo "$repo_path"
-                return
-            fi
-            local show_args=(show "$revision")
-            if [ "$paths_json" != "[]" ] && [ "$paths_json" != "null" ]; then
-                show_args+=(--)
-                while IFS= read -r p; do
-                    show_args+=("$p")
-                done < <(printf '%s' "$paths_json" | jq -r '.[]')
-            fi
-            local show_out
-            show_out=$( (cd "$repo_path" && git "${show_args[@]}" 2>&1) || true )
-            local show_len=${#show_out}
-            if [ "$show_len" -gt 30000 ]; then
-                printf '%.30000s\n\n[... truncated at 30KB, total %d bytes]' "$show_out" "$show_len"
-            else
-                printf '%s' "$show_out"
-            fi
             ;;
         test_run|lint_run|typecheck_run)
             local repo_path paths_json mode
@@ -3384,6 +2526,13 @@ ${previous_result}
             printf '[]\n' > "$WORKSPACE/.empty_tools.json"
             step_tools_file="$WORKSPACE/.empty_tools.json"
         fi
+        # Model-visible means persisted (step-prompt persistence design §3): the
+        # step's FIRST request — system prompt, user content, tools array — is
+        # written beside result.json from the SAME files the request is built
+        # from, before the request is built, so a step that dies mid-loop still
+        # leaves its prompt behind and nothing can reach the model that did not
+        # reach the file. test-entrypoint-step-prompt.sh holds the two byte-equal.
+        write_step_prompt_file "$msgs_file" "$step_tools_file"
         build_llm_request_file "$req_file" "$msgs_file" "$step_tools_file" "$schema_name" "$response_format" "${response_schema:-null}" "$step_force_tool"
         local request
         request=$(cat "$req_file")
@@ -3448,7 +2597,7 @@ ${previous_result}
         fi
 
         local response
-        response=$(llm_call "$request")
+        response=$(llm_call "$request" "$iteration")
         local resp_size=${#response}
         debug "received response ($resp_size bytes)"
         TOTAL_PROMPT_TOKENS_ESTIMATED=$((TOTAL_PROMPT_TOKENS_ESTIMATED + prompt_tokens_estimate))

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"vornik.io/vornik/internal/archiveutil"
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/version"
 )
 
 // vornikctl support-report
@@ -44,6 +46,10 @@ var (
 	supportIncludeRaw bool
 	supportYes        bool
 	supportLines      int
+	// supportLocal / supportRequireDaemon select the collection path. Default
+	// is neither: try the daemon, fall back locally if it cannot answer.
+	supportLocal         bool
+	supportRequireDaemon bool
 )
 
 const supportDefaultMaxSize = 200 << 20 // 200 MiB
@@ -63,11 +69,19 @@ operator's trust boundary; no secret enters it unless you pass --include-raw.
 
 Exactly one of --task or --since is required.
 
+By default this asks the daemon. If the daemon cannot answer — Community
+Edition, which ships no admin surface, or a daemon that is down — it falls back
+to collecting LOCALLY: the same collector, reading the database and config on
+this host, and it says so. --local forces that path; --require-daemon forbids
+it. Health and metrics are the daemon's live state and are recorded as section
+errors on the local path rather than silently missing.
+
 Examples:
   vornikctl support-report --task task_2026...
   vornikctl support-report --since 2h
   vornikctl support-report --since 2026-06-20T00:00:00Z --until 2026-06-20T06:00:00Z
   vornikctl support-report --task task_... --dry-run
+  vornikctl support-report --task task_... --local          # collect on this host
   vornikctl support-report --task task_... --include-raw   # gated; writes -RAW.tar.gz
 `,
 	RunE: runSupportReport,
@@ -84,6 +98,8 @@ func init() {
 	f.BoolVar(&supportIncludeRaw, "include-raw", false, "DANGER: skip redaction; writes <name>-RAW.tar.gz with secrets intact")
 	f.BoolVar(&supportYes, "yes", false, "skip the interactive confirmation for --include-raw")
 	f.IntVar(&supportLines, "lines", 5000, "max journald lines to collect for the host section")
+	f.BoolVar(&supportLocal, "local", false, "collect locally from the database and config instead of asking the daemon (works on Community, and with the daemon down)")
+	f.BoolVar(&supportRequireDaemon, "require-daemon", false, "fail instead of falling back to local collection when the daemon cannot answer")
 	rootCmd.AddCommand(supportReportCmd)
 }
 
@@ -92,6 +108,9 @@ func runSupportReport(cmd *cobra.Command, _ []string) error {
 	hasWindow := strings.TrimSpace(supportSince) != ""
 	if hasTask == hasWindow {
 		return fmt.Errorf("exactly one of --task or --since is required")
+	}
+	if supportLocal && supportRequireDaemon {
+		return fmt.Errorf("--local and --require-daemon contradict each other: one forces local collection, the other forbids it")
 	}
 
 	if supportIncludeRaw && !supportDryRun {
@@ -106,14 +125,16 @@ func runSupportReport(cmd *cobra.Command, _ []string) error {
 	}
 
 	opts := supportReportOptions{
-		Task:       supportTask,
-		Since:      supportSince,
-		Until:      supportUntil,
-		Output:     supportOutput,
-		MaxSize:    supportMaxSize,
-		DryRun:     supportDryRun,
-		IncludeRaw: supportIncludeRaw,
-		Lines:      supportLines,
+		Task:          supportTask,
+		Since:         supportSince,
+		Until:         supportUntil,
+		Output:        supportOutput,
+		MaxSize:       supportMaxSize,
+		DryRun:        supportDryRun,
+		IncludeRaw:    supportIncludeRaw,
+		Lines:         supportLines,
+		Local:         supportLocal,
+		RequireDaemon: supportRequireDaemon,
 	}
 	runner := &execHostRunner{}
 	return executeSupportReport(cmd, ClientFromEnv(), detector, runner, opts)
@@ -130,12 +151,21 @@ type supportReportOptions struct {
 	DryRun     bool
 	IncludeRaw bool
 	Lines      int
+	// Local forces in-process collection; RequireDaemon refuses to fall back
+	// to it. They are mutually exclusive and the command rejects the pair.
+	Local         bool
+	RequireDaemon bool
 }
 
 // supportHTTPClient is the subset of *Client executeSupportReport
 // needs (so tests can inject a fake daemon).
+//
+// Get is here for the capabilities probe that answers "whose version is in
+// this bundle" (support-bundle-in-CE design §4.1) — a local collection beside
+// a REACHABLE daemon must report the daemon's build, not the client's.
 type supportHTTPClient interface {
 	Post(path string, body interface{}) (*http.Response, error)
+	Get(path string) (*http.Response, error)
 }
 
 // hostCommandRunner abstracts the host-only command invocations so
@@ -147,17 +177,131 @@ type hostCommandRunner interface {
 	SwarmctlVersion() ([]byte, error)
 }
 
-// executeSupportReport is the testable core: call the daemon, unpack,
-// append redacted host sections, re-tar (or print a dry-run manifest).
+// executeSupportReport is the testable core: obtain the bundle (from the
+// daemon or, on Community and when the daemon is down, locally), append
+// redacted host sections, re-tar (or print a dry-run manifest).
 func executeSupportReport(cmd *cobra.Command, client supportHTTPClient, detector secrets.Detector, host hostCommandRunner, opts supportReportOptions) error {
 	out := cmd.OutOrStdout()
 
-	// 1. Call the daemon.
-	reqBody := map[string]any{"max_size": opts.MaxSize, "include_raw": opts.IncludeRaw}
 	mode := "window"
 	if strings.TrimSpace(opts.Task) != "" {
-		reqBody["task_id"] = opts.Task
 		mode = "task"
+	}
+
+	staging, err := os.MkdirTemp("", "vornik-support-*")
+	if err != nil {
+		return fmt.Errorf("create staging dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(staging) }()
+	bundleDir := filepath.Join(staging, "bundle")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		return err
+	}
+
+	// 1. Stage the collector's output — daemon or local.
+	prov, err := stageBundle(cmd, client, detector, staging, bundleDir, opts)
+	if err != nil {
+		return err
+	}
+
+	// 2. Append host-only sections, redacted client-side (unless raw).
+	hostTally, err := appendHostSections(bundleDir, detector, host, opts)
+	if err != nil {
+		return fmt.Errorf("collect host sections: %w", err)
+	}
+
+	// 3. Read the daemon MANIFEST so we can extend it (host files +
+	//    raw stamp + archive sha) and surface a summary.
+	mf, _ := readManifest(filepath.Join(bundleDir, "MANIFEST.json"))
+
+	// 4. Record which path produced this archive, in the bundle and in the
+	//    manifest. Without it a reader cannot tell "Community has no metrics
+	//    endpoint" from "the daemon was down" — opposite diagnoses.
+	prov = completeProvenance(prov, mf)
+	if err := writeCollectionRecord(bundleDir, prov); err != nil {
+		return err
+	}
+
+	// 5. Dry-run: print the would-be manifest + redaction counts, write nothing.
+	if opts.DryRun {
+		printDryRun(out, bundleDir, mf, hostTally, opts)
+		printProvenance(out, prov)
+		return nil
+	}
+
+	// 6. Re-tar the staging bundle to the final path (atomic temp→rename).
+	finalPath := resolveOutputPath(opts, mode)
+	if err := rewriteManifestAndTar(bundleDir, finalPath, mf, hostTally, opts, prov); err != nil {
+		return err
+	}
+
+	// 7. Summary.
+	printSummary(out, finalPath, bundleDir, hostTally, opts)
+	printProvenance(out, prov)
+	return nil
+}
+
+// stageBundle fills bundleDir with the collector's output and reports which
+// path produced it.
+//
+// Default behaviour is the daemon, then fall back: a CE operator should not
+// have to know the word "local" to get a bundle — the 2026-08-05 dead-end was
+// precisely a CE operator being handed a command they could not run. The
+// fallback is never silent, and --require-daemon refuses it for a script that
+// would rather fail fast than quietly produce a weaker bundle.
+func stageBundle(cmd *cobra.Command, client supportHTTPClient, detector secrets.Detector, staging, bundleDir string, opts supportReportOptions) (collectionProvenance, error) {
+	out := cmd.OutOrStdout()
+
+	if opts.Local {
+		// --local forces the local path in Enterprise too, which is what an
+		// operator wants when the daemon is DOWN — the case a support bundle is
+		// most often needed for.
+		return runLocalCollection(cmd, client, detector, bundleDir, opts)
+	}
+
+	err := fetchDaemonBundle(client, staging, bundleDir, opts)
+	if err == nil {
+		return collectionProvenance{Path: "daemon", VersionSource: "daemon", DaemonReachable: true,
+			CLIVersion: Version, CLIEdition: version.NormalizeEdition(edition),
+			Note: "collected by the daemon over /api/v1/support-report"}, nil
+	}
+	if opts.RequireDaemon {
+		return collectionProvenance{}, fmt.Errorf("%w (--require-daemon: not falling back to local collection)", err)
+	}
+	if !shouldFallBackLocal(err) {
+		return collectionProvenance{}, err
+	}
+	_, _ = fmt.Fprintf(out, "the daemon could not produce the bundle (%v)\n", err)
+	_, _ = fmt.Fprintln(out, "falling back to LOCAL collection — reading the database and config on this host.")
+	return runLocalCollection(cmd, client, detector, bundleDir, opts)
+}
+
+// runLocalCollection probes the daemon for version provenance, builds the
+// bundle in-process, and stages it.
+func runLocalCollection(cmd *cobra.Command, client supportHTTPClient, detector secrets.Detector, bundleDir string, opts supportReportOptions) (collectionProvenance, error) {
+	// cobra hands a context to a command it EXECUTES; a command constructed
+	// directly (a test, or a future programmatic caller) has none, and a nil
+	// context panics several layers down in the database driver.
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prov := resolveProvenance(probeDaemonIdentity(client))
+	res, err := collectLocalBundle(ctx, detector, opts, prov)
+	if err != nil {
+		return collectionProvenance{}, fmt.Errorf("collect locally: %w", err)
+	}
+	if err := stageBundleFiles(bundleDir, res.Files); err != nil {
+		return collectionProvenance{}, err
+	}
+	return prov, nil
+}
+
+// fetchDaemonBundle calls the endpoint and unpacks its archive into bundleDir.
+func fetchDaemonBundle(client supportHTTPClient, staging, bundleDir string, opts supportReportOptions) error {
+	reqBody := map[string]any{"max_size": opts.MaxSize, "include_raw": opts.IncludeRaw}
+	if strings.TrimSpace(opts.Task) != "" {
+		reqBody["task_id"] = opts.Task
 	} else {
 		reqBody["since"] = opts.Since
 		if strings.TrimSpace(opts.Until) != "" {
@@ -173,51 +317,75 @@ func executeSupportReport(cmd *cobra.Command, client supportHTTPClient, detector
 		return ParseAPIError(resp)
 	}
 
-	// 2. Stream the daemon bundle into a staging dir.
-	staging, err := os.MkdirTemp("", "vornik-support-*")
-	if err != nil {
-		return fmt.Errorf("create staging dir: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(staging) }()
-
 	daemonArchive := filepath.Join(staging, "daemon.tar.gz")
 	if err := streamToFile(daemonArchive, resp.Body); err != nil {
 		return fmt.Errorf("stream daemon bundle: %w", err)
 	}
-	bundleDir := filepath.Join(staging, "bundle")
-	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
-		return err
-	}
+	defer func() { _ = os.Remove(daemonArchive) }()
 	if err := archiveutil.UntarGz(daemonArchive, bundleDir); err != nil {
 		return fmt.Errorf("unpack daemon bundle: %w", err)
 	}
-	_ = os.Remove(daemonArchive)
+	return nil
+}
 
-	// 3. Append host-only sections, redacted client-side (unless raw).
-	hostTally, err := appendHostSections(bundleDir, detector, host, opts)
+// shouldFallBackLocal decides whether a daemon failure is one the local path
+// can answer.
+//
+// The two cases are the ones the feature exists for: Community answering 501
+// EDITION_UNSUPPORTED because it ships no admin surface, and a daemon that is
+// not there at all. Anything else — a rejected window, an authorization
+// failure, a 500 — is a real answer to the operator's request, and silently
+// producing a DIFFERENT bundle instead of reporting it would hide the thing
+// they need to see.
+func shouldFallBackLocal(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusNotImplemented
+	}
+	// A transport failure: connection refused, no such host, timeout.
+	return strings.Contains(err.Error(), "call daemon:")
+}
+
+// completeProvenance fills the daemon path's version/edition from the bundle's
+// own manifest — the daemon stated them, and restating them here keeps
+// collection.json readable without cross-referencing.
+func completeProvenance(prov collectionProvenance, mf map[string]any) collectionProvenance {
+	if prov.Path != "daemon" || mf == nil {
+		return prov
+	}
+	if v, ok := mf["vornik_version"].(string); ok {
+		prov.Version = v
+		prov.DaemonVersion = v
+	}
+	if e, ok := mf["vornik_edition"].(string); ok {
+		prov.Edition = e
+		prov.DaemonEdition = e
+	}
+	return prov
+}
+
+// writeCollectionRecord writes collection.json into the staging tree. It is
+// recomputed into the manifest's file list by rewriteManifestAndTar, so it is
+// carried like any other section.
+func writeCollectionRecord(bundleDir string, prov collectionProvenance) error {
+	payload, err := json.MarshalIndent(prov, "", "  ")
 	if err != nil {
-		return fmt.Errorf("collect host sections: %w", err)
-	}
-
-	// 4. Read the daemon MANIFEST so we can extend it (host files +
-	//    raw stamp + archive sha) and surface a summary.
-	mf, _ := readManifest(filepath.Join(bundleDir, "MANIFEST.json"))
-
-	// 5. Dry-run: print the would-be manifest + redaction counts, write nothing.
-	if opts.DryRun {
-		printDryRun(out, bundleDir, mf, hostTally, opts)
-		return nil
-	}
-
-	// 6. Re-tar the staging bundle to the final path (atomic temp→rename).
-	finalPath := resolveOutputPath(opts, mode)
-	if err := rewriteManifestAndTar(bundleDir, finalPath, mf, hostTally, opts); err != nil {
 		return err
 	}
+	return os.WriteFile(filepath.Join(bundleDir, "collection.json"), payload, 0o600)
+}
 
-	// 7. Summary.
-	printSummary(out, finalPath, bundleDir, hostTally, opts)
-	return nil
+// printProvenance states the path and whose version the bundle carries. The
+// operator ASKED for this to be explicit (2026-09-04): a bundle that does not
+// say which edition produced it makes an absent section unreadable, since the
+// same absence means "not built into this edition" on Community and "broken"
+// on Enterprise.
+func printProvenance(out io.Writer, prov collectionProvenance) {
+	_, _ = fmt.Fprintf(out, "collected: %s | version %s (%s) | edition %s\n",
+		prov.Path, prov.Version, prov.VersionSource, prov.Edition)
+	if prov.Path == "local" && !prov.DaemonReachable {
+		_, _ = fmt.Fprintf(out, "  daemon unreachable (%s) — health and metrics are recorded as section errors.\n", prov.DaemonError)
+	}
 }
 
 // appendHostSections collects the four host-only sections, redacts each
@@ -269,12 +437,24 @@ func appendHostSections(bundleDir string, detector secrets.Detector, host hostCo
 
 // rewriteManifestAndTar updates MANIFEST.json with host files, the raw
 // stamp, and (for raw) the archive sha256, then tars atomically.
-func rewriteManifestAndTar(bundleDir, finalPath string, mf map[string]any, hostTally map[string]int, opts supportReportOptions) error {
+func rewriteManifestAndTar(bundleDir, finalPath string, mf map[string]any, hostTally map[string]int, opts supportReportOptions, prov collectionProvenance) error {
 	if mf == nil {
 		mf = map[string]any{}
 	}
 	mf["raw"] = opts.IncludeRaw
 	mf["host_redaction_by_type"] = hostTally
+	// The manifest is what a tool reads, so the collection path belongs here
+	// as well as in collection.json.
+	mf["collection_path"] = prov.Path
+	mf["version_source"] = prov.VersionSource
+	mf["daemon_reachable"] = prov.DaemonReachable
+	if prov.Path == "local" {
+		// A locally-collected bundle states its version and edition even when
+		// the daemon path never wrote them (an empty manifest from a failed
+		// read is still a manifest).
+		mf["vornik_version"] = prov.Version
+		mf["vornik_edition"] = prov.Edition
+	}
 	// Recompute the files list to include the appended host sections.
 	if files, err := listBundleFiles(bundleDir); err == nil {
 		mf["files"] = files

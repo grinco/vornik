@@ -29,6 +29,7 @@ type recordingReviewState struct {
 	setTaskCalls []string
 	claim        string
 	closedAt     string // the head recorded at the CLOSING transition
+	pendingHead  string // the row's pending head, as the compare-and-set sees it
 }
 
 // Get returns the ABSENT form, which is this repository's miss contract
@@ -51,11 +52,20 @@ func (r *recordingReviewState) SetTask(_ context.Context, _, _ string, _ int, ta
 
 // BeginClosing is the ABSORBING → CLOSING transition. Recorded as a SetTask("")
 // so the existing assertions on claim release keep working unchanged.
-func (r *recordingReviewState) BeginClosing(_ context.Context, _, _ string, _ int, reviewingHeadSHA string) error {
+//
+// THE COMPARE-AND-SET IS MODELLED, not stubbed away. A double that applies
+// unconditionally is LOOSER than every real backend, which means it certifies
+// the pre-2026-09-03 behaviour — the whole reason the audit could find that hole
+// with no test failing (internal/persistence/misscontract makes this argument
+// in general).
+func (r *recordingReviewState) BeginClosing(_ context.Context, _, _ string, _ int, reviewingHeadSHA, expectedPendingHeadSHA string) (persistence.ClosingOutcome, error) {
+	if r.pendingHead != expectedPendingHeadSHA {
+		return persistence.ClosingOutcome{PendingHeadSHA: r.pendingHead}, nil
+	}
 	r.setTaskCalls = append(r.setTaskCalls, "")
 	r.claim = ""
 	r.closedAt = reviewingHeadSHA
-	return nil
+	return persistence.ClosingOutcome{Applied: true}, nil
 }
 
 func (r *recordingReviewState) MarkReviewed(context.Context, string, string, int, string, time.Time) error {
@@ -119,8 +129,8 @@ func TestFetchDiff_ClaimReleaseFailure_FailsTheStep(t *testing.T) {
 
 type failingReleaseState struct{ recordingReviewState }
 
-func (f *failingReleaseState) BeginClosing(context.Context, string, string, int, string) error {
-	return errTestReleaseFailed
+func (f *failingReleaseState) BeginClosing(context.Context, string, string, int, string, string) (persistence.ClosingOutcome, error) {
+	return persistence.ClosingOutcome{}, errTestReleaseFailed
 }
 
 var errTestReleaseFailed = errors.New("release failed")

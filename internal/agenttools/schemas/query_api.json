@@ -1,0 +1,36 @@
+{
+  "function": {
+    "description": "Call an authenticated third-party API through the vornik gateway. The daemon injects the provider credential server-side — NEVER put API keys, tokens, or secrets in the arguments. Use list_apis first to discover available providers. Responses are redacted and size-capped by the daemon.",
+    "name": "query_api",
+    "parameters": {
+      "properties": {
+        "body": {
+          "description": "Optional request body as a JSON object (for write methods)",
+          "type": "object"
+        },
+        "method": {
+          "description": "HTTP method (default GET). Writes are refused for agents unless the role is explicitly granted write access.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Request path on the provider (e.g. '/maps/api/place/textsearch/json')",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider id as shown by list_apis (e.g. 'maps')",
+          "type": "string"
+        },
+        "query": {
+          "description": "Optional query-string parameters as a JSON object",
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

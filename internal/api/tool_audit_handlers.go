@@ -202,6 +202,29 @@ func (s *Server) IngestToolAudit(w http.ResponseWriter, r *http.Request) {
 	if observed, class, ok := s.toolOutcomes.Claim(req.ExecutionID, req.ToolName); ok {
 		outcome, outcomeClass = observed, string(class)
 	}
+	// A NAME THAT CANNOT BE A TOOL NAME gets its own class, when nothing else
+	// has classified the row. The gate already refused the call correctly; what
+	// was missing is that the refusal was stored with outcome_class = '', so the
+	// one failure class that means "a model is leaking reasoning markup into its
+	// tool calls" was invisible to the index built to make classes queryable.
+	//
+	// Last, and only into an EMPTY class: a daemon observation or an agent's own
+	// report is a statement about what happened, and a structural fact about the
+	// name must not overwrite either. See tool_audit_name_shape.go for why shape
+	// is not the message-text sniffing the connector-auth design forbids.
+	if outcomeClass == "" {
+		if class := classifyToolNameShape(req.ToolName); class != "" {
+			outcomeClass = class
+			if outcome == "" {
+				outcome = "error"
+			}
+			s.logger.Warn().
+				Str("tool", req.ToolName).
+				Str("execution_id", req.ExecutionID).
+				Str("step_id", req.StepID).
+				Msg("tool audit ingest: tool name is structurally impossible — the model leaked markup into its tool call")
+		}
+	}
 	entry := &persistence.ToolAuditEntry{
 		ID:           req.AuditID,
 		ProjectID:    req.ProjectID,

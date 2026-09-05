@@ -24,7 +24,9 @@ type stubChatAuditRepoSignals struct{}
 func (stubChatAuditRepoSignals) Insert(_ context.Context, _ *persistence.ChatAuditEntry) error {
 	return nil
 }
-func (stubChatAuditRepoSignals) SavePrompt(_ context.Context, _, _ string) error { return nil }
+func (stubChatAuditRepoSignals) SavePrompt(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 func (stubChatAuditRepoSignals) GetChatAuditsByTurnIDs(_ context.Context, _ []string) (map[string]persistence.ChatAuditEntry, error) {
 	return map[string]persistence.ChatAuditEntry{}, nil
 }

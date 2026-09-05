@@ -26,15 +26,15 @@ func TestInventoryTools_NilAgent(t *testing.T) {
 func TestInventoryTools_ListsEveryRegisteredTool(t *testing.T) {
 	a := &Agent{}
 	got := a.InventoryTools()
-	if len(got) != len(DispatcherTools()) {
+	if len(got) != len(RegisteredDispatcherTools()) {
 		t.Errorf("inventory size = %d, registered tools = %d",
-			len(got), len(DispatcherTools()))
+			len(got), len(RegisteredDispatcherTools()))
 	}
 	gotNames := map[string]bool{}
 	for _, r := range got {
 		gotNames[r.Name] = true
 	}
-	for _, tl := range DispatcherTools() {
+	for _, tl := range RegisteredDispatcherTools() {
 		if !gotNames[tl.Function.Name] {
 			t.Errorf("inventory missing tool %q", tl.Function.Name)
 		}
@@ -248,4 +248,27 @@ type stubEmailSenderForInventory struct{}
 
 func (stubEmailSenderForInventory) SendEmail(_ context.Context, _ string, _ EmailSendRequest) (string, error) {
 	return "", nil
+}
+
+// TestInventoryTools_BackingIsDeclaredForExactlyTheRegisteredTools — the
+// inventory is a view over DispatcherTools() plus one backing declaration per
+// tool, and the two sets must be identical in both directions. Before
+// 2026-09-05 a tool added to DispatcherTools() without a backing entry
+// silently rendered as Available=false ("a third accounting of the same
+// names", backlog 2026-09-03); now it is this failure, by name.
+func TestInventoryTools_BackingIsDeclaredForExactlyTheRegisteredTools(t *testing.T) {
+	a := &Agent{}
+	backing := a.inventoryBacking()
+	registered := map[string]bool{}
+	for _, tl := range RegisteredDispatcherTools() {
+		registered[tl.Function.Name] = true
+		if _, ok := backing[tl.Function.Name]; !ok {
+			t.Errorf("tool %q is registered in RegisteredDispatcherTools() but has no backing declaration in inventoryBacking()", tl.Function.Name)
+		}
+	}
+	for name := range backing {
+		if !registered[name] {
+			t.Errorf("inventoryBacking() declares %q, which RegisteredDispatcherTools() does not register — a stale entry", name)
+		}
+	}
 }

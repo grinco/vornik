@@ -216,7 +216,17 @@ func sanitizeCheckpointBytes(state *executionState) []string {
 }
 
 // saveExecutionState marshals the state and writes it to the repository.
+//
+// It is the single funnel every snapshot write in this package passes through,
+// which is why the pause claim is applied HERE (pause_claim.go, design §5.4):
+// the workflow loop holds an executionState loaded before a pause may have
+// stamped its reason, and writing that copy back would erase it — leaving a
+// PAUSED execution Recover() skips, stuck across a restart with nothing
+// recording why.
 func (e *Executor) saveExecutionState(ctx context.Context, execution *persistence.Execution, state executionState) error {
+	if execution != nil {
+		e.stampPauseClaim(execution.TaskID, &state)
+	}
 	if repaired := sanitizeCheckpointBytes(&state); len(repaired) > 0 {
 		// Warn, not fail: the execution is recoverable and the alternative is
 		// the fatal marshal this guard exists to prevent. Named slots so the
@@ -326,14 +336,12 @@ func (e *Executor) Pause(taskID string) (*PauseStatus, error) {
 func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) {
 	e.mu.Lock()
 	handle, exists := e.activeExecutions[taskID]
-	// Snapshot the handle's mutable fields under the lock. containerID is
-	// written by the runExecution goroutine under e.mu each time a step's
-	// container starts (executor.go); reading it after Unlock is a data race,
-	// and a lost race reads "" and skips StopContainer, orphaning a still-
-	// billing container (B1, audit 2026-07-03). Mirrors Cancel.
-	var containerID string
 	if exists {
-		containerID = handle.containerID
+		// Claim the pause in the SAME critical section that resolved the
+		// handle, so the goroutine cannot exit between the two and leave
+		// the write unauthorised (pause_claim.go). A claim already
+		// standing (Shutdown got here first) keeps its reason.
+		e.claimPause(taskID, reason)
 	}
 	e.mu.Unlock()
 
@@ -341,8 +349,38 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 		// Same sentinel Cancel uses: callers distinguish "nothing to act on"
 		// (benign) from a real failure with errors.Is rather than by matching
 		// the message.
+		//
+		// Shutdown does NOT come through here — it claims its handles up
+		// front and calls pauseClaimedHandle directly, because for a daemon
+		// that is going away "nothing is running" is a race, not an answer.
+		// The operator path keeps this behaviour deliberately: see the
+		// pause-write-ownership design §5.2 and the separately filed P3
+		// "Pause is gated on a stale task status too".
 		return nil, fmt.Errorf("%w: task %s", ErrNoActiveExecution, taskID)
 	}
+
+	return e.pauseClaimedHandle(handle, reason)
+}
+
+// pauseClaimedHandle performs a pause whose claim has already been taken. It
+// never consults activeExecutions: the handle it was given IS its authority,
+// which is what lets a shutdown pause an execution whose goroutine has already
+// exited (design §5.2). Because the map lookup no longer implies "this
+// execution has not finished", both status writes are conditional (§5.3).
+func (e *Executor) pauseClaimedHandle(handle *executionHandle, reason string) (*PauseStatus, error) {
+	if handle == nil {
+		return nil, fmt.Errorf("%w: nil execution handle", ErrNoActiveExecution)
+	}
+	taskID := handle.taskID
+
+	// Snapshot the handle's mutable fields under the lock. containerID is
+	// written by the runExecution goroutine under e.mu each time a step's
+	// container starts (executor.go); reading it after Unlock is a data race,
+	// and a lost race reads "" and skips StopContainer, orphaning a still-
+	// billing container (B1, audit 2026-07-03). Mirrors Cancel.
+	e.mu.Lock()
+	containerID := handle.containerID
+	e.mu.Unlock()
 
 	// Stop the container gracefully (SIGTERM), then BLOCK on its exit
 	// before returning. The agent's defer hooks need a few seconds to
@@ -378,6 +416,7 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 	// Get execution record for the execution ID
 	exec, err := e.execRepo.GetByTaskID(context.Background(), taskID)
 	if err != nil {
+		e.releasePauseClaim(taskID)
 		return nil, fmt.Errorf("failed to get execution record: %w", err)
 	}
 
@@ -388,7 +427,19 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 	// avoids a race where a daemon crash between the two writes
 	// leaves the row PAUSED with no reason.
 	state := loadExecutionState(exec)
-	state.PausedReason = reason
+	// Whether WE put the reason there. The stamp is speculative — it happens
+	// before the conditional status write that decides whether the pause
+	// takes — so a refused pause has to take it back (see below).
+	stampedReason := false
+	// Never overwrite a reason already on the row. A shutdown arriving on an
+	// execution the operator paused must not re-stamp it as shutdown-paused:
+	// Recover() auto-resumes that reason, so the daemon would overrule the
+	// operator's intent to keep it stopped (design §5.3, review round 1 F2).
+	// The same protection the conditional status write gives the status.
+	if state.PausedReason == "" {
+		state.PausedReason = reason
+		stampedReason = true
+	}
 	if err := e.saveExecutionState(context.Background(), exec, state); err != nil {
 		// Log but continue — the worst case is Recover() sees a
 		// PAUSED execution without a reason and skips it (caller
@@ -397,9 +448,26 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 			Msg("pause: failed to stamp PausedReason in state snapshot")
 	}
 
-	// Update execution status to paused
-	if err := e.execRepo.UpdateStatus(context.Background(), exec.ID, persistence.ExecutionStatusPaused); err != nil {
+	// Update execution status to paused — conditionally. Dropping the
+	// activeExecutions presence check (§5.2) also dropped the accidental
+	// guarantee it carried: that the execution had not already finished. A
+	// bare UpdateStatus here would reopen a row the goroutine just marked
+	// COMPLETED, and Recover() would re-run a finished workflow on the next
+	// start. PAUSED is absent from the `from` set on purpose — a pause must
+	// not overwrite a pause.
+	applied, err := e.execRepo.TransitionStatusConditional(context.Background(), exec.ID,
+		[]persistence.ExecutionStatus{
+			persistence.ExecutionStatusRunning,
+			persistence.ExecutionStatusPending,
+		}, persistence.ExecutionStatusPaused)
+	if err != nil {
+		e.releasePauseClaim(taskID)
 		return nil, fmt.Errorf("failed to update execution status: %w", err)
+	}
+	if !applied {
+		e.abandonRefusedPause(taskID, exec.ID, reason, stampedReason)
+		handle.cancel()
+		return nil, fmt.Errorf("%w: execution %s is not in a pausable state", ErrNoActiveExecution, exec.ID)
 	}
 
 	// Flip task.Status to PAUSED so the goroutine's subsequent
@@ -416,12 +484,25 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 	// gated on RUNNING; if the row drifted between then and here,
 	// the race is benign — handleFailure's defensive check below
 	// catches it.
-	if err := e.taskRepo.UpdateStatus(context.Background(), taskID, persistence.TaskStatusPaused); err != nil {
+	if ok, terr := e.taskRepo.TransitionConditional(context.Background(), taskID,
+		[]persistence.TaskStatus{
+			persistence.TaskStatusRunning,
+			persistence.TaskStatusLeased,
+			persistence.TaskStatusPending,
+		}, persistence.TaskStatusPaused, persistence.TransitionOpts{}); terr != nil {
 		// Soft failure — the execution-side PAUSED already
 		// landed and handleFailure's defensive check still
 		// guards against terminal overwrite. Logging is enough.
-		e.logger.Warn().Err(err).Str("task_id", taskID).
+		e.logger.Warn().Err(terr).Str("task_id", taskID).
 			Msg("pause: failed to flip task.Status to PAUSED; relying on handleFailure guard")
+	} else if !ok {
+		// The task reached a terminal (or otherwise non-pausable) status
+		// while we were pausing. The execution row is PAUSED and the task
+		// is not; that mismatch is the honest record of what happened and
+		// Recover() reads the task status before resuming, so it will not
+		// re-drive a finished task.
+		e.logger.Info().Str("task_id", taskID).
+			Msg("pause: task was no longer in a pausable status — left as it stands")
 	}
 
 	// Cancel the execution context. The runExecution goroutine
@@ -450,6 +531,50 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 		ExecutionID: exec.ID,
 		PausedAt:    time.Now(),
 	}, nil
+}
+
+// abandonRefusedPause undoes a pause whose conditional status write was
+// refused. That is a legitimate outcome of a graceful shutdown, not a failure:
+// the execution reached a terminal state, was cancelled, or was already paused
+// while this pause was being decided.
+//
+// Two things have to be undone. The claim, so no later checkpoint re-stamps a
+// pause that never happened. And the reason itself, which by this point has
+// already been written: the stamp goes in BEFORE the status on purpose — a
+// crash between the two must leave a recoverable row rather than a PAUSED one
+// Recover() skips — so a pause that then does not take has already put its
+// reason on the row, and a cancelled execution reading "paused because
+// shutdown" is a lie about why it ended.
+//
+// Order matters: the claim is released FIRST, or saveExecutionState would
+// stamp the reason straight back on (pause_claim.go). Only a reason this pause
+// itself wrote is cleared — one that was already there belongs to someone else.
+func (e *Executor) abandonRefusedPause(taskID, executionID, reason string, stampedReason bool) {
+	// Why the read-modify-write below is safe without a lock, spelled out
+	// because it does not look it: a reason is only ever stamped while a claim
+	// is held (pause_claim.go's invariant), a second pause cannot take a claim
+	// while the first stands, and the `== reason` test means the only thing
+	// this can clear is a reason this pause itself wrote. A reason belonging
+	// to anyone else is left exactly where it is.
+	e.releasePauseClaim(taskID)
+	if stampedReason {
+		cur, gerr := e.execRepo.GetByTaskID(context.Background(), taskID)
+		if gerr == nil && cur != nil {
+			curState := loadExecutionState(cur)
+			if curState.PausedReason == reason {
+				curState.PausedReason = ""
+				if serr := e.saveExecutionState(context.Background(), cur, curState); serr != nil {
+					e.logger.Warn().Err(serr).Str("execution_id", executionID).
+						Msg("pause: could not clear the speculative pause reason on a refused pause")
+				}
+			}
+		}
+	}
+	e.logger.Info().
+		Str("task_id", taskID).
+		Str("execution_id", executionID).
+		Str("reason", reason).
+		Msg("pause: execution was no longer pausable — leaving its status as it stands")
 }
 
 // waitForExecutionCleanup blocks until activeExecutions[taskID]
@@ -491,6 +616,18 @@ func (e *Executor) ResumeTask(taskID string) error {
 }
 
 // Resume continues a paused execution.
+//
+// It holds e.mu for its whole body, database writes included. That is
+// deliberate and predates the claim work: the function decides on the strength
+// of activeExecutions not containing this task and then INSERTS into it, so
+// dropping the lock in between would let a concurrent Execute or Resume
+// dispatch the same task twice. The cost is that e.mu is held across two
+// status writes and a snapshot write; the alternative is a second dispatch of
+// a live execution, which is worse.
+//
+// This is also why claims have their own mutex: saveExecutionState consults
+// the claim registry, and it is reached from here with e.mu already held (see
+// pause_claim.go's locking note).
 func (e *Executor) Resume(taskID string) (*ResumeStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -520,6 +657,14 @@ func (e *Executor) Resume(taskID string) (*ResumeStatus, error) {
 	if exec.Status != persistence.ExecutionStatusPaused {
 		return nil, fmt.Errorf("execution is not paused (status: %s)", exec.Status)
 	}
+
+	// Release the claim BEFORE any state write below: while it stands,
+	// saveExecutionState re-stamps its reason onto every snapshot, which
+	// would put back the very field this path clears (design §5.5).
+	// Deliberately not deferred — the writes are in this function. Safe to
+	// call with e.mu held: claims take claimMu, and the order is e.mu →
+	// claimMu everywhere.
+	e.releasePauseClaim(taskID)
 
 	state := loadExecutionState(exec)
 	if state.ApprovalPendingStep != "" {

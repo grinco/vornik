@@ -60,6 +60,12 @@ type Project struct {
 	// started on this project (useful for role guidance, compliance notes,
 	// or project-specific tool-use hints without forking the default prompt).
 	Chat ProjectChat `yaml:"chat"`
+	// Recording opts the project's agent steps into instruments that cost
+	// storage: every model exchange of a step, kept for replay
+	// (llm-exchange record/replay design §6). Off by default; read per
+	// request from the registry snapshot, so a reload takes effect at a
+	// step's next model call.
+	Recording ProjectRecording `yaml:"recording"`
 	// Retention caps how long historical data is kept for this project.
 	// Each field is a day count; zero means "inherit global default from
 	// the daemon config". project_memory_chunks is NEVER pruned regardless
@@ -829,6 +835,17 @@ func (g ProjectGitHub) toForge() forge.GitHubConfig {
 type ProjectForge struct {
 	Provider string        `yaml:"provider"` // github | gitlab | gitea
 	GitHub   ProjectGitHub `yaml:"github"`
+
+	// MentionHandle is the bot handle comment commands are addressed to,
+	// WITHOUT the leading @ ("vornik-companion"). Empty falls back to
+	// forgereview.DefaultHandle, which is this App's own slug.
+	//
+	// docs/public/features/forge.md and the 2026.9.1 release notes both told
+	// operators to set `mention_handle`, and forge.Config has carried the field
+	// since bd862ee6 — but no YAML key resolved to it, so the setting did not
+	// exist and every deployment ran on the default. Found by the 2026-09-03
+	// audit alongside the same handle being hardcoded on the App channel.
+	MentionHandle string `yaml:"mention_handle"`
 	// GitLab ProjectGitLab `yaml:"gitlab"` // future sibling
 	// Gitea  ProjectGitea  `yaml:"gitea"`  // future sibling
 }
@@ -854,7 +871,7 @@ type ProjectGit struct {
 //  3. Otherwise forge automation is disabled (ok = false).
 func (p *Project) ResolveForge() (forge.Config, bool) {
 	if prov := strings.TrimSpace(p.Forge.Provider); prov != "" {
-		cfg := forge.Config{Provider: prov}
+		cfg := forge.Config{Provider: prov, MentionHandle: p.MentionHandle()}
 		if prov == forge.ProviderGitHub {
 			gh := p.Forge.GitHub
 			if !gh.Enabled() && p.GitHub.Enabled() {
@@ -865,9 +882,27 @@ func (p *Project) ResolveForge() (forge.Config, bool) {
 		return cfg, true
 	}
 	if p.GitHub.Enabled() {
-		return forge.Config{Provider: forge.ProviderGitHub, GitHub: p.GitHub.toForge()}, true
+		return forge.Config{
+			Provider:      forge.ProviderGitHub,
+			MentionHandle: p.MentionHandle(),
+			GitHub:        p.GitHub.toForge(),
+		}, true
 	}
 	return forge.Config{}, false
+}
+
+// MentionHandle is the project's configured bot handle, WITHOUT the leading @,
+// or "" when unset (each consumer applies forgereview.DefaultHandle).
+//
+// Read through this accessor rather than off the forge block directly: the
+// handle is ONE project-level setting shared by both forge ingresses — the
+// generic webhook provider and the GitHub App channel — and reading it from two
+// places is how the App channel ended up hardcoding it (2026-09-03 audit). It
+// is spelled under `forge:` because that is where the rest of the forge
+// behaviour lives, and it applies even to a project whose credentials come from
+// the back-compat top-level `github:` block.
+func (p *Project) MentionHandle() string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(p.Forge.MentionHandle), "@"))
 }
 
 // Enabled reports whether the GitHub App channel is configured
@@ -1287,6 +1322,7 @@ type ProjectTradingRateLimit struct {
 type ProjectRetention struct {
 	TaskLLMUsageDays int `yaml:"task_llm_usage_days"` // cost history; default 90
 	ToolAuditDays    int `yaml:"tool_audit_days"`     // debug data; default 30
+	ChatAuditDays    int `yaml:"chat_audit_days"`     // chat turns + their prompt bodies; default 90
 	TasksDays        int `yaml:"tasks_days"`          // terminal tasks + cascaded executions; default 60
 	ExecutionsDays   int `yaml:"executions_days"`     // terminal executions; default 60
 	ArtifactsDays    int `yaml:"artifacts_days"`      // artifact DB records + files; default 60
@@ -1307,9 +1343,22 @@ type ProjectRetention struct {
 	// Always-on. Drift-mitigation §8.3.
 	MemoryPolicyEvalAllowDays int `yaml:"memory_policy_eval_allow_days"`
 	MemoryPolicyEvalBlockDays int `yaml:"memory_policy_eval_block_days"`
+	// MemoryEvictionAuditDays bounds memory_eviction_audit and
+	// memory_eviction_runs for this project. Always-on; zero → the
+	// daemon default (365d). See config.RetentionConfig.
+	MemoryEvictionAuditDays int `yaml:"memory_eviction_audit_days"`
 }
 
 // ProjectChat holds per-project chat/dispatcher configuration.
+// ProjectRecording is the per-project opt-in for recorded model exchanges.
+type ProjectRecording struct {
+	// LLMExchanges records every request/response pair of every agent step
+	// at the chat proxy, redacted, one row per model call carrying the whole
+	// conversation at that point: a 30-iteration step stores roughly 30x its
+	// final context. Export with `vornikctl execution exchanges`.
+	LLMExchanges bool `yaml:"llm_exchanges"`
+}
+
 type ProjectChat struct {
 	// SystemPrefix is prepended to the dispatcher's system prompt for any
 	// session whose active project is this one. Plain text; newlines are
@@ -2110,6 +2159,12 @@ func (p *Project) Validate(filename string) error {
 // LoadProjects loads all project YAML files from the specified directory
 // and attaches any PROJECT.md brief companions found alongside.
 func LoadProjects(dir string) (map[string]*Project, error) {
+	return loadProjects(dir, nil)
+}
+
+// loadProjects is LoadProjects recording each file's outcome into the index
+// (nil-safe): accepted files by id, refused files with the decoder's error.
+func loadProjects(dir string, index *TreeIndex) (map[string]*Project, error) {
 	projects := make(map[string]*Project)
 
 	projectsDir := filepath.Join(dir, "projects")
@@ -2163,6 +2218,7 @@ func LoadProjects(dir string) (map[string]*Project, error) {
 			// other projects from loading. The error is printed to stderr so
 			// it appears in the daemon log.
 			fmt.Fprintf(os.Stderr, "vornik/registry: skipping %s: yaml parse error: %v\n", name, err)
+			index.reject("project", filepath.Join("projects", name), err)
 			continue
 		}
 
@@ -2194,6 +2250,7 @@ func LoadProjects(dir string) (map[string]*Project, error) {
 		}
 
 		projects[project.ID] = &project
+		index.source("project", project.ID, filepath.Join("projects", name))
 	}
 
 	if err := attachProjectBriefs(projectsDir, projects); err != nil {

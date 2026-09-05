@@ -9,26 +9,28 @@ import (
 	"vornik.io/vornik/internal/version"
 )
 
-// TestBundleGuidance_CommunityDoesNotAdvertiseEnterpriseCommand pins the fix
-// for the 2026-08-05 CE dead end.
+// TestBundleGuidance_CommunityNamesTheLocalPath is the SECOND half of the
+// 2026-08-05 CE dead end, and it inverts the first.
 //
-// `vornikctl report` is a Community command, and it closed by telling every
-// reporter to run `vornikctl support-report` for the fuller evidence. That
-// command is gated behind the Enterprise admin surface and answers a CE caller
-// with "Enterprise-only feature: ... not built into Community Edition". So the
-// product's own bug-reporting flow instructed a CE user to run a command that
-// can never work, and the reporter hit a wall at exactly the moment they were
-// trying to help.
-func TestBundleGuidance_CommunityDoesNotAdvertiseEnterpriseCommand(t *testing.T) {
+// `vornikctl report` closed by telling every reporter to run `vornikctl
+// support-report`, which answered a CE caller with 501. The first fix was to
+// stop naming a command that could not work. The real fix, landed 2026-09-04,
+// was to make it work: `--local` builds the same bundle in-process from the
+// database and config on the host, authorised by the shell access the operator
+// already has. So the CE text names the command again — with --local, and
+// saying which sections the local path cannot produce.
+func TestBundleGuidance_CommunityNamesTheLocalPath(t *testing.T) {
 	g := BundleGuidance("--task task_123", version.EditionCommunity)
 
-	assert.NotContains(t, g, "vornikctl support-report",
-		"CE has no support-report command — advertising it sends the reporter into a 501")
-	assert.NotContains(t, g, "--max-size",
-		"support-report's flags are meaningless without the command")
-	// It must still be useful: say why, and what the reporter CAN do.
-	assert.Contains(t, strings.ToLower(g), "enterprise",
-		"explain that the bundle collector is an Enterprise feature rather than going silent")
+	assert.Contains(t, g, "vornikctl support-report --local",
+		"CE can collect a bundle now; the guidance must name the path that works")
+	assert.NotContains(t, g, "vornikctl support-report --task task_123",
+		"the plain daemon invocation still 501s on CE — only the --local form may be advertised")
+	// The honest limits, so an absent section is not read as a broken one.
+	assert.Contains(t, strings.ToLower(g), "health and metrics",
+		"say which sections the local path cannot collect")
+	assert.Contains(t, strings.ToLower(g), "black box",
+		"the EE-only trace must still be named as absent by construction")
 	assert.Contains(t, strings.ToLower(g), "doctor",
 		"point CE reporters at the diagnostics the report body already carries")
 }
@@ -52,10 +54,16 @@ func TestBundleGuidance_EnterpriseStillAdvertisesTheBundle(t *testing.T) {
 // edition string must not leak the Enterprise instructions into a CE build.
 // Mirrors version.NormalizeEdition's fail-safe: an untrusted edition collapses
 // to the less-privileged one.
+//
+// What "leaked" means changed on 2026-09-04: both editions now name the
+// command, so the tell is the INVOCATION — the daemon form still 501s on
+// Community, and the local form is the one that works there.
 func TestBundleGuidance_UnstampedEditionTreatedAsCommunity(t *testing.T) {
 	for _, edition := range []string{"", "  ", "ENTERPRISE", "enterprise-ish", "nonsense"} {
 		g := BundleGuidance("--task task_123", edition)
-		assert.NotContains(t, g, "vornikctl support-report",
+		assert.NotContains(t, g, "vornikctl support-report --task task_123",
 			"edition %q must fail safe to Community", edition)
+		assert.Contains(t, g, "vornikctl support-report --local",
+			"edition %q must still get the Community path that works", edition)
 	}
 }

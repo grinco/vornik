@@ -137,6 +137,8 @@ ENV PATH=/usr/local/go/bin:$PATH \
     GOMODCACHE=/home/vornik/go/pkg/mod
 
 COPY --chown=vornik:vornik images/vornik-agent/entrypoint.sh /entrypoint.sh
+# The generated tool registry the entrypoint sources (internal/agenttools -> docs-gen tools).
+COPY --chown=vornik:vornik images/vornik-agent/tool_registry.generated.sh /tool_registry.generated.sh
 RUN chmod +x /entrypoint.sh
 
 WORKDIR /app/workspace

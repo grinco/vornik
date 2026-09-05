@@ -11,6 +11,7 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +28,25 @@ const (
 	// runs. It's deliberately distinct from :latest so a developer's
 	// working image is not clobbered.
 	agentImageTag = "localhost/vornik-agent:e2e-smoke"
+
+	// agentRunTimeout caps the cancel-path container run. It is a REGRESSION
+	// DETECTOR, not a performance budget: the CANCEL sentinel short-circuits
+	// the entrypoint before it contacts an LLM, and the healthy path is
+	// MEASURED at 0.17s (warm, this repo's image, 2026-09-03) -- the log is
+	// two lines, "starting" then "cancellation requested".
+	//
+	// It was 60s and CI tripped it on 2026-09-03 while the same run took a
+	// fraction of a second locally. WHY CI needed >60s is NOT established, and
+	// the old code is the reason: its timeout branch called t.Fatal WITHOUT the
+	// captured output, so the container's own account of those 60 seconds was
+	// discarded at exactly the moment it was the only evidence. The deadline
+	// branch below now prints it.
+	//
+	// So this value is set for headroom over an unexplained cold-runner cost
+	// (~1000x the measured healthy path) rather than from a known cost model.
+	// A genuinely broken short-circuit hangs and still fails the job; if this
+	// trips again, the output it now prints is the thing to read first.
+	agentRunTimeout = 3 * time.Minute
 
 	// Canned task.json that the entrypoint can parse without talking
 	// to an LLM. The presence of /app/input/CANCEL short-circuits
@@ -122,7 +142,9 @@ func TestAgentImageSmokeBuildsAndRunsAsNonRoot(t *testing.T) {
 		t.Fatalf("write CANCEL: %v", err)
 	}
 
-	runCmd := exec.Command(
+	ctx, cancel := context.WithTimeout(context.Background(), agentRunTimeout)
+	defer cancel()
+	runCmd := exec.CommandContext(ctx,
 		"podman", "run", "--rm",
 		// Match production runtime flags. If any of these start
 		// blocking legitimate agent behaviour we want the test to
@@ -153,23 +175,21 @@ func TestAgentImageSmokeBuildsAndRunsAsNonRoot(t *testing.T) {
 	)
 	// Cap wall-clock time in case the entrypoint regresses and the
 	// cancel short-circuit no longer fires.
-	done := make(chan error, 1)
-	go func() {
-		out, err := runCmd.CombinedOutput()
-		if err != nil {
-			done <- fmt.Errorf("podman run failed: %v\n%s", err, out)
-			return
-		}
-		done <- nil
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(60 * time.Second):
-		_ = runCmd.Process.Kill()
-		t.Fatal("podman run exceeded 60s — cancel short-circuit likely broken")
+	//
+	// THE DEADLINE IS THE CONTEXT'S, NOT A SELECT ON time.After. The previous
+	// shape ran CombinedOutput in a goroutine and, on timeout, called
+	// runCmd.Process.Kill() from the test goroutine -- which RACES
+	// (*Cmd).Start()'s write to Process. `go test -race` fails on it, and it
+	// did: CI 2026-09-03. exec.Cmd is not safe to touch from another goroutine
+	// while Run/CombinedOutput is in flight, so the kill belongs to the
+	// context, which os/exec performs on the right side of that boundary.
+	out, err := runCmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("podman run exceeded %s — cancel short-circuit likely broken\n%s",
+			agentRunTimeout, out)
+	}
+	if err != nil {
+		t.Fatalf("podman run failed: %v\n%s", err, out)
 	}
 
 	// Assert the container produced a well-formed CANCELLED result.

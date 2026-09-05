@@ -678,6 +678,28 @@ func TestForgePRReviewStateRepository_PostgresContract(t *testing.T) {
 	repotest.RunForgePRReviewStateSuite(t, NewForgePRReviewStateRepository(db.DB))
 }
 
+// TestOpenCheckpointRepair_PostgresContract — the same observable contract the
+// sqlite lane asserts, reached by a different mechanism.
+//
+// Here tasks_open_checkpoint_id_fkey ... ON DELETE SET NULL clears the pointer
+// when the message is deleted, so this backend satisfies the contract before
+// GetOpenCheckpoint's own repair branch is even reached. That is exactly why
+// the suite asserts the ROW STATE rather than the code path: written against
+// either mechanism it would pass on one backend and prove nothing on the other.
+//
+// No resetSuiteTables — every case seeds its own uniquely-identified task.
+func TestOpenCheckpointRepair_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunOpenCheckpointRepairSuite(t,
+		NewTaskMessageRepository(db.DB),
+		NewTaskRepository(db.DB),
+		func(id string) error {
+			_, err := db.DB.Exec(`DELETE FROM task_messages WHERE id = $1`, id)
+			return err
+		},
+	)
+}
+
 // TestChatMemoryWriteConfirmationRepository_PostgresContract — the shared-scope memory-write
 // confirmation two-step (chat memory-write design §5.3, migration 146), the same suite that
 // runs against SQLite. The dialects diverge (TIMESTAMPTZ vs RFC3339 TEXT, NULL acknowledged_at,
@@ -711,4 +733,97 @@ func TestExecutionToolGrantRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	resetSuiteTables(t, db, "execution_tool_grants")
 	repotest.RunExecutionToolGrantSuite(t, NewExecutionToolGrantRepository(db.DB))
+}
+
+// TestProjectFirstSeen_PostgresContract — the same contract on the lane a
+// production deployment runs. The two must agree: a backend that always reports
+// first turns the counter into a restart counter, one that never does restores
+// the original silence.
+func TestProjectFirstSeen_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunProjectFirstSeenSuite(t, NewProjectFirstSeenRepository(db.DB))
+}
+
+// TestStepPrompt_PostgresContract — the same contract on the production lane.
+func TestStepPrompt_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunStepPromptSuite(t, NewStepPromptRepository(db.DB), NewExecutionStepOutcomeRepository(db.DB))
+}
+
+// seedChunkForSuite is the Postgres half of repotest.SeedChunk (backend-contract
+// coverage design §8): chunks carry backend-specific required columns, so the
+// raw insert lives here rather than in the shared suite.
+func seedChunkForSuite(db *DB) repotest.SeedChunk {
+	return func(ctx context.Context, id, projectID, content string, needsExtraction bool, createdAt time.Time) error {
+		_, err := db.DB.ExecContext(ctx, `INSERT INTO project_memory_chunks
+			(id, project_id, source_name, content, content_hash, needs_graph_extraction, created_at)
+			VALUES ($1, $2, 'contract-suite', $3, md5($3), $4, $5)`, id, projectID, content, needsExtraction, createdAt.UTC())
+		return err
+	}
+}
+
+// The thirteen dual-backend repositories the coverage gate listed on 2026-09-04
+// with no shared suite, on the lane a production deployment runs. Same suites
+// as the SQLite file; a disagreement between the two is the finding.
+func TestAdminAudit_PostgresContract(t *testing.T) {
+	repotest.RunAdminAuditSuite(t, NewAdminAuditRepository(newIntegrationDB(t).DB))
+}
+
+func TestCapabilityUsage_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunCapabilityUsageSuite(t, NewCapabilityUsageRepository(db.DB), NewTaskRepository(db.DB))
+}
+
+func TestChatAudit_PostgresContract(t *testing.T) {
+	repotest.RunChatAuditSuite(t, NewChatAuditRepository(newIntegrationDB(t).DB))
+}
+
+func TestChunkGraphExtraction_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunChunkGraphExtractionSuite(t, NewChunkGraphExtractionRepository(db.DB), seedChunkForSuite(db))
+}
+
+func TestClusterNode_PostgresContract(t *testing.T) {
+	repotest.RunClusterNodeSuite(t, NewClusterNodeRepository(newIntegrationDB(t).DB))
+}
+
+func TestLeaderLock_PostgresContract(t *testing.T) {
+	repotest.RunLeaderLockSuite(t, NewLeaderLockRepository(newIntegrationDB(t).DB))
+}
+
+func TestEntityMention_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunEntityMentionSuite(t, NewEntityMentionRepository(db.DB), NewKnowledgeEntityRepository(db.DB), seedChunkForSuite(db))
+}
+
+func TestExecutionHint_PostgresContract(t *testing.T) {
+	repotest.RunExecutionHintSuite(t, NewExecutionHintRepository(newIntegrationDB(t).DB))
+}
+
+func TestExecutionQualityScore_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunExecutionQualityScoreSuite(t, NewExecutionQualityScoreRepository(db.DB), NewExecutionRepository(db.DB), NewTaskRepository(db.DB))
+}
+
+func TestMemorySearchStage_PostgresContract(t *testing.T) {
+	repotest.RunMemorySearchStageSuite(t, NewMemorySearchStageRepository(newIntegrationDB(t).DB))
+}
+
+func TestOperatorProfile_PostgresContract(t *testing.T) {
+	repotest.RunOperatorProfileSuite(t, NewOperatorProfileRepository(newIntegrationDB(t).DB))
+}
+
+func TestSecretRedactionAudit_PostgresContract(t *testing.T) {
+	repotest.RunSecretRedactionAuditSuite(t, NewSecretRedactionAuditRepository(newIntegrationDB(t).DB))
+}
+
+func TestTaskCredential_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunTaskCredentialSuite(t, NewTaskCredentialRepository(db.DB), NewTaskRepository(db.DB))
+}
+
+// TestLLMExchange_PostgresContract — the same contract on the production lane.
+func TestLLMExchange_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunLLMExchangeSuite(t, NewLLMExchangeRepository(db.DB), NewExecutionRepository(db.DB), NewTaskRepository(db.DB))
 }

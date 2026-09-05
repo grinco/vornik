@@ -16,6 +16,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/supportbundle"
 )
 
 // supportTaskRepoStub satisfies the full persistence.TaskRepository
@@ -214,15 +215,15 @@ func keysOf(m map[string][]byte) []string {
 
 func TestParseTimeOrDuration(t *testing.T) {
 	ref := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
-	got, err := parseTimeOrDuration("2h", ref)
+	got, err := supportbundle.ParseTimeOrDuration("2h", ref)
 	if err != nil || !got.Equal(ref.Add(-2*time.Hour)) {
 		t.Fatalf("duration: %v %v", got, err)
 	}
-	got, err = parseTimeOrDuration("2026-06-20T10:00:00Z", ref)
+	got, err = supportbundle.ParseTimeOrDuration("2026-06-20T10:00:00Z", ref)
 	if err != nil || got.Hour() != 10 {
 		t.Fatalf("rfc3339: %v %v", got, err)
 	}
-	if _, err := parseTimeOrDuration("garbage", ref); err == nil {
+	if _, err := supportbundle.ParseTimeOrDuration("garbage", ref); err == nil {
 		t.Fatal("garbage should error")
 	}
 }

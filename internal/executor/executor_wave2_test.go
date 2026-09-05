@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"vornik.io/vornik/internal/stepid"
+
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/verifier"
@@ -560,8 +562,8 @@ func TestW2ExecStripRetryStepSuffix(t *testing.T) {
 		{"plan_2_writer", "plan_2_writer"},
 	}
 	for _, tc := range cases {
-		if got := stripRetryStepSuffix(tc.id); got != tc.want {
-			t.Fatalf("stripRetryStepSuffix(%q) = %q, want %q", tc.id, got, tc.want)
+		if got := stepid.StripRetrySuffix(tc.id); got != tc.want {
+			t.Fatalf("stepid.StripRetrySuffix(%q) = %q, want %q", tc.id, got, tc.want)
 		}
 	}
 }

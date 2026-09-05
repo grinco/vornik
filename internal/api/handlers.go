@@ -1837,9 +1837,9 @@ func (s *Server) roleToolAllowlistReason(ctx context.Context, taskID string) ([]
 	if err != nil || project == nil || workflow == nil {
 		return nil, mcpGapNoWorkflow
 	}
-	step, ok := workflow.Steps[*exec.CurrentStepID]
-	if !ok || step.Role == "" {
-		return nil, mcpGapNoStepRole
+	step, reason := stepForGate(workflow, *exec.CurrentStepID)
+	if reason != mcpGapNone {
+		return nil, reason
 	}
 	_, swarm, err := s.projectRegistry.GetProjectWithSwarm(exec.ProjectID)
 	if err != nil || swarm == nil {
@@ -2860,4 +2860,38 @@ func (s *Server) stepToolGrant(ctx context.Context, taskID string) []string {
 		return nil
 	}
 	return g.RequestedTools
+}
+
+// stepForGate resolves the step an MCP call belongs to, or says why it cannot.
+//
+// Split from roleToolAllowlistReason as a pure function so the three outcomes
+// can be told apart in a test without a Server, a registry load and a
+// repository — the same shape as evaluateFallbackRungs and
+// evaluateUnclassifiedShare.
+//
+// The three are genuinely different states and were one reason until
+// 2026-09-04:
+//
+//   - a TERMINAL id means the execution finished. There is no role because
+//     there is no step running, which is not a resolution failure.
+//   - a step that exists and names no role is a system or gate step: no agent,
+//     nothing to enforce against.
+//   - anything else is unexplained, and is the one worth alerting on.
+//
+// Measured on the reference deployment the day they were split: all twelve
+// fail-opens in the census were the first case, while the bucket the container
+// could actually enforce against (role_declares_none) was empty. One reason
+// covering all three made that read as twelve unresolved roles.
+func stepForGate(workflow *registry.Workflow, currentStepID string) (registry.WorkflowStep, mcpGapReason) {
+	step, ok := workflow.Steps[currentStepID]
+	if !ok {
+		if _, terminal := workflow.Terminals[currentStepID]; terminal {
+			return registry.WorkflowStep{}, mcpGapExecutionTerminal
+		}
+		return registry.WorkflowStep{}, mcpGapStepNotFound
+	}
+	if step.Role == "" {
+		return registry.WorkflowStep{}, mcpGapNoStepRole
+	}
+	return step, mcpGapNone
 }

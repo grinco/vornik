@@ -431,6 +431,7 @@
                                 <th scope="col" class="px-4 py-2 text-left font-medium">Attributed to</th>
                                 <th scope="col" class="px-4 py-2 text-left font-medium">Duration</th>
                                 <th scope="col" class="px-4 py-2 text-left font-medium">Detail</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Prompt</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-surface-600/60">
@@ -454,6 +455,7 @@
                                 <td class="px-4 py-2 font-mono text-xs text-ink-400">{{if .AttributedToStepID}}{{.AttributedToStepID}}{{else}}—{{end}}</td>
                                 <td class="px-4 py-2 text-xs text-ink-400">{{.DurationDisplay}}</td>
                                 <td class="px-4 py-2 text-xs text-ink-300 max-w-xs truncate" title="{{.ErrorDetail}}">{{if .ErrorDetail}}{{.ErrorDetail}}{{else}}—{{end}}</td>
+                                <td class="px-4 py-2 text-xs">{{if .PromptURL}}<a class="text-accent-300 hover:underline" href="{{.PromptURL}}" title="What this step's model was told at its first request (system, user, tools)">view</a>{{else}}<span class="text-ink-500" title="No prompt recorded: the agent image predates step-prompt persistence, or the step never reached its first request">—</span>{{end}}{{if .ExchangesURL}} · <a class="text-accent-300 hover:underline" href="{{.ExchangesURL}}" title="Every model exchange of this step, recorded because the project opted in (recording.llm_exchanges)">exchanges</a>{{end}}{{if .InputURL}} · <a class="text-accent-300 hover:underline" href="{{.InputURL}}" title="The task.json the executor handed this step's container, as stored (redacted at write)">input</a>{{end}}{{if .ResultURL}} · <a class="text-accent-300 hover:underline" href="{{.ResultURL}}" title="The result.json this step's container handed back, as stored (redacted at write)">result</a>{{end}}</td>
                             </tr>
                             {{end}}
                         </tbody>

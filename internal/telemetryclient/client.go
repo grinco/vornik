@@ -52,6 +52,16 @@ const (
 	SourceCLITemplate = "cli_template"
 	// SourceAPITemplate identifies template creation through the API or UI.
 	SourceAPITemplate = "api_template"
+	// SourceConfigFile identifies a project the daemon first observed in the
+	// config tree — written by hand, by config management, or copied from an
+	// existing project — rather than created through a wizard.
+	//
+	// It needed its own member rather than reusing one: normaliseSource folds
+	// anything unrecognised to SourceCLIBasic, so emitting without extending the
+	// enum would have MISLABELLED the event rather than fixed the gap, which is
+	// worse than the silence it replaced. The three wizard paths counted projects
+	// created through a wizard; this is the one that counts projects that exist.
+	SourceConfigFile = "config_file"
 )
 
 // ProductionEmissionEnabled is the compile-time gate on emitting from
@@ -344,7 +354,7 @@ func normalizeSource(v string, install bool) string {
 		return SourceQuickstart
 	}
 	switch v {
-	case SourceCLIBasic, SourceCLITemplate, SourceAPITemplate:
+	case SourceCLIBasic, SourceCLITemplate, SourceAPITemplate, SourceConfigFile:
 		return v
 	default:
 		return SourceCLIBasic

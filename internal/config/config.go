@@ -1379,9 +1379,15 @@ type RetentionConfig struct {
 	// Default retention windows in days. Zero → compiled default.
 	TaskLLMUsageDays int `yaml:"task_llm_usage_days" doc:"Days to keep per-task LLM usage rows."`
 	ToolAuditDays    int `yaml:"tool_audit_days"`
-	TasksDays        int `yaml:"tasks_days" doc:"Days to keep task rows."`
-	ExecutionsDays   int `yaml:"executions_days" doc:"Days to keep execution rows."`
-	ArtifactsDays    int `yaml:"artifacts_days" doc:"Days to keep artifacts."`
+	// ChatAuditDays bounds chat_audit_log (and, by reference, the
+	// chat_system_prompts bodies it points at). Always-on; 0 → the
+	// compiled default of 90, which is deliberately longer than the tasks
+	// window so a task's origin row outlives the task. Rows a live task
+	// still references are never pruned.
+	ChatAuditDays  int `yaml:"chat_audit_days"`
+	TasksDays      int `yaml:"tasks_days" doc:"Days to keep task rows."`
+	ExecutionsDays int `yaml:"executions_days" doc:"Days to keep execution rows."`
+	ArtifactsDays  int `yaml:"artifacts_days" doc:"Days to keep artifacts."`
 	// TaskMessagesDays prunes rows from task_messages by created_at.
 	// Tasks cascade-delete their messages via FK, so this field only
 	// has an effect when operators want messages pruned *earlier*
@@ -1422,6 +1428,17 @@ type RetentionConfig struct {
 	// (drift-mitigation §8.3 / firewall LLD § Retention).
 	MemoryPolicyEvalAllowDays int `yaml:"memory_policy_eval_allow_days"`
 	MemoryPolicyEvalBlockDays int `yaml:"memory_policy_eval_block_days"`
+	// MemoryEvictionAuditDays bounds memory_eviction_audit and
+	// memory_eviction_runs — the hard-eviction tombstones and their
+	// headers. Always-on; zero → compiled default of 365 days.
+	//
+	// Both tables are registered erasure-EXEMPT under Art 17(3)(b),
+	// correctly: erasing them would destroy the evidence that an
+	// erasure happened. Exempt from erasure is not exempt from
+	// retention, though, and until 2026-09-03 neither was swept by
+	// anything. The two expire together on this one window, tombstones
+	// before their headers (run_id is ON DELETE RESTRICT).
+	MemoryEvictionAuditDays int `yaml:"memory_eviction_audit_days"`
 	// ResponseCacheDays evicts rows from llm_response_cache (LLM
 	// caching Phase E) whose last_hit_at is older than the window.
 	// Global table — not scoped by project — so this sweep runs

@@ -2016,6 +2016,16 @@ type ExecutionStepOutcome struct {
 	// 125 (podman refused to start) are different findings, and a regex over
 	// free text is the salvage-parsing we are trying to delete.
 	ContainerExitCode *int `json:"container_exit_code,omitempty"`
+	// PromptHashes point into step_prompts: what the model was TOLD at the
+	// step's first request, in three content-addressed parts (step-prompt
+	// persistence design §4), and — since migration 178 — the two files at
+	// the container boundary, task.json in and result.json out (step-I/O
+	// persistence design §3). The prompt parts are all empty when the
+	// container wrote no step_prompt.json — an image predating the contract,
+	// or a step that never reached its first request; the boundary parts are
+	// empty for a daemon predating 178, a part over the executor's ceiling,
+	// or a step no container ran.
+	PromptHashes StepPromptHashes `json:"prompt_hashes,omitempty"`
 }
 
 // TaintedStepRow is one untrusted-content step row returned by

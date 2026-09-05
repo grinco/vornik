@@ -68,7 +68,7 @@ func TestDoctorCov_StaleLeases_FixReleasesAll(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "project_id", "lease_expires_at"}).
 		AddRow("t1", "p1", time.Now().Add(-2*time.Hour))
 	mock.ExpectQuery("FROM tasks").WillReturnRows(rows)
-	mock.ExpectExec("UPDATE tasks").WithArgs("t1").
+	mock.ExpectExec("UPDATE tasks").WithArgs("t1", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	check := h.checkStaleLeases(context.Background(), true)
 	assert.Equal(t, "OK", check.Status)
@@ -131,9 +131,9 @@ func TestDoctorCov_StuckExecutions_FixMarksFailed(t *testing.T) {
 		AddRow("e1", "t1", "p1", "RUNNING", time.Now().Add(-2*time.Hour)).
 		AddRow("e2", "t2", "p1", "PENDING", time.Now().Add(-3*time.Hour))
 	mock.ExpectQuery("FROM executions").WillReturnRows(rows)
-	mock.ExpectExec("UPDATE executions").WithArgs("e1").
+	mock.ExpectExec("UPDATE executions").WithArgs("e1", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE executions").WithArgs("e2").
+	mock.ExpectExec("UPDATE executions").WithArgs("e2", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	check := h.checkStuckExecutions(context.Background(), true)
 	assert.Equal(t, "OK", check.Status)

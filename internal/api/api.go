@@ -960,6 +960,12 @@ type Server struct {
 	executor         ExecutorInterface
 	taskLogSource    TaskLogSource
 	config           *config.Config
+	configSnapshot   *config.SnapshotHolder
+	stepPromptRepo   persistence.StepPromptRepository
+	// llmExchangeRepo and exchangeRedactor are the recorder's store and
+	// redaction seam (chat_proxy_exchange.go); nil means no recording.
+	llmExchangeRepo  persistence.LLMExchangeRepository
+	exchangeRedactor ExchangeRedactor
 	// aiDisclosure supplies the EU AI Act Art 50(1) notice for gateway
 	// providers marked as publication surfaces (G6 finding B). Nil makes any
 	// write to such a provider refuse — see agentPublicationRefusal.
@@ -2251,6 +2257,16 @@ func WithTaskLogSource(src TaskLogSource) ServerOption {
 func WithConfig(cfg *config.Config) ServerOption {
 	return func(s *Server) {
 		s.config = cfg
+	}
+}
+
+// WithConfigSnapshot wires the reload-written snapshot `config show` reads
+// (resolved-config provenance design §4.1). s.config stays the boot-time
+// pointer every other handler reads; the snapshot is what makes the dump
+// reflect a hot reload.
+func WithConfigSnapshot(h *config.SnapshotHolder) ServerOption {
+	return func(s *Server) {
+		s.configSnapshot = h
 	}
 }
 

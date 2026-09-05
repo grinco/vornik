@@ -65,6 +65,11 @@ type Repositories struct {
 	// coalescing rules (migration 171).
 	// https://docs.vornik.io
 	ForgePRReviewState persistence.ForgePRReviewStateRepository
+	// ProjectFirstSeen is the first-observation ledger behind project_created
+	// telemetry (migration 174). Present on BOTH backends deliberately: CE
+	// defaults to SQLite, and the adoption gap this closes is largest exactly
+	// where CE deployments live.
+	ProjectFirstSeen persistence.ProjectFirstSeenRepository
 	// ChatMemoryWriteConfirmations backs the shared-scope memory-write
 	// confirmation two-step (chat memory-write design §5.3, migration
 	// 146). ChatMemoryWriteAudit is its append-only evidence companion,
@@ -119,8 +124,17 @@ type Repositories struct {
 	BudgetReservations  persistence.BudgetReservationRepository
 	A2APushConfigs      persistence.A2APushConfigRepository
 	StepOutcomes        persistence.ExecutionStepOutcomeRepository
-	JudgeVerdicts       persistence.TaskJudgeVerdictRepository
-	PostMortems         persistence.TaskPostMortemRepository
+	// StepPrompts is the content-addressed store of what each step was told at
+	// its first model request (step-prompt persistence design §4). The
+	// container decorates it with auditredact.StepPrompts before use.
+	StepPrompts persistence.StepPromptRepository
+	// LLMExchanges is every model request/response pair of an agent step,
+	// recorded at the chat proxy when the project opted in (llm-exchange
+	// record/replay design §3). Bodies are redacted by the recorder before
+	// they reach the store.
+	LLMExchanges  persistence.LLMExchangeRepository
+	JudgeVerdicts persistence.TaskJudgeVerdictRepository
+	PostMortems   persistence.TaskPostMortemRepository
 	// Instincts backs the continuous-learning instinct layer
 	// (migrations 85/86). Wired on both backends; the extraction
 	// worker (internal/instinct) is gated behind instinct.enabled
@@ -370,6 +384,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		ChannelDisclosure:              sqlite.NewChannelDisclosureRepository(db),
 		ForgePRReviewState:             sqlite.NewForgePRReviewStateRepository(db),
+		ProjectFirstSeen:               sqlite.NewProjectFirstSeenRepository(db),
 		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
 		MCPOAuthTokens:                 sqlite.NewMCPOAuthTokenRepository(db),
 		ChatMemoryWriteAudit:           sqlite.NewChatMemoryWriteAuditRepository(db),
@@ -420,6 +435,8 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		WorkflowProposals:       sqlite.NewWorkflowProposalRepository(db),
 		// Round 3 — memory + KG.
 		StepOutcomes:         sqlite.NewExecutionStepOutcomeRepository(db),
+		StepPrompts:          sqlite.NewStepPromptRepository(db),
+		LLMExchanges:         sqlite.NewLLMExchangeRepository(db),
 		KnowledgeEntities:    sqlite.NewKnowledgeEntityRepository(db),
 		KnowledgeEdges:       sqlite.NewKnowledgeEdgeRepository(db),
 		EntityMentions:       sqlite.NewEntityMentionRepository(db),
@@ -469,12 +486,11 @@ func openPostgres(ctx context.Context, cfg config.DatabaseConfig) (*Backend, err
 // lands in phase 2 and will pick by examining a sentinel on the DBTX
 // (or via a separate sqlite-specific BuildXxx method).
 func Build(dbtx persistence.DBTX) *Repositories {
-	return &Repositories{
+	r := &Repositories{
 		Tasks:                          postgres.NewTaskRepository(dbtx),
 		Executions:                     postgres.NewExecutionRepository(dbtx),
 		Artifacts:                      postgres.NewArtifactRepository(dbtx),
 		Watchers:                       postgres.NewTaskWatcherRepository(dbtx),
-		ToolAudit:                      postgres.NewToolAuditRepository(dbtx),
 		ExecutionToolGrants:            postgres.NewExecutionToolGrantRepository(dbtx),
 		ExecutionQualityScores:         postgres.NewExecutionQualityScoreRepository(dbtx),
 		RecoveryEvents:                 postgres.NewRecoveryEventRepository(dbtx),
@@ -488,6 +504,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		ChannelDisclosure:              postgres.NewChannelDisclosureRepository(dbtx),
 		ForgePRReviewState:             postgres.NewForgePRReviewStateRepository(dbtx),
+		ProjectFirstSeen:               postgres.NewProjectFirstSeenRepository(dbtx),
 		ChatMemoryWriteConfirmations:   postgres.NewChatMemoryWriteConfirmationRepository(dbtx),
 		MCPOAuthTokens:                 postgres.NewMCPOAuthTokenRepository(dbtx),
 		ChatMemoryWriteAudit:           postgres.NewChatMemoryWriteAuditRepository(dbtx),
@@ -546,5 +563,64 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		TelegramPollerState:            postgres.NewTelegramPollerStateRepository(dbtx),
 		WorkflowProposals:              postgres.NewWorkflowProposalRepository(dbtx),
 		ExecutionNarration:             postgres.NewExecutionNarrationRepository(dbtx),
+	}
+	withPostgresRedactedStores(r, dbtx)
+	return r
+}
+
+// withPostgresRedactedStores attaches the three content stores the secrets
+// redaction seam decorates before use: tool-audit rows (tool-audit redaction
+// seam design), what each step was told (step-prompt persistence design §5),
+// and every exchange of an opted-in step (llm-exchange record/replay design
+// §4). Split out of Build so the literal stays under the funlen budget; the
+// container's initToolAuditRedaction and the exchange recorder wrap these
+// AFTER construction, so wiring them here is construction only.
+func withPostgresRedactedStores(r *Repositories, dbtx persistence.DBTX) {
+	r.ToolAudit = postgres.NewToolAuditRepository(dbtx)
+	r.StepPrompts = postgres.NewStepPromptRepository(dbtx)
+	r.LLMExchanges = postgres.NewLLMExchangeRepository(dbtx)
+}
+
+// OpenReadOnly connects and builds the repository set WITHOUT running
+// migrations. It exists for diagnostics collectors — the support bundle's
+// local driver (support-bundle-in-CE design §4) — whose whole authorisation
+// argument is that they only READ.
+//
+// Open is not that: its SQLite branch migrates on connect, so a CLI one build
+// ahead of the daemon would silently move the schema forward underneath a
+// running daemon while the operator believed they were collecting evidence.
+// The Postgres branch happens not to migrate today, which is precisely why the
+// distinction belongs in a named function rather than in a caller's assumption
+// about the current implementation.
+//
+// It is read-only in the sense that matters — no schema change, no row written
+// — not a filesystem guarantee: SQLite still creates the database file (and its
+// parent directory) if the configured path does not exist, because that is what
+// opening a SQLite database does.
+func OpenReadOnly(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error) {
+	driver := cfg.Driver
+	if driver == "" {
+		driver = "postgres"
+	}
+	switch driver {
+	case "postgres":
+		// openPostgres connects and builds repos; Migrate is a func the
+		// caller must invoke, and this path never does.
+		return openPostgres(ctx, cfg)
+	case "sqlite":
+		db, err := sqlite.Connect(ctx, sqlite.Config{Path: cfg.Path})
+		if err != nil {
+			return nil, fmt.Errorf("storage: connect sqlite: %w", err)
+		}
+		return &Backend{
+			Driver:  "sqlite",
+			DB:      db.DB,
+			Repos:   buildSQLiteRepositories(db.DB),
+			Close:   db.Close,
+			Migrate: db.Migrate,
+			IsReady: db.IsReady,
+		}, nil
+	default:
+		return nil, fmt.Errorf("storage: unsupported database driver: %s", driver)
 	}
 }

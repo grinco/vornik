@@ -1,0 +1,19 @@
+{
+  "function": {
+    "description": "Read the contents of a file. Paths are relative to /app/workspace/ (the working directory); the persistent project folder is at project/ (e.g. 'project/src/main.py'). Output is capped at 30KB per file — for larger files use grep to find specific lines, run_shell with `head -c 200000` for a bigger window (200KB), or read_many_files which has the same per-file cap but lets you pull a directory in one call.",
+    "name": "file_read",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

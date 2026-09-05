@@ -3,7 +3,7 @@ sources:
     - path: internal/forge/forge.go
       sha256: ea94efec75e13324c1377118a9f67a924532f41f4ad93bcdd876518678842eba
     - path: internal/forge/github/github.go
-      sha256: 5d7d025b9abf2a1854c0a444288d6f164db8759017606355ed97600f909d2341
+      sha256: 001ce4a269f397658788e9c9b67e9b317e3094c66ab6f3ded5aba4a37d6e2ceb
 ---
 # Forge — GitHub automation
 
@@ -55,8 +55,8 @@ becoming noise:
 
 You can also ask directly, by mentioning the bot in a comment on the pull
 request. **`<bot>` is your GitHub App's own handle** — its slug, e.g.
-`@vornik-companion`. It is configurable (`mention_handle`), and it
-should be a handle you own: a handle that happens to be someone else's account
+`@vornik-companion`. It is configurable — `forge.mention_handle` on the project,
+which applies to both ingresses — and it should be a handle you own: a handle that happens to be someone else's account
 notifies a stranger every time anyone addresses the bot.
 
 | Comment | Effect |
@@ -67,7 +67,9 @@ notifies a stranger every time anyone addresses the bot.
 | `@<bot> resume` | resume automatic review of this PR |
 
 **Only people with standing in the repository can run these** — its owner,
-organisation members, and invited collaborators. A review is model spend, so on
+organisation members, and invited collaborators. This is enforced on every
+ingress: the check lives with the shared review rules, so both the GitHub App
+channel and the generic webhook path apply the same one. A review is model spend, so on
 a public repository an ungated command would let any passer-by spend your
 budget. Note that a *contributor* — someone who has had a pull request merged —
 does not qualify: that describes the past, not permission to trigger spend at

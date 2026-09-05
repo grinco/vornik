@@ -332,30 +332,42 @@ func BundleGuidance(selector, edition string) string {
 	return b.String()
 }
 
-// communityBundleGuidance is the Community counterpart: there is no bundle
-// collector to point at, so it says so plainly and directs the reporter to what
-// they DO have rather than naming an unreachable command.
+// communityBundleGuidance is the Community counterpart.
 //
-// It deliberately does NOT tell the reporter to paste journal output into the
-// issue. That output carries hostnames, paths and credentials, and the whole
-// point of this package is that anything reaching a public repo goes through
-// the scrubber first.
+// It used to say there was no collector to point at. That was true until
+// 2026-09-04, when `vornikctl support-report --local` gave Community a path
+// that builds the SAME bundle in-process from the database and config on the
+// host — authorised by shell access, which an operator on that host already
+// has (support-bundle-in-CE design §2). So this text now names a command that
+// WORKS, which is what the 2026-08-05 dead end was really about: the reporter
+// was told to run something that answered 501.
+//
+// It still does not tell the reporter to paste journal output into the issue.
+// That output carries hostnames, paths and credentials, and the whole point of
+// this package is that anything reaching a public repo goes through the
+// scrubber first.
 func communityBundleGuidance() string {
 	var b strings.Builder
-	// Deliberately describes the collector WITHOUT printing its runnable
-	// invocation. Naming the exact command is what created the dead end: a
-	// reporter copies it, runs it, and gets a 501. Describing the capability
-	// explains the gap without handing over something that fails.
-	b.WriteString("The bundled evidence collector — the support-report archive carrying the task\n")
-	b.WriteString("timeline, container + daemon logs and Black Box trace — is an Enterprise Edition\n")
-	b.WriteString("feature and is not built into Community Edition, so there is no archive to\n")
-	b.WriteString("attach here.\n\n")
-	b.WriteString("The report above already carries what Community collects: the build identity\n")
-	b.WriteString("and the full anonymized `vornikctl doctor` findings. That is usually enough to\n")
-	b.WriteString("triage. If a maintainer needs more, they will ask on the issue for a specific\n")
-	b.WriteString("check or log line — send only what they ask for, and read it before you paste\n")
-	b.WriteString("it: journal and config output carry hostnames, paths and credentials that this\n")
-	b.WriteString("report scrubbed for you.\n\n")
+	b.WriteString("For the full evidence — task timeline, daemon logs, the doctor snapshot and the\n")
+	b.WriteString("deployed workflow prompts — collect the bundle on this host:\n\n")
+	b.WriteString("  vornikctl support-report --local --task <task id>\n\n")
+	b.WriteString("Community collects it LOCALLY, reading the database and config directly, so it\n")
+	b.WriteString("works with the daemon down. Two sections are the daemon's live state and cannot\n")
+	b.WriteString("be collected this way — health and metrics; they are listed in the archive's\n")
+	b.WriteString("section_errors rather than silently missing. The Black Box trace is an\n")
+	b.WriteString("Enterprise feature and is absent here by construction.\n\n")
+	b.WriteString("It writes ONE archive named vornik-support-<scope>-<timestamp>.tar.gz into the\n")
+	b.WriteString("current directory and prints the full path (override with --output <path>).\n")
+	b.WriteString("It is redacted for secrets, but it MAY still carry project, swarm and workflow\n")
+	b.WriteString("names, task ids and prompt text — OPEN AND\n")
+	b.WriteString("INSPECT it before it leaves your machine:\n\n")
+	b.WriteString("  tar -tzf <archive>                  # what is in it\n")
+	b.WriteString("  tar -xOzf <archive> MANIFEST.json   # sections, truncations, redaction counts\n")
+	b.WriteString("  tar -xOzf <archive> collection.json # which path collected it, and whose version\n\n")
+	b.WriteString("To attach it: open the prefilled issue, then drag the .tar.gz into the comment\n")
+	b.WriteString("box (GitHub accepts up to 25 MB per attachment — if the archive is larger, narrow the\n")
+	b.WriteString("scope or shrink it with --max-size). You attach it yourself, under your own\n")
+	b.WriteString("account, after reading it.\n\n")
 	b.WriteString("  vornikctl doctor --json    # the same findings, machine-readable, for your own review")
 	return b.String()
 }

@@ -41,21 +41,28 @@ func (r *ClusterNodeRepository) Upsert(ctx context.Context, node *persistence.Cl
 	// string that sorts correctly when compared with Go-formatted thresholds
 	// (unlike CURRENT_TIMESTAMP which uses a space separator that breaks
 	// lexicographic comparison against T-separated RFC3339 strings).
+	// last_seen is written in the same RFC3339Nano text form every other
+	// timestamp in this backend uses (sqliteTime), because DeleteStale
+	// compares it lexically against a sqliteTime threshold. Until 2026-09-05
+	// it was strftime-to-the-second, and "…:05Z" sorts AFTER "…:05.3Z", so a
+	// node last seen in the same second as the threshold read as fresh.
+	// RunClusterNodeSuite pins the sweep against the Postgres behaviour.
 	const q = `
 INSERT INTO cluster_nodes (instance_id, profile, version, address, capabilities, last_seen)
-VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (instance_id) DO UPDATE SET
     profile      = excluded.profile,
     version      = excluded.version,
     address      = excluded.address,
     capabilities = excluded.capabilities,
-    last_seen    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`
+    last_seen    = excluded.last_seen`
 	if _, err := r.db.ExecContext(ctx, q,
 		node.InstanceID,
 		node.Profile,
 		node.Version,
 		node.Address,
 		caps,
+		sqliteTime(time.Now().UTC()),
 	); err != nil {
 		return fmt.Errorf("cluster_node: upsert: %w", err)
 	}

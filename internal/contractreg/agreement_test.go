@@ -23,10 +23,13 @@ func realEntrypoint(t *testing.T) string {
 // TestAgentToolRegistriesAgree_RealEntrypoint is the security regression test
 // for the 2026-08-06 allowlist bypass.
 //
-// Four registries name agent tools: agenttools.builtinTools (Go),
+// Four registries named agent tools then: agenttools.builtinTools (Go),
 // BUILTIN_TOOL_NAMES_JSON, is_builtin_tool()'s case list, and exec_tool's
-// dispatch cases. Both container-side gates are phrased "is this a builtin?", so
-// a name missing from those lists FAILS OPEN:
+// dispatch cases. Since 2026-09-03 the shell side is generated from
+// agenttools.Tools and is_builtin_tool() reads it, so what remains to compare
+// is the declaration against the dispatch cases — the side generation cannot
+// know. Both container-side gates were phrased "is this a builtin?", so a name
+// missing from those lists FAILED OPEN:
 //
 //   - execution (entrypoint.sh, exec_tool) skips the allowlist check entirely;
 //   - advertisement offers the tool to every role's model regardless of its
@@ -65,17 +68,23 @@ func TestAddEntrypointSurfaces_ExtractsAllThree(t *testing.T) {
 	if err := tbl.AddEntrypointSurfaces(realEntrypoint(t)); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	for _, kind := range []Kind{KindAgentToolAdvertised, KindAgentToolGate, KindAgentToolDispatch} {
+	for _, kind := range []Kind{KindAgentToolAdvertised, KindAgentToolRegistry, KindAgentToolDispatch} {
 		if got := tbl.Names(kind); len(got) < 10 {
 			t.Errorf("%s extracted %d names (%v); expected the real registry, "+
 				"so the parser has probably gone blind", kind, len(got), got)
 		}
 	}
-	// Sanity: a tool everyone agrees on must appear on all three surfaces.
-	for _, kind := range []Kind{KindAgentToolAdvertised, KindAgentToolGate, KindAgentToolDispatch} {
+	// Sanity: a tool everyone agrees on must appear on the two generated
+	// surfaces, and a shell-runtime tool on the dispatch surface. file_read
+	// moved to the Go helper on 2026-09-05 and has no bash case any more;
+	// run_shell still does.
+	for _, kind := range []Kind{KindAgentToolAdvertised, KindAgentToolRegistry} {
 		if tbl.Get(kind, "file_read") == nil {
 			t.Errorf("file_read missing from %s — parser is wrong", kind)
 		}
+	}
+	if tbl.Get(KindAgentToolDispatch, "run_shell") == nil {
+		t.Error("run_shell missing from agent_tool_dispatch — parser is wrong")
 	}
 }
 
@@ -88,7 +97,7 @@ func TestAddEntrypointSurfaces_RejectsGlobCaseLabels(t *testing.T) {
 	if err := tbl.AddEntrypointSurfaces(realEntrypoint(t)); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	for _, kind := range []Kind{KindAgentToolGate, KindAgentToolDispatch} {
+	for _, kind := range []Kind{KindAgentToolAdvertiseCase, KindAgentToolDispatch} {
 		for _, n := range tbl.Names(kind) {
 			for _, bad := range []string{"*", "[", "]", "/", "$", "\"", "-"} {
 				if containsRune(n, bad) {

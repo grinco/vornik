@@ -31,6 +31,8 @@ func RunForgePRReviewStateSuite(t *testing.T, repo persistence.ForgePRReviewStat
 	t.Run("PauseRoundTrips", func(t *testing.T) { forgePause(t, repo) })
 	t.Run("StateIsPerProjectNotPerRepo", func(t *testing.T) { forgePerProject(t, repo) })
 	t.Run("BeginClosingReleasesTheClaimAndRecordsTheHead", func(t *testing.T) { forgeBeginClosing(t, repo) })
+	t.Run("BeginClosingRefusesAHeadASupersedingPushMovedPast", func(t *testing.T) { forgeBeginClosingIsConditional(t, repo) })
+	t.Run("BeginClosingAppliesToAPRWithNoStateRow", func(t *testing.T) { forgeBeginClosingOnAFreshRow(t, repo) })
 }
 
 // A PR with no state is the ordinary first-delivery case, never an error.
@@ -207,12 +209,16 @@ func forgeBeginClosing(t *testing.T, repo persistence.ForgePRReviewStateReposito
 	if err := repo.SetTask(ctx, forgeStateProject, forgeStateRepo, num, "task-1"); err != nil {
 		t.Fatalf("SetTask: %v", err)
 	}
-	if err := repo.BeginClosing(ctx, forgeStateProject, forgeStateRepo, num, "sha-fetched"); err != nil {
+	out, err := repo.BeginClosing(ctx, forgeStateProject, forgeStateRepo, num, "sha-fetched", "sha-a")
+	if err != nil {
 		t.Fatalf("BeginClosing: %v", err)
 	}
-	st, err := repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
-	if err != nil || st == nil {
-		t.Fatalf("Get: %v", err)
+	if !out.Applied {
+		t.Fatalf("BeginClosing did not apply with the pending head unchanged (%+v)", out)
+	}
+	st, gerr := repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
+	if gerr != nil || st == nil {
+		t.Fatalf("Get: %v", gerr)
 	}
 	if st.TaskID != "" {
 		t.Errorf("TaskID = %q after BeginClosing, want empty — the review is still absorbing pushes it cannot see", st.TaskID)
@@ -229,5 +235,98 @@ func forgeBeginClosing(t *testing.T, repo persistence.ForgePRReviewStateReposito
 	st, _ = repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
 	if st.ReviewingHeadSHA != "sha-fetched" {
 		t.Errorf("ReviewingHeadSHA = %q after a later push, want sha-fetched — pending must not overwrite what is under review", st.ReviewingHeadSHA)
+	}
+}
+
+// forgeBeginClosingIsConditional — regression for the 2026-09-03 four-week
+// audit's P1, at the contract level.
+//
+// Design §5.2 requires the pending-head read and the ABSORBING → CLOSING
+// transition to be ONE atomic step "so no trigger can land between them". The
+// caller cannot hold that across its forge round-trip, so the atomicity lives
+// here as a compare-and-set. Unconditional, the whole fetch window is a hole: a
+// push landing in it is ABSORBED (the claim is still held, so its delivery is
+// skipped as superseded), the review then commits to the PRE-fetch head, the
+// baseline advances to it, and nothing ever reads the leftover pending head.
+// If the developer does not push again, that head is permanently unreviewed
+// while a posted review implies coverage.
+//
+// This case is the interleaving made deterministic: the supersede happens
+// between the read and the transition because the test performs it there.
+func forgeBeginClosingIsConditional(t *testing.T, repo persistence.ForgePRReviewStateRepository) {
+	ctx := context.Background()
+	const num = 108
+	if _, err := repo.ClaimOrSupersede(ctx, forgeStateProject, forgeStateRepo, num, "sha-a"); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+	if err := repo.SetTask(ctx, forgeStateProject, forgeStateRepo, num, "task-1"); err != nil {
+		t.Fatalf("SetTask: %v", err)
+	}
+
+	// The review read pending = "sha-a" and went off to fetch. THE PUSH LANDS
+	// HERE — absorbed, because the claim is still held.
+	if _, err := repo.ClaimOrSupersede(ctx, forgeStateProject, forgeStateRepo, num, "sha-c"); err != nil {
+		t.Fatalf("push during the fetch: %v", err)
+	}
+
+	out, err := repo.BeginClosing(ctx, forgeStateProject, forgeStateRepo, num, "sha-a", "sha-a")
+	if err != nil {
+		t.Fatalf("BeginClosing: %v", err)
+	}
+	if out.Applied {
+		t.Fatal("BeginClosing committed to the pre-fetch head after a push superseded it — " +
+			"sha-c is absorbed, unreviewed, and nothing will ever read it again")
+	}
+	if out.PendingHeadSHA != "sha-c" {
+		t.Errorf("PendingHeadSHA = %q, want sha-c — the caller cannot re-fetch a head it is not told about", out.PendingHeadSHA)
+	}
+
+	// The refusal must change NOTHING: the claim stays held, so the task is
+	// still ABSORBING and the push it absorbed remains its responsibility.
+	st, err := repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
+	if err != nil || st == nil {
+		t.Fatalf("Get after the refusal: %v", err)
+	}
+	if st.TaskID != "task-1" {
+		t.Errorf("TaskID = %q after a refused transition, want task-1 — the claim was released anyway", st.TaskID)
+	}
+	if st.ReviewingHeadSHA != "" {
+		t.Errorf("ReviewingHeadSHA = %q after a refused transition, want empty — a head nobody reviewed was recorded",
+			st.ReviewingHeadSHA)
+	}
+
+	// Retrying at the head it was told about converges.
+	out, err = repo.BeginClosing(ctx, forgeStateProject, forgeStateRepo, num, "sha-c", "sha-c")
+	if err != nil {
+		t.Fatalf("BeginClosing (retry): %v", err)
+	}
+	if !out.Applied {
+		t.Fatal("the retry at the superseding head did not apply; the caller cannot converge")
+	}
+	st, _ = repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
+	if st.TaskID != "" || st.ReviewingHeadSHA != "sha-c" {
+		t.Errorf("after the retry TaskID = %q / ReviewingHeadSHA = %q, want \"\" / sha-c", st.TaskID, st.ReviewingHeadSHA)
+	}
+}
+
+// A PR with no state row yet must still close — expecting an empty pending head
+// is the honest description of "there was nothing there when I read it", and a
+// first review of a never-claimed PR takes that path.
+func forgeBeginClosingOnAFreshRow(t *testing.T, repo persistence.ForgePRReviewStateRepository) {
+	ctx := context.Background()
+	const num = 109
+	out, err := repo.BeginClosing(ctx, forgeStateProject, forgeStateRepo, num, "sha-fresh", "")
+	if err != nil {
+		t.Fatalf("BeginClosing on a fresh row: %v", err)
+	}
+	if !out.Applied {
+		t.Fatalf("BeginClosing did not apply to a PR with no state row (%+v)", out)
+	}
+	st, err := repo.Get(ctx, forgeStateProject, forgeStateRepo, num)
+	if err != nil || st == nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if st.ReviewingHeadSHA != "sha-fresh" {
+		t.Errorf("ReviewingHeadSHA = %q, want sha-fresh", st.ReviewingHeadSHA)
 	}
 }

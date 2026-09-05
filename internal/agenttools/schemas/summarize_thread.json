@@ -1,0 +1,27 @@
+{
+  "function": {
+    "description": "Compress a span of older conversation messages into a single 'note' summary that travels with the task. The originals are filtered out of future prompt windows; this summary is shown in their place. You write the summary text yourself — this tool just persists it. Use when the conversation grows long and older details no longer need to be quoted verbatim.",
+    "name": "summarize_thread",
+    "parameters": {
+      "properties": {
+        "messageIds": {
+          "description": "IDs of messages this summary covers (the originals are hidden from future prompt windows)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "description": "The summary text. One paragraph; cap 4 KB.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageIds",
+        "summary"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

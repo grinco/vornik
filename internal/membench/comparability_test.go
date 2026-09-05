@@ -26,6 +26,12 @@ func baseFields() ComparabilityFields {
 		ObservedEmbedder:     "bedrock/cohere.embed-v4:0",
 		ObservedRecallMethod: "vector_rerank",
 		CorpusSHA256:         "corpus1",
+		// Also present for the same reason: an unobserved corpus regime and an
+		// unknown daemon build are each separately partial by design (v5), so a
+		// fixture missing them would make every Partial() test pass for the
+		// wrong reason.
+		CorpusRegime:   CorpusRegimeCold,
+		DaemonRevision: "abc1234",
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/counterfactual"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/pipeline"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/runtime"
@@ -656,6 +657,9 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		opts.StepTimeout = timeout
 	}
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
+	// The boundary file on the way in, kept for the outcome row (step-I/O
+	// persistence design §3); redacted at the store's seam, never here.
+	agentStamp.StepIO.Input = input
 	// 0o600 — task.json holds the step prompt + any inline
 	// secrets / credentials passed from project config.
 	if err := os.WriteFile(filepath.Join(inputDir, "task.json"), input, 0o600); err != nil {
@@ -923,6 +927,13 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// the next step's ephemeral container can re-stage them (task e9a5).
 	plan.stepOutputArtifacts = stepOutputs
 
+	// The step's first model input, if the container wrote it (step-prompt
+	// persistence design §3). Present or absent, never an error: an image
+	// predating the contract writes no file. Read here, beside result.json,
+	// from the same output mount and under the same trust boundary; persisted
+	// when the outcome row is recorded.
+	agentStamp.StepPrompt = readStepPromptFile(filepath.Join(outputDir, stepPromptFileName), &e.logger, execution.ID, stepID)
+
 	// Read result.json once — used for both audit and status checks.
 	resultPath := filepath.Join(outputDir, "result.json")
 	resultBytes, readErr := os.ReadFile(resultPath)
@@ -980,6 +991,9 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	rawResultBytes := resultBytes
 	var secretLeakErr error
 	resultBytes, secretLeakErr = e.scanResultForSecrets(ctx, task, execution, stepID, resultBytes)
+	// The boundary file on the way out — the redacted form, and whole even
+	// when it will not parse: that is the case where keeping it has value.
+	agentStamp.StepIO.Result = resultBytes
 
 	// Persist tool audit entries regardless of exit code. The degenerate-
 	// loop detail is captured into a closure variable that the defer
@@ -1082,82 +1096,31 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		}
 	}
 
-	// Output-file contract: a step declaring require_output_glob must
-	// have written at least one matching file DURING this step, or it
-	// fails loud with the "schema violation:" prefix (one corrective
-	// shape retry, then on_fail). Incident
-	// task_20260712143854_429a3500d692d23c: 7 of 8 deep-research
-	// subtasks completed without writing their promised findings file
-	// and the parent chain "succeeded" into an empty publish.
-	// globVerified records that the filesystem — not the model — confirmed
-	// this step's declared output. It is handed to the plausibility pass
-	// below so a self-reported file list cannot fail a step whose output
-	// was already verified for real.
-	globVerified := false
-	if agentError == "" && step.RequireOutputGlob != "" {
-		if outputGlobSatisfied(workspaceDir, effectiveProjectDir, step.RequireOutputGlob, stepStart) {
-			globVerified = true
-		} else {
-			agentError = fmt.Sprintf(
-				"schema violation: output contract for step %q not met — no file matching %q was written during this step. You MUST write the declared output file before finishing.",
-				stepID, step.RequireOutputGlob)
-		}
+	// The step-outcome point (pipeline_points.go): eight participants in the
+	// order the design pins, run only when no earlier check already failed
+	// the step — exactly as each of them used to test agentError first.
+	// PostStepHEAD is sampled here, before the chain, rather than between
+	// the claimed-files and role-claims checks as it used to be; nothing
+	// between the two points touches the worktree. plan is non-nil on this
+	// path (it was dereferenced when the artifacts were harvested above).
+	postStepHEAD := ""
+	if plan.worktreeDir != "" {
+		postStepHEAD = gitHEAD(ctx, plan.worktreeDir)
 	}
-
-	// Tool contract: an auth-class tool failure fails the step (no opt-in),
-	// and a step declaring require_tools must have completed each of them.
-	//
-	// Runs AFTER the output-file contract and BEFORE plausibility, because a
-	// connector rejection explains a missing file and a thin result far better
-	// than either explains itself. Incident 2026-08-25: a connector lost auth,
-	// the agent narrated the 401 correctly in its own payload, and the task
-	// completed — nothing between the tool call and the task's status could
-	// name what had happened. See tool_contract.go.
+	so := &StepOutcome{
+		Task: task, Execution: execution, Step: &step, StepID: stepID, RoleConfig: roleConfig,
+		ResultBytes: resultBytes, RawResultBytes: rawResultBytes,
+		WorkspaceDir: workspaceDir, ProjectDir: effectiveProjectDir, StepStart: stepStart,
+		PreStepHEAD: preStepHEAD, PostStepHEAD: postStepHEAD,
+	}
+	var verdict pipeline.Verdict
 	if agentError == "" {
-		if v := e.evaluateToolContract(ctx, execution, task, &step, stepID); v != nil {
-			agentError = v.Message
-			if v.AuthClass {
-				e.logger.Error().
-					Str("execution_id", execution.ID).
-					Str("task_id", task.ID).
-					Str("project_id", task.ProjectID).
-					Str("step", stepID).
-					Str("outcome_class", "auth").
-					Msg("step failed: a connector rejected the credential — " + v.Message)
-			}
-		}
-	}
-
-	// Plausibility rules: layered on top of RequiredOutputKeys to
-	// catch the half-honest output ("approved":true with empty
-	// "feedback") that passes shape validation but isn't actually
-	// usable downstream. WarnOnly rules emit a log line and don't
-	// gate; gate-mode rules fail the step with INVALID_OUTPUT.
-	// rawResultBytes for the same reason as the required-keys check: this is a
-	// structural evaluation, and a violation's Detail is built from the field name
-	// plus the rule's own `When` config (formatViolationDetail) — never from a
-	// payload value. So nothing here persists agent content, and evaluating the
-	// redacted form would report spurious violations on exactly the results
-	// redaction had corrupted, misattributing a third symptom of one cause.
-	if agentError == "" && len(roleConfig.PlausibilityRules) > 0 && len(rawResultBytes) > 0 {
-		violations := EvaluatePlausibilityWithGroundTruth(rawResultBytes, roleConfig.PlausibilityRules, globVerified)
-		var blocking []string
-		for _, v := range violations {
-			if v.WarnOnly {
-				e.logger.Warn().
-					Str("execution_id", execution.ID).
-					Str("step", stepID).
-					Str("role", step.Role).
-					Str("rule", v.RuleName).
-					Str("detail", v.Detail).
-					Msg("plausibility: warn-only rule fired — step still passes")
-				continue
-			}
-			blocking = append(blocking, fmt.Sprintf("%s: %s", v.RuleName, v.Detail))
-		}
-		if len(blocking) > 0 {
-			agentError = fmt.Sprintf("plausibility violation: role %q failed %d rule(s): %s",
-				step.Role, len(blocking), strings.Join(blocking, "; "))
+		verdict = e.stepOutcomePoint().Run(ctx, so)
+		hallucinationSignalsBlob = so.HallucinationSignals
+		hallucinationDetail = so.HallucinationDetail
+		resultBytes = so.ResultBytes
+		if verdict.Refused && stepOutcomeExitTier[verdict.Participant] {
+			agentError = verdict.Reason
 		}
 	}
 
@@ -1177,91 +1140,11 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		return "", nil, newContainerExitError(exitCode, agentError)
 	}
 
-	// Verify file claims (modified_files, outputArtifacts paths,
-	// produced_files) in result.json against the real filesystem.
-	// effectiveProjectDir was computed at the top of this function
-	// (worktree path when worktrees are in use, project's persistent
-	// root otherwise) — same path the container saw mounted at
-	// /app/workspace/project. A claim that doesn't match reality
-	// fails the step here so the next role doesn't silently run
-	// against a half-empty workspace.
-	if verifyErr := e.verifyClaimedFiles(resultBytes, workspaceDir, effectiveProjectDir, stepStart); verifyErr != nil {
+	if verdict.Refused {
 		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
-			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after verify failure")
+			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg(stepOutcomeRemoveMsg[verdict.Participant])
 		}
-		return "", nil, verifyErr
-	}
-
-	// Cross-cutting deception checks (testing.passed:true → toolAudit
-	// must show actual execution; review.checked_commit → object must
-	// exist; files_changed:N → real diff count must match). The regular
-	// agent-step path runs dev-pipeline's coder/tester/reviewer through
-	// here, so without this call the per-role verification only fires
-	// for plan-spawned roles. Sampling postStepHEAD after the agent
-	// run lets the files_changed accuracy check work the same way the
-	// plan-step path's already does.
-	postStepHEAD := ""
-	if plan != nil && plan.worktreeDir != "" {
-		postStepHEAD = gitHEAD(ctx, plan.worktreeDir)
-	}
-	if claimsErr := e.verifyRoleClaims(ctx, resultBytes, preStepHEAD, postStepHEAD, effectiveProjectDir); claimsErr != nil {
-		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
-			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after role-claim verify failure")
-		}
-		return "", nil, claimsErr
-	}
-
-	// Phase 1 hallucination detection: scan the agent's prose for
-	// claims (URLs, task/project IDs, artifact filenames, numeric
-	// counts) and cross-reference each against this step's
-	// tool_audit + artifact list. Signals land on the outcome row
-	// regardless of severity; High-severity findings fail the
-	// step so the scheduler's retry path picks it up.
-	//
-	// The detector is best-effort: any error during build/scan
-	// degrades silently (the step succeeds without signals), so a
-	// transient audit-DB hiccup never blocks otherwise-good work.
-	if e.hallucinationDetector != nil {
-		signalBlob, hallucDetail, hallucErr := e.runHallucinationDetector(ctx, task, execution, stepID, resultBytes)
-		hallucinationSignalsBlob = signalBlob
-		if hallucErr != nil {
-			hallucinationDetail = hallucDetail
-			if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
-				e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after hallucination failure")
-			}
-			return "", nil, hallucErr
-		}
-	}
-
-	// Trading scorecard_floor SOFT-DROP (design 2026-07-25): before the
-	// verifiers run, drop floor-failing OPEN proposals from the strategist's
-	// result so a no-qualifying-candidate tick NO_ACTIONs instead of the whole
-	// step hard-failing. Integrity violations (protected-symbol close, unknown
-	// action, unparseable proposal) still HARD-fail the step here. No-op for
-	// non-trading projects / non-proposal steps (self-gated). The rewritten
-	// resultBytes is what flows to the risk-officer/executor; the (now
-	// SeverityWarn) scorecard_floor verifier below observes the filtered set.
-	filtered, floorErr := e.filterTradingFloor(task, resultBytes)
-	if floorErr != nil {
-		hallucinationDetail = floorErr.Error()
-		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
-			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after trading-floor hard-fail")
-		}
-		return "", nil, floorErr
-	}
-	resultBytes = filtered
-
-	// Phase 2 outcome verifiers: project-declared declarative
-	// invariants over (artifacts, audit, result.json). Distinct
-	// from Phase 1 which scans prose; Phase 2 scrutinises actual
-	// work. A verifier failure fails the step so the scheduler
-	// retries it.
-	if verifyErr := e.runVerifiers(ctx, task, execution, stepID, resultBytes, effectiveProjectDir); verifyErr != nil {
-		hallucinationDetail = verifyErr.Error()
-		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
-			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after verifier failure")
-		}
-		return "", nil, verifyErr
+		return "", nil, so.Err
 	}
 
 	// Clean up the container immediately — we've read result.json and

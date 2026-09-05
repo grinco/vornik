@@ -45,9 +45,19 @@ import (
 const (
 	DefaultTaskLLMUsageDays = 90
 	DefaultToolAuditDays    = 30
-	DefaultTasksDays        = 60
-	DefaultExecutionsDays   = 60
-	DefaultArtifactsDays    = 60
+	// DefaultChatAuditDays bounds chat_audit_log. 90, deliberately longer
+	// than DefaultTasksDays (60), so a task's origin row outlives by a month
+	// any task that could still need it for delivery — the reference guard in
+	// pruneChatAuditLog is then belt-and-braces rather than load-bearing.
+	//
+	// It is also an upgrade horizon, not just a cleanup one: this table has
+	// never been swept, so the first sweep after this ships is the only one
+	// that will ever remove years at once. See
+	// https://docs.vornik.io §4.1.
+	DefaultChatAuditDays  = 90
+	DefaultTasksDays      = 60
+	DefaultExecutionsDays = 60
+	DefaultArtifactsDays  = 60
 	// DefaultTaskMessagesDays is 0 — independent prune disabled by
 	// default. Parent-task retention cascades to messages via FK; an
 	// explicit setting only matters when operators want messages
@@ -80,6 +90,29 @@ const (
 	// idx_policy_eval_decision_recent (partial on decision <> 'allow')
 	// supports the sweep.
 	DefaultMemoryPolicyEvalBlockDays = 365
+	// DefaultMemoryEvictionAuditDays bounds memory_eviction_audit and
+	// memory_eviction_runs — the hard-eviction tombstones and their headers.
+	//
+	// 365, matching MemoryPolicyEvalBlockDays and for the same reason: this is
+	// the compliance trail, not a dense operational one. Both tables are
+	// registered erasure-exempt under Art 17(3)(b) (erasing them would destroy
+	// the evidence that an erasure happened) and NEITHER was swept by anything —
+	// they appeared in no allowlist and grew without bound.
+	//
+	// EXEMPT FROM ERASURE IS NOT EXEMPT FROM RETENTION. That rule is already
+	// written down: 2026-07-30-chat-memory-write-design.md §5.3.4 requires an
+	// audit table to settle three things — registration as erasure-exempt BY
+	// NAME, disclosure in the retained-categories report, and sweeping on its own
+	// horizon. The first two were done for both tables; the third was done for
+	// neither. Indefinite retention of a table holding an operator identifier and
+	// a free-text reason sits badly with Art 5(1)(e) whatever ground justifies
+	// keeping it for a while.
+	//
+	// Priced honestly: production holds 1,240 tombstones across almost three
+	// months, and eviction is an operator action rather than a hot path. This is
+	// a correctness-of-posture fix, not a capacity one — which is why the horizon
+	// is generous rather than tight.
+	DefaultMemoryEvictionAuditDays = 365
 	// MinimumFloorDays is the absolute minimum any window can be pinned
 	// to regardless of operator config. Protects against typos that
 	// would nuke fresh operational data.
@@ -120,6 +153,15 @@ type Policy struct {
 	// MemoryPolicyEvalBlockDays prunes the `block_*` (compliance)
 	// rows in memory_policy_evaluations. Always-on (default 365).
 	MemoryPolicyEvalBlockDays int
+	// MemoryEvictionAuditDays prunes memory_eviction_audit and
+	// memory_eviction_runs by evicted_at. Always-on (default 365).
+	// See DefaultMemoryEvictionAuditDays.
+	MemoryEvictionAuditDays int
+	// ChatAuditDays prunes chat_audit_log by ts. Always-on (default 90).
+	// Rows still referenced by a tasks.chat_turn_id are never pruned however
+	// old — they are the only record of where a finished task's result gets
+	// delivered.
+	ChatAuditDays int
 	// ArtifactsRoot is the host-side base path for artifact files. Needed
 	// for on-disk unlink when pruning the DB record. Empty disables the
 	// filesystem unlink step (DB-only prune).
@@ -156,6 +198,8 @@ func Resolve(projectID string, perProject, defaults Policy) Policy {
 		// Firewall audit trail — always-on, split allow/block windows.
 		MemoryPolicyEvalAllowDays: pick(perProject.MemoryPolicyEvalAllowDays, defaults.MemoryPolicyEvalAllowDays, DefaultMemoryPolicyEvalAllowDays),
 		MemoryPolicyEvalBlockDays: pick(perProject.MemoryPolicyEvalBlockDays, defaults.MemoryPolicyEvalBlockDays, DefaultMemoryPolicyEvalBlockDays),
+		MemoryEvictionAuditDays:   pick(perProject.MemoryEvictionAuditDays, defaults.MemoryEvictionAuditDays, DefaultMemoryEvictionAuditDays),
+		ChatAuditDays:             pick(perProject.ChatAuditDays, defaults.ChatAuditDays, DefaultChatAuditDays),
 		ArtifactsRoot:             perProject.ArtifactsRoot,
 	}
 	if out.ArtifactsRoot == "" {
@@ -169,6 +213,9 @@ func Resolve(projectID string, perProject, defaults Policy) Policy {
 	}
 	if out.ToolAuditDays < MinimumFloorDays {
 		out.ToolAuditDays = MinimumFloorDays
+	}
+	if out.ChatAuditDays < MinimumFloorDays {
+		out.ChatAuditDays = MinimumFloorDays
 	}
 	if out.TasksDays < MinimumFloorDays {
 		out.TasksDays = MinimumFloorDays
@@ -226,10 +273,30 @@ func (c *Counts) addQuarantined(q graphsweep.QuarantineCounts) {
 // Counts reports how many rows were (or would be) pruned in each table.
 // Used by both Sweep (actual) and Preview (dry-run).
 type Counts struct {
-	TaskLLMUsage  int
-	ToolAudit     int
-	Tasks         int
-	Executions    int
+	// MemoryEvictionAudit / MemoryEvictionRuns are the hard-eviction tombstones
+	// and their headers, swept together on one horizon. Reported separately
+	// because a header surviving its tombstones is the expected steady state
+	// within a run's own window, and a reader needs to see which half moved.
+	MemoryEvictionAudit int
+	MemoryEvictionRuns  int
+
+	TaskLLMUsage int
+	ToolAudit    int
+	Tasks        int
+	Executions   int
+	// StepPrompts is the count of step_prompts rows no outcome row referenced
+	// any more (pruned after executions, since outcome rows go with them).
+	StepPrompts int
+	// ChatAuditLog is the count of chat_audit_log rows pruned: past the
+	// horizon AND not referenced by any task's chat_turn_id.
+	ChatAuditLog int
+	// ChatSystemPrompts is the count of chat_system_prompts bodies no
+	// chat_audit_log row referenced any more. Like StepPrompts, it has no
+	// horizon of its own — a body lives as long as a row points at it.
+	ChatSystemPrompts int
+	// LLMExchanges is the count of llm_exchanges rows whose execution no
+	// longer exists. Like StepPrompts, reference-bound, no horizon of its own.
+	LLMExchanges  int
 	Artifacts     int
 	ArtifactFiles int
 	// TaskMessages is the count of rows pruned from task_messages
@@ -653,6 +720,13 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 	counts.ArtifactFiles = artFiles
 
 	// 4. Tasks — terminal only. Cascades to executions via FK.
+	//
+	// TERMINAL-ONLY IS A CONTRACT, not an optimisation: the chat_audit_log
+	// prune below protects any row a task still references, and that guard is
+	// only sound because a task whose row survives is a task that might still
+	// deliver. Widening this filter to non-terminal statuses would silently
+	// start collecting the origin records of tasks that can still deliver.
+	// See chatAuditLiveTaskWhere.
 	if n, err := s.pruneOlderThan(ctx,
 		"tasks", "updated_at",
 		"project_id = $2 AND status IN ('COMPLETED','FAILED','CANCELLED')",
@@ -683,6 +757,64 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 		}
 	} else {
 		counts.Executions = n
+	}
+
+	// 5b. step_prompts — content-addressed parts of each step's first model
+	//     request (step-prompt persistence design §6). No horizon of its own:
+	//     a part lives exactly as long as an execution_step_outcomes row
+	//     references it, and those rows go with their executions above, so
+	//     this runs AFTER the execution prune and removes what nothing points
+	//     at any more. Project-agnostic by construction — a hash is shared
+	//     across projects when the bytes are, and it is unreferenced only when
+	//     no project's outcome references it.
+	if n, err := s.pruneUnreferencedStepPrompts(ctx, previewOnly); err != nil {
+		s.warn("step_prompts", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.StepPrompts = n
+	}
+
+	// 5c. chat_audit_log — the per-turn chat record, past its horizon AND
+	//     not referenced by a live task (chat-audit retention and redaction
+	//     design §4.1). Runs before the prompt-body prune below, which
+	//     collects whatever these rows were the last reference to.
+	if n, err := s.pruneChatAuditLog(ctx, p.ProjectID,
+		now.AddDate(0, 0, -p.ChatAuditDays), previewOnly); err != nil {
+		s.warn("chat_audit_log", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.ChatAuditLog = n
+	}
+
+	// 5d. chat_system_prompts — content-addressed prompt bodies. Same shape
+	//     as step_prompts above: no horizon, project-agnostic, removes what
+	//     nothing points at any more.
+	if n, err := s.pruneUnreferencedChatPrompts(ctx, previewOnly); err != nil {
+		s.warn("chat_system_prompts", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.ChatSystemPrompts = n
+	}
+
+	// 5e. llm_exchanges — the recorded model exchanges of agent steps
+	//     (llm-exchange record/replay design §3). No horizon of its own: a
+	//     row lives exactly as long as its execution, and this sweep — not a
+	//     foreign key, which SQLite does not enforce — is what removes the
+	//     rows whose execution step 5 (or any other path) deleted. Project-
+	//     agnostic: an orphan is an orphan whichever project owned it.
+	if n, err := s.pruneOrphanedLLMExchanges(ctx, previewOnly); err != nil {
+		s.warn("llm_exchanges", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.LLMExchanges = n
 	}
 
 	// 6. task_messages — independent prune, only when explicitly
@@ -805,6 +937,21 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 		}
 	} else {
 		counts.MemoryPolicyEvalBlock = n
+	}
+
+	// 10. memory_eviction_audit + memory_eviction_runs — always-on (default
+	//     365d). Both are erasure-EXEMPT under Art 17(3)(b) and were swept by
+	//     nothing, so they grew without bound. Exempt from erasure is not exempt
+	//     from retention (chat memory-write LLD §5.3.4). Ordered last because it
+	//     is the newest step and the sweep's order is an observable contract.
+	if n, err := s.pruneEvictionEvidence(ctx, p, now, previewOnly); err != nil {
+		s.warn("memory_eviction_audit", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.MemoryEvictionAudit = n.tombstones
+		counts.MemoryEvictionRuns = n.headers
 	}
 
 	return counts, firstErr
@@ -1152,6 +1299,81 @@ func scanIDs(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]stri
 }
 
 // pruneOlderThan runs a COUNT or DELETE on table rows older than threshold
+
+type evictionSweepCounts struct {
+	tombstones int
+	headers    int
+}
+
+// pruneEvictionEvidence sweeps memory_eviction_audit and memory_eviction_runs on
+// one horizon (design: the chat memory-write LLD §5.3.4 rule that an audit table
+// exempt from ERASURE is not exempt from RETENTION).
+//
+// ORDER IS LOAD-BEARING, and the schema enforces it. memory_eviction_audit.run_id
+// references memory_eviction_runs ON DELETE RESTRICT, so a sweep that reached the
+// headers first would FAIL rather than orphan or cascade — which is the intended
+// direction, but only if we never rely on it. Tombstones go first, deliberately.
+//
+// THE TWO TABLES EXPIRE TOGETHER, on one window rather than two. They are halves
+// of one record: a header says what an eviction removed beyond the chunks, and
+// the tombstones account for the chunks. Independent windows would leave a
+// header whose tombstones are gone (an eviction with no evidence of what it
+// evicted) or tombstones whose header is gone (chunks accounted for by no
+// operation) — both worse than keeping or dropping the pair.
+//
+// A HEADER IS ONLY REMOVED ONCE NOTHING REFERENCES IT. Within one window the
+// tombstones and their header share an evicted_at, so they age out together; but
+// a header written just before the cutoff with tombstones written just after it
+// would otherwise hit the RESTRICT and fail the whole sweep. The NOT EXISTS makes
+// that case a no-op this run and a clean delete the next, instead of an error
+// every run forever.
+//
+// KNOWN LIMIT, stated rather than left to be discovered. The backlog item that
+// prompted this asks for evictions tied to a DATA-SUBJECT REQUEST to expire with
+// that request's own record. Nothing links them today — neither table carries a
+// request id and no producer writes one — so implementing that half would mean
+// inventing a column nothing fills, which is worse than the fixed horizon. The
+// horizon here is the operator-accountability one; the request-linked variant
+// needs the linkage first.
+func (s *Sweeper) pruneEvictionEvidence(ctx context.Context, p Policy, now time.Time, previewOnly bool) (evictionSweepCounts, error) {
+	var out evictionSweepCounts
+	cutoff := now.AddDate(0, 0, -p.MemoryEvictionAuditDays)
+
+	tomb, err := s.pruneOlderThan(ctx,
+		"memory_eviction_audit", "evicted_at",
+		"project_id = $2", p.ProjectID,
+		cutoff, previewOnly,
+	)
+	if err != nil {
+		return out, err
+	}
+	out.tombstones = tomb
+
+	// In preview the tombstones above were counted, not deleted, so a header
+	// still has referencing rows and the NOT EXISTS would report zero. Count the
+	// headers that WOULD become unreferenced once the tombstone sweep lands —
+	// otherwise a preview understates its own effect, which is the one thing a
+	// preview must not do.
+	headerWhere := `project_id = $2 AND NOT EXISTS (
+		SELECT 1 FROM memory_eviction_audit a
+		 WHERE a.run_id = memory_eviction_runs.id`
+	if previewOnly {
+		headerWhere += ` AND a.evicted_at >= $1`
+	}
+	headerWhere += `)`
+
+	heads, err := s.pruneOlderThan(ctx,
+		"memory_eviction_runs", "evicted_at",
+		headerWhere, p.ProjectID,
+		cutoff, previewOnly,
+	)
+	if err != nil {
+		return out, err
+	}
+	out.headers = heads
+	return out, nil
+}
+
 // matching extraWhere. $1 is the timestamp threshold; $2+ are bound to
 // extraWhereArgs. previewOnly switches DELETE → COUNT.
 func (s *Sweeper) pruneOlderThan(ctx context.Context, table, tsCol, extraWhere string, extraWhereArg string, threshold time.Time, previewOnly bool) (int, error) {
@@ -1163,16 +1385,22 @@ func (s *Sweeper) pruneOlderThan(ctx context.Context, table, tsCol, extraWhere s
 		"tool_audit_log":            true,
 		"tasks":                     true,
 		"executions":                true,
+		"step_prompts":              true,
+		"chat_audit_log":            true,
 		"project_memory_chunks":     true,
 		"memory_ingest_audit":       true,
 		"memory_policy_evaluations": true,
+		"memory_eviction_audit":     true,
+		"memory_eviction_runs":      true,
 	}
 	allowedCols := map[string]bool{
+		"ts":           true,
 		"recorded_at":  true,
 		"created_at":   true,
 		"updated_at":   true,
 		"ingested_at":  true,
 		"evaluated_at": true,
+		"evicted_at":   true,
 	}
 	if evidenceTables[table] {
 		return 0, fmt.Errorf("refusing to prune %s: conformity evidence trail (AI Act Art 50 / Art 99) — see evidenceTables", table)
@@ -1289,4 +1517,130 @@ func (s *Sweeper) warn(table string, err error) {
 		return
 	}
 	s.logger.Warn().Err(err).Str("table", table).Msg("retention sweep failed on table")
+}
+
+// stepPromptsUnreferencedWhere is the reference check shared by the preview
+// count and the delete: a part is unreferenced when no outcome row points at it
+// through ANY of the five hash columns — the three prompt parts (migration
+// 175) and the two boundary files (migration 178, step-I/O persistence design
+// §3). Portable SQL (NOT EXISTS, no dialect functions) so it reads identically
+// on Postgres and SQLite; the partial indexes make each probe an index lookup.
+// One constant, one predicate: a sixth part is added HERE and in both
+// repositories' PruneUnreferenced, and TestStepPromptsPredicateNamesEveryColumn
+// fails until it is.
+const stepPromptsUnreferencedWhere = `
+	NOT EXISTS (SELECT 1 FROM execution_step_outcomes o WHERE o.prompt_system_hash = step_prompts.hash)
+	AND NOT EXISTS (SELECT 1 FROM execution_step_outcomes o WHERE o.prompt_user_hash = step_prompts.hash)
+	AND NOT EXISTS (SELECT 1 FROM execution_step_outcomes o WHERE o.prompt_tools_hash = step_prompts.hash)
+	AND NOT EXISTS (SELECT 1 FROM execution_step_outcomes o WHERE o.input_hash = step_prompts.hash)
+	AND NOT EXISTS (SELECT 1 FROM execution_step_outcomes o WHERE o.result_hash = step_prompts.hash)`
+
+// chatAuditLiveTaskWhere protects a chat_audit_log row that some task still
+// points at. A chat-originated task carries the row's PK in
+// tasks.chat_turn_id, and chatorigin resolves it to decide where the finished
+// result is delivered; nothing backfills it, so a pruned row makes the
+// deliverable permanently unsendable.
+//
+// Keyed on the task ROW existing, not on its status. `tasks` is pruned
+// terminal-only (see the tasks step in run()), so a task that could still
+// deliver is a task whose row is still there — and once its row goes, there is
+// nothing left to deliver from and the origin row protects nothing. The two
+// disappear together, in that order.
+//
+// PERFORMANCE: the correlated NOT EXISTS is only cheap because
+// tasks.chat_turn_id is indexed on both drivers — `idx_tasks_chat_turn_id`
+// (migration `tasks_chat_turn_id`) and `idx_tasks_chat_turn` (sqlite schema,
+// partial on NOT NULL). Without one, this walks tasks once per candidate row.
+// Verified 2026-09-04 on review; if either index is ever dropped, this prune
+// is where it will be felt.
+//
+// THE TASKS PRUNE BEING TERMINAL-ONLY IS LOAD-BEARING HERE. Widening it to
+// non-terminal rows would silently start collecting origin records for tasks
+// that can still deliver. Design §4.1.
+const chatAuditLiveTaskWhere = `
+	NOT EXISTS (SELECT 1 FROM tasks t WHERE t.chat_turn_id = chat_audit_log.id)`
+
+// pruneChatAuditLog removes (or, in preview, counts) chat_audit_log rows past
+// the horizon for one project, except those a task still references.
+func (s *Sweeper) pruneChatAuditLog(ctx context.Context, projectID string, threshold time.Time, previewOnly bool) (int, error) {
+	return s.pruneOlderThan(ctx,
+		"chat_audit_log", "ts",
+		"project_id = $2 AND"+chatAuditLiveTaskWhere,
+		projectID, threshold, previewOnly)
+}
+
+// chatPromptsUnreferencedWhere matches prompt bodies nothing points at.
+const chatPromptsUnreferencedWhere = `
+	NOT EXISTS (SELECT 1 FROM chat_audit_log c WHERE c.system_prompt_hash = chat_system_prompts.hash)`
+
+// pruneUnreferencedChatPrompts removes (or, in preview, counts) the
+// chat_system_prompts rows no chat_audit_log row references any more. The
+// sibling of pruneUnreferencedStepPrompts, and project-agnostic for the same
+// reason: a hash is shared across projects when the bytes are.
+func (s *Sweeper) pruneUnreferencedChatPrompts(ctx context.Context, previewOnly bool) (int, error) {
+	if previewOnly {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_system_prompts WHERE`+chatPromptsUnreferencedWhere).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count unreferenced chat_system_prompts: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_system_prompts WHERE`+chatPromptsUnreferencedWhere)
+	if err != nil {
+		return 0, fmt.Errorf("delete unreferenced chat_system_prompts: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected on chat_system_prompts prune: %w", err)
+	}
+	return int(n), nil
+}
+
+// pruneUnreferencedStepPrompts removes (or, in preview, counts) the step_prompts
+// rows nothing references. The preview counts exactly what the delete would
+// remove — a preview that understates its own effect is the one thing a
+// preview must not do.
+func (s *Sweeper) pruneUnreferencedStepPrompts(ctx context.Context, previewOnly bool) (int, error) {
+	if previewOnly {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM step_prompts WHERE`+stepPromptsUnreferencedWhere).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count unreferenced step_prompts: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM step_prompts WHERE`+stepPromptsUnreferencedWhere)
+	if err != nil {
+		return 0, fmt.Errorf("delete unreferenced step_prompts: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
+}
+
+// llmExchangesOrphanedWhere selects exchanges whose execution row is gone.
+const llmExchangesOrphanedWhere = ` NOT EXISTS (SELECT 1 FROM executions e WHERE e.id = llm_exchanges.execution_id)`
+
+// pruneOrphanedLLMExchanges is retention step 5e: reference-bound, on both
+// backends, guarded by to_regclass-free syntax so a database predating
+// migration 177 that somehow lacks the table fails loudly rather than
+// silently reporting zero.
+func (s *Sweeper) pruneOrphanedLLMExchanges(ctx context.Context, previewOnly bool) (int, error) {
+	if previewOnly {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM llm_exchanges WHERE`+llmExchangesOrphanedWhere).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count orphaned llm_exchanges: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM llm_exchanges WHERE`+llmExchangesOrphanedWhere)
+	if err != nil {
+		return 0, fmt.Errorf("delete orphaned llm_exchanges: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
 }

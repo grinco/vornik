@@ -73,7 +73,18 @@ vornikctl task get <id>          # status and last error class
 vornikctl task explain <id>      # post-mortem for a terminal task
 vornikctl task tail <id>         # logs (bare `vornikctl tail` is an alias)
 vornikctl playbook show <CLASS>  # remediation for that error class
+vornikctl execution prompt <executionId> <stepId>   # what the step's model was TOLD
 ```
+
+**Read the prompt before blaming the tool.** Since 2026-09-04 the daemon keeps
+each step's first model request — system prompt, user content, tools array —
+redacted, content-addressed, keyed from the step's outcome row. A step that
+failed in prompt assembly (a guidance block that did not land, a skill injected
+that should not have been, a budget that truncated the wrong thing) shows it
+there and nowhere else. `--part system|user|tools` prints one part bare. A 404
+`PROMPT_NOT_RECORDED` means the agent image predates the contract or the step
+never reached its first request — check image freshness. Execution ids come
+from `vornikctl execution list`; step ids from `vornikctl task explain`.
 
 **The playbook is the highest-value and least-known path in the product.**
 The executor stamps a failure class on failed tasks, and the playbook corpus

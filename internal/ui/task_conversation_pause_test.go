@@ -54,6 +54,8 @@ func (p *pauseSpy) ResumePaused(execID string) error {
 	return nil
 }
 
+func (p *pauseSpy) RetryFromStep(context.Context, string, string) error { return nil }
+
 // ResumeTask satisfies the 2026-05-26 ExecutorInterface extension.
 // Defaults to returning a sentinel "no active execution" error so
 // existing tests fall through to the bare flip-to-QUEUED path

@@ -413,13 +413,23 @@ vornikctl config reload-status [flags]
 
 Dump effective daemon config (secrets redacted)
 
+Print the configuration the running daemon resolved, secrets redacted.
+
+The dump follows a hot reload. With --provenance every key is printed with
+where its value came from — file, env, placeholder, alias, default, derived,
+secret_file, or unset (the zero value; nothing set it, which is how a key
+written to a tree the daemon never reads looks). An origin of env_invalid
+names a variable that was set and did not parse.
+
 ```
 vornikctl config show [flags]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--json` | `true` | JSON output (the only supported shape — default) |
+| `--json` | `true` | JSON output (default; --json=false with --provenance prints a table) |
+| `--provenance` | `false` | Print every key with the origin and source of its value |
+| `--trees` | `false` | Add the registry trees: which file supplied each project, swarm, workflow and role, and the files the loader refused |
 
 ## vornikctl control-plane
 
@@ -695,6 +705,24 @@ vornikctl execution list [flags]
 | `-p`, `--project` |  | Project ID (required) |
 | `-s`, `--status` |  | Filter by status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED) |
 | `-t`, `--task` |  | Filter by task ID |
+
+## vornikctl execution prompt
+
+Print what a step's model was told at its first request
+
+Print the step's first model request as the daemon stored it — the system
+prompt, the user content and the tools array — content-addressed and redacted at
+write. Model-visible means persisted: a step that failed in prompt assembly
+leaves this behind, so read it before blaming the tool. Empty for a step run by
+an agent image that predates step-prompt persistence.
+
+```
+vornikctl execution prompt <executionId> <stepId> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--part` |  | Print one part only: system, user or tools |
 
 ## vornikctl init
 

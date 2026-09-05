@@ -19,3 +19,14 @@ func TestUIExecutorAdapter_ImplementsTaskLogSource(t *testing.T) {
 		t.Fatalf("uiExecutorAdapter must implement ui.TaskLogSource — otherwise /ui/tasks/{id}/logs/stream returns the empty-fallback for every task")
 	}
 }
+
+// TestUIExecutorAdapter_ImplementsExecutorInterface — the compile-time
+// assertion the wire site makes, stated as a test so a method added to
+// ui.ExecutorInterface without an adapter forward is named here rather
+// than as a typecheck error inside make lint (2026-09-04, RetryFromStep).
+func TestUIExecutorAdapter_ImplementsExecutorInterface(t *testing.T) {
+	var a any = uiExecutorAdapter{}
+	if _, ok := a.(ui.ExecutorInterface); !ok {
+		t.Fatal("uiExecutorAdapter must implement ui.ExecutorInterface")
+	}
+}

@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "Detect project language and run the configured linter (go vet / eslint / ruff). Returns {language, linter, issues:[{file,line,message}], output}.",
+    "name": "lint_run",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Project root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Limit to specific files or packages.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

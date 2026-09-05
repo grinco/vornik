@@ -224,21 +224,12 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 	}
 }
 
-// isTrustedAssociation reports whether a commenter may spend the project's
-// review budget.
-//
-// Only people with standing in the repository qualify. CONTRIBUTOR is
-// deliberately EXCLUDED: on GitHub it means "has had a pull request merged
-// here", which is a statement about the past, not permission to trigger model
-// spend at will. Anything unrecognised or absent is untrusted, so a payload
-// shape we do not know about fails closed rather than open.
+// isTrustedAssociation defers to forgereview, where the rule now lives so BOTH
+// forge ingresses read the same one. It was defined here first, which is why
+// the GitHub App channel — dispatching the identical command grammar — had no
+// author gate at all until the 2026-09-03 audit.
 func isTrustedAssociation(assoc string) bool {
-	switch strings.ToUpper(strings.TrimSpace(assoc)) {
-	case "OWNER", "MEMBER", "COLLABORATOR":
-		return true
-	default:
-		return false
-	}
+	return forgereview.IsTrustedAssociation(assoc)
 }
 
 // isReviewAction reports whether a pull_request action means "there is (new)

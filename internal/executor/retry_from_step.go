@@ -102,8 +102,8 @@ func (e *Executor) RetryFromStep(ctx context.Context, executionID, stepID string
 		return fmt.Errorf("%w: status=%s", ErrRetryNotTerminal, exec.Status)
 	}
 
-	// stepID must be in the existing run's completed_steps. Truncate
-	// the slice to everything strictly before the FIRST occurrence —
+	// stepID is a completed step or the current one. For a completed step,
+	// truncate the slice to everything strictly before the FIRST occurrence —
 	// loops can have the same step appear multiple times; restarting
 	// at the first occurrence is the safe choice (otherwise the
 	// loop counter math gets confused).
@@ -115,7 +115,17 @@ func (e *Executor) RetryFromStep(ctx context.Context, executionID, stepID string
 		}
 	}
 	if cutIdx == -1 {
-		return fmt.Errorf("%w: step=%q completed_steps=%v", ErrRetryStepNotInExecution, stepID, exec.CompletedSteps)
+		// The CURRENT step — the one that failed or was cancelled — is not in
+		// completed_steps, and "retry the step that broke" is the common case.
+		// Every completed step survives; the current step is re-run. Until
+		// 2026-09-04 only the UI accepted this, through its own state writer
+		// (backlog: "The UI's retry-from-step writes a state snapshot the
+		// executor knows nothing about"); this is now the one place the rule
+		// lives, and the UI delegates here.
+		if exec.CurrentStepID == nil || *exec.CurrentStepID != stepID {
+			return fmt.Errorf("%w: step=%q completed_steps=%v", ErrRetryStepNotInExecution, stepID, exec.CompletedSteps)
+		}
+		cutIdx = len(exec.CompletedSteps)
 	}
 
 	e.mu.Lock()

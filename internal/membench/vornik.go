@@ -466,11 +466,31 @@ type whoamiReply struct {
 	// erroring — and it surfaced only as the clear refusing every run with
 	// "the daemon reported an EMPTY project". Verified against a live whoami
 	// payload 2026-08-21.
-	Project            string   `json:"project_id"`
+	Project string `json:"project_id"`
+	// DaemonRevision is the build of the system under test, as the daemon
+	// reports it. Read from whoami rather than taken as a flag for the same
+	// reason Project and Database are: the harness refuses to trust a typed
+	// value about the target it is measuring. Empty when the daemon is too old
+	// to report it, which marks the comparability key partial rather than
+	// attributing the run to a build nobody verified.
+	DaemonRevision     string   `json:"daemon_revision"`
 	EmbeddingReadiness *float64 `json:"embedding_readiness"`
 	ChunksTotal        int64    `json:"memory_chunks_total"`
 	ChunksEmbedded     int64    `json:"memory_chunks_embedded"`
 	QueueDepth         int64    `json:"memory_embed_queue_depth"`
+}
+
+// DaemonRevision reports the build of the daemon under test, or "" when it
+// cannot say. Satisfies membench's optional revision reporter, on the same
+// ask-the-system principle as ObservedEmbedder: a run's own artifact must be
+// able to attribute it to a release, and backfilling the track record by
+// matching finished_at against the git log is what the absence cost.
+func (v *VornikSystem) DaemonRevision(ctx context.Context) string {
+	var reply whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(reply.DaemonRevision)
 }
 
 // PendingIngest reports how many chunks are still queued for embedding, satisfying

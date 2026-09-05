@@ -291,9 +291,14 @@ func (m *MockRuntime) Logs(ctx context.Context, containerID string, tail int) (s
 }
 
 type MockExecRepo struct {
-	mu              sync.Mutex
-	execs           map[string]*persistence.Execution
-	err             error
+	mu    sync.Mutex
+	execs map[string]*persistence.Execution
+	err   error
+	// updateCalls counts whole-row Update writes. The executor's run path
+	// must make none: Update carries status + state_snapshot from whatever
+	// struct it is handed, which is how a stale in-memory copy erased
+	// concurrent pauses (pause-write-ownership design §3.2).
+	updateCalls     int
 	updateStatusErr error // per-method override for ResumePaused error-path tests
 	// statusLog is the append-only history of UpdateStatus calls per
 	// execution. Sampling the CURRENT status is racy for any transition the
@@ -360,6 +365,7 @@ func (m *MockExecRepo) GetByTaskID(ctx context.Context, tid string) (*persistenc
 }
 func (m *MockExecRepo) Update(ctx context.Context, e *persistence.Execution) error {
 	m.mu.Lock()
+	m.updateCalls++
 	cp := *e
 	cp.CompletedSteps = append([]string{}, e.CompletedSteps...)
 	m.execs[e.ID] = &cp
@@ -380,6 +386,56 @@ func (m *MockExecRepo) List(ctx context.Context, filter persistence.ExecutionFil
 	}
 	return out, nil
 }
+
+// UpdateCalls reports how many whole-row Update writes have been made.
+func (m *MockExecRepo) UpdateCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.updateCalls
+}
+
+func (m *MockExecRepo) UpdateWorkflowID(_ context.Context, id, workflowID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.execs[id]; ok {
+		e.WorkflowID = workflowID
+	}
+	return nil
+}
+
+// TransitionStatusConditional mirrors the real repositories: apply only from
+// one of `from`, and report whether a row changed.
+func (m *MockExecRepo) TransitionStatusConditional(_ context.Context, id string, from []persistence.ExecutionStatus, to persistence.ExecutionStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, fmt.Errorf("mock exec repo: empty from set")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.updateStatusErr != nil {
+		return false, m.updateStatusErr
+	}
+	e, ok := m.execs[id]
+	if !ok {
+		return false, nil
+	}
+	matched := false
+	for _, f := range from {
+		if e.Status == f {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	e.Status = to
+	if m.statusLog == nil {
+		m.statusLog = map[string][]persistence.ExecutionStatus{}
+	}
+	m.statusLog[id] = append(m.statusLog[id], to)
+	return true, nil
+}
+
 func (m *MockExecRepo) UpdateStatus(ctx context.Context, id string, s persistence.ExecutionStatus) error {
 	m.mu.Lock()
 	if m.updateStatusErr != nil {

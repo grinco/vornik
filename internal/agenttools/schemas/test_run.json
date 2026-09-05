@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "Detect project language and run the test suite. Returns {language, runner, passed, failed, skipped, failures:[{test,message}], output}. Gracefully reports when the required toolchain is not installed in the agent image.",
+    "name": "test_run",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Project root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Limit to specific test files/packages.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

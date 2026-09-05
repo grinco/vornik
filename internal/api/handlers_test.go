@@ -667,6 +667,14 @@ func (m *mockExecutionRepo) List(context.Context, persistence.ExecutionFilter) (
 func (m *mockExecutionRepo) Count(context.Context, persistence.ExecutionFilter) (int64, error) {
 	return 0, nil
 }
+func (m *mockExecutionRepo) UpdateWorkflowID(context.Context, string, string) error {
+	return nil
+}
+
+func (m *mockExecutionRepo) TransitionStatusConditional(context.Context, string, []persistence.ExecutionStatus, persistence.ExecutionStatus) (bool, error) {
+	return true, nil
+}
+
 func (m *mockExecutionRepo) UpdateStatus(context.Context, string, persistence.ExecutionStatus) error {
 	return nil
 }

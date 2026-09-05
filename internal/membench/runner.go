@@ -2,12 +2,15 @@ package membench
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -221,6 +224,30 @@ type Runner struct {
 	// scoring was allowed to begin — the number that describes what was measured,
 	// unlike a post-hoc sample of a drained queue.
 	scoringReadiness *float64
+
+	// runNonce makes this run's leak-probe payloads unique. Set fresh by every
+	// Run; see assertNoLeakage.
+	runNonce string
+
+	// CorpusRegime is what the caller OBSERVED about the store before the run:
+	// cold if it cleared it, warm if it did not. Unknown when the caller cannot
+	// say, which marks the comparability key partial rather than guessing.
+	//
+	// It comes from the caller because the clear is performed there — the runner
+	// has no database handle — but it is still an observation rather than a
+	// declaration: the caller sets it from the clear's own result, not from a
+	// flag. See ComparabilityFields.CorpusRegime.
+	CorpusRegime CorpusRegime
+
+	// DaemonRevision is the build of the system under test, read from the daemon
+	// rather than passed as a flag. Empty marks the key partial.
+	DaemonRevision string
+
+	// HarnessRevision is the build of the harness itself. Manifest-only: the
+	// harness version already in the key is the deliberate, human-bumped statement
+	// of "these runs are incomparable", whereas a commit sha changes on every
+	// unrelated edit and would refuse every comparison across any commit at all.
+	HarnessRevision string
 }
 
 // EmbedderReporter is an optional MemorySystem capability: the embedder actually in
@@ -301,6 +328,7 @@ func (r *Runner) preflight(ctx context.Context, datasetPath string) ([]BenchItem
 	// methods into this run's comparability key.
 	r.observedRecallMethods = map[string]struct{}{}
 	r.scoringReadiness = nil
+	r.runNonce = newRunNonce()
 	// A judged run needs both. Refused here rather than tolerated, because the
 	// alternative — judging only when a judge happens to be wired — lets a
 	// misconfigured full run silently report itself as a retrieval-only run.
@@ -362,16 +390,22 @@ func (r *Runner) Run(ctx context.Context, datasetPath string) (Result, error) {
 	// Seed from the journal so a resumed run reports over the whole population
 	// rather than only the items it re-ran.
 	counts := map[string]OutcomeCounts{}
-	if r.Resume {
-		for cat, c := range replay.CountsByCategory() {
-			counts[cat] = c
-		}
-	}
 	recalls := map[string][]float64{}
 	precisions := map[string][]float64{}
 	mrrs := map[string][]float64{}
 	var retrievals []RetrievalDetail
 	worstLoss := 0.0
+	if r.Resume {
+		for cat, c := range replay.CountsByCategory() {
+			counts[cat] = c
+		}
+		// BOTH of AssessTrust's signals must survive the resume, not just the
+		// counts. Skipped items are skipped precisely because they already ran,
+		// so their haystack loss is evidence this run owns — restarting the
+		// measurement at zero let a resumed run pass a bar the same work would
+		// have failed in one pass (2026-09-03 audit).
+		worstLoss = replay.WorstHaystackLoss()
+	}
 
 	// A shared-haystack dataset is ingested once for the whole run. Every item
 	// then recalls against that one scope.
@@ -637,6 +671,9 @@ func (r *Runner) runItem(
 
 	_ = journal.Record(JournalEntry{
 		ItemID: item.ID, Phase: PhaseJudged, Category: item.Category, Outcome: last,
+		// Journaled so --resume carries this item's trust evidence forward. See
+		// JournalEntry.HaystackLoss.
+		HaystackLoss: stats.HaystackLoss(),
 	})
 	return last, stats, nil
 }
@@ -652,11 +689,12 @@ func (r *Runner) recordErrorWithStats(
 	j *Journal, item BenchItem, detail string, stats IngestStats,
 ) (Outcome, IngestStats, error) {
 	_ = j.Record(JournalEntry{
-		ItemID:   item.ID,
-		Phase:    PhaseJudged,
-		Category: item.Category,
-		Outcome:  OutcomeError,
-		Detail:   detail,
+		ItemID:       item.ID,
+		Phase:        PhaseJudged,
+		Category:     item.Category,
+		Outcome:      OutcomeError,
+		Detail:       detail,
+		HaystackLoss: stats.HaystackLoss(),
 	})
 	return OutcomeError, stats, nil
 }
@@ -686,7 +724,19 @@ func (r *Runner) assertNoLeakage(ctx context.Context) error {
 		}
 		item := Item{
 			DocumentID: fmt.Sprintf("leak-probe-%d", i),
-			Content:    fmt.Sprintf("%s (probe %d)", leakageNeedle, i),
+			// PER-RUN NONCE. The payload used to be byte-identical on every run,
+			// so on a persistent store the ingest gate rejected all four probes
+			// on dedup_hash from the second run onward — and the harness counted
+			// those rejections as haystack loss and stamped the run
+			// untrustworthy, naming a dataset problem that did not exist. Every
+			// repeat run was discarded by construction, which is expensive: a
+			// judged 120-item pass is what gets thrown away.
+			//
+			// The probe is a LIVENESS check and its content is arbitrary, so a
+			// nonce costs nothing and keeps the probe honest — the alternatives
+			// (excluding probe scopes from the accounting, or tearing the scopes
+			// down) both weaken a check rather than fix the collision.
+			Content: fmt.Sprintf("%s (probe %d, run %s)", leakageNeedle, i, r.runNonce),
 		}
 		if _, err := r.System.Ingest(ctx, scope, []Item{item}); err != nil {
 			return fmt.Errorf("leakage probe: ingest into %s: %w", scope, err)
@@ -725,6 +775,22 @@ func (r *Runner) assertNoLeakage(ctx context.Context) error {
 	return nil
 }
 
+// newRunNonce returns a value no previous run used, so the leak probes cannot
+// collide with their own history in a persistent store.
+//
+// Randomness rather than a timestamp: two runs started in the same second are
+// ordinary (a repeat loop does exactly that), and a nonce that collides is the
+// bug this exists to fix. A failed read falls back to the clock, because a
+// weaker nonce is still better than the constant it replaces and refusing to run
+// over an entropy hiccup would be worse than either.
+func newRunNonce() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // scopeProbeID is the document a given probe scope legitimately owns, so a hit on
 // its OWN needle is not mistaken for a leak.
 func scopeProbeID(scope string) string {
@@ -743,6 +809,8 @@ func (r *Runner) comparabilityFields(ctx context.Context) ComparabilityFields {
 		cfg = ""
 	}
 	f := ComparabilityFields{
+		CorpusRegime:       r.CorpusRegime,
+		DaemonRevision:     r.DaemonRevision,
 		Tier2Only:          r.Tier2Only,
 		HarnessVersion:     r.HarnessVersion,
 		DatasetName:        r.Dataset.Name(),
@@ -892,7 +960,23 @@ type manifest struct {
 	// EmbeddingReadiness — see Result.EmbeddingReadiness. On the manifest because
 	// it is provenance: it says what the numbers are a measurement OF.
 	EmbeddingReadiness *float64 `json:"embedding_readiness,omitempty"`
-	FinishedAt         string   `json:"finished_at"`
+
+	// DaemonRevision / HarnessRevision attribute the run to a build.
+	//
+	// Without them a run's own artifact could not say which release produced it:
+	// backfilling the track record on 2026-08-27 had to reconstruct attribution
+	// by matching finished_at against the git log, which is why one published row
+	// is labelled 2026.8.7-48-g0e450f9c rather than by its tag. The sibling
+	// harness prints `revisions: harness <sha>, daemon <sha>` in preflight and
+	// refuses a dirty tree; this is the memory side catching up.
+	//
+	// DaemonRevision is ALSO in the comparability key (a release change should
+	// refuse comparison rather than silently produce one). HarnessRevision is
+	// manifest-only — see Runner.HarnessRevision for why.
+	DaemonRevision  string `json:"daemon_revision,omitempty"`
+	HarnessRevision string `json:"harness_revision,omitempty"`
+
+	FinishedAt string `json:"finished_at"`
 }
 
 func (r *Runner) writeArtifacts(res Result) error {
@@ -904,6 +988,8 @@ func (r *Runner) writeArtifacts(res Result) error {
 		ComparabilityPart: res.Fields.Partial(),
 		Fields:            res.Fields,
 		Trust:             res.Trust,
+		DaemonRevision:    r.DaemonRevision,
+		HarnessRevision:   r.HarnessRevision,
 		FinishedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	if noter, ok := r.System.(MethodNoter); ok {

@@ -333,3 +333,29 @@ func TestMergeGold_DropsAPathThatWasEntirelyExcluded(t *testing.T) {
 		t.Errorf("paths = %v, want the all-excluded path dropped", g.Paths)
 	}
 }
+
+// ValidateTaskSetDigest is exported so the COMMAND can refuse a bad digest
+// before it spends hours producing results it will then throw away.
+//
+// Measured 2026-08-23: `--topup` was given `topup0-<hash>` (71 chars), ran all
+// 13 short tasks, completed 13 of 13 over 3h40m, and was refused at write time.
+// Nothing was salvageable — `bench agent gold` runs the tasks itself, and
+// rescore needs a journal the failed command never wrote. The digest was
+// knowable before the first container started.
+func TestValidateTaskSetDigest_ExportedForPreflight(t *testing.T) {
+	good := strings.Repeat("a", 64)
+	if err := ValidateTaskSetDigest(good); err != nil {
+		t.Fatalf("a 64-char lowercase hex digest was rejected: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"empty":         "",
+		"the topup bug": "topup0-" + strings.Repeat("a", 64),
+		"too short":     strings.Repeat("a", 63),
+		"uppercase":     strings.Repeat("A", 64),
+		"not hex":       strings.Repeat("z", 64),
+	} {
+		if err := ValidateTaskSetDigest(bad); err == nil {
+			t.Errorf("%s: %q was accepted", name, shortHash(bad))
+		}
+	}
+}

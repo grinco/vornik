@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/archiveutil"
+	"vornik.io/vornik/internal/supportbundle"
 	"vornik.io/vornik/internal/version"
 )
 
@@ -76,9 +76,9 @@ func (s *Server) SupportReport(w http.ResponseWriter, r *http.Request) {
 	// has no executor dependency). Fetch + inject so they redact through
 	// the same path, then re-finalize so MANIFEST/REDACTION reflect them.
 	if br.TaskID != "" && s.taskLogSource != nil {
-		if logs, lerr := s.taskLogSource.TaskLogs(r.Context(), br.TaskID, containerLogTail); lerr == nil {
+		if logs, lerr := s.taskLogSource.TaskLogs(r.Context(), br.TaskID, supportbundle.ContainerLogTail); lerr == nil {
 			builder.WriteContainerLogs(br, res, logs)
-			builder.finalize(br, res)
+			builder.Finalize(br, res)
 		}
 	}
 
@@ -90,42 +90,42 @@ func (s *Server) SupportReport(w http.ResponseWriter, r *http.Request) {
 
 	// Metrics + structured log (LLD §10).
 	if s.apiMetrics != nil {
-		rawLabel := fmt.Sprintf("%t", res.manifest.Raw)
-		s.apiMetrics.SupportReportGeneratedTotal.WithLabelValues(res.manifest.Mode, rawLabel).Inc()
-		s.apiMetrics.SupportReportBytesTotal.WithLabelValues(res.manifest.Mode).Add(float64(size))
+		rawLabel := fmt.Sprintf("%t", res.Manifest.Raw)
+		s.apiMetrics.SupportReportGeneratedTotal.WithLabelValues(res.Manifest.Mode, rawLabel).Inc()
+		s.apiMetrics.SupportReportBytesTotal.WithLabelValues(res.Manifest.Mode).Add(float64(size))
 	}
 	s.logger.Info().
 		Str("component", "support_report").
-		Str("mode", res.manifest.Mode).
+		Str("mode", res.Manifest.Mode).
 		Str("task_id", br.TaskID).
-		Bool("raw", res.manifest.Raw).
+		Bool("raw", res.Manifest.Raw).
 		Int64("bytes", written).
-		Int("redactions", res.tally.total).
+		Int("redactions", res.Tally.Total).
 		Dur("duration", time.Since(start)).
 		Msg("support report generated")
 }
 
 // resolveSupportRequest parses + validates the body and enforces authz
-// (LLD §8), returning the resolved bundleRequest. On any failure it
+// (LLD §8), returning the resolved supportbundle.Request. On any failure it
 // writes the error response and returns ok=false.
-func (s *Server) resolveSupportRequest(w http.ResponseWriter, r *http.Request) (bundleRequest, bool) {
+func (s *Server) resolveSupportRequest(w http.ResponseWriter, r *http.Request) (supportbundle.Request, bool) {
 	var req supportReportRequest
 	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid request body")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	hasTask := strings.TrimSpace(req.TaskID) != ""
 	hasWindow := strings.TrimSpace(req.Since) != ""
 	if hasTask == hasWindow {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "exactly one of task_id or since is required")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	maxSize := req.MaxSize
 	if maxSize <= 0 {
 		maxSize = defaultSupportMaxSize
 	}
-	br := bundleRequest{MaxSize: maxSize, IncludeRaw: req.IncludeRaw}
+	br := supportbundle.Request{MaxSize: maxSize, IncludeRaw: req.IncludeRaw}
 
 	if hasTask {
 		return s.resolveTaskScope(w, r, req, br)
@@ -135,19 +135,19 @@ func (s *Server) resolveSupportRequest(w http.ResponseWriter, r *http.Request) (
 
 // resolveTaskScope validates per-task authz: the task's ProjectID must
 // be in the caller's scope, else 404 (no cross-project existence leak).
-func (s *Server) resolveTaskScope(w http.ResponseWriter, r *http.Request, req supportReportRequest, br bundleRequest) (bundleRequest, bool) {
+func (s *Server) resolveTaskScope(w http.ResponseWriter, r *http.Request, req supportReportRequest, br supportbundle.Request) (supportbundle.Request, bool) {
 	if s.taskRepo == nil {
 		respondError(w, http.StatusServiceUnavailable, "NOT_CONFIGURED", "task repository not wired")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	task, err := s.taskRepo.Get(r.Context(), req.TaskID)
 	if err != nil || task == nil {
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	if !requestAllowsProject(r, task.ProjectID) {
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	br.TaskID = req.TaskID
 	return br, true
@@ -156,16 +156,16 @@ func (s *Server) resolveTaskScope(w http.ResponseWriter, r *http.Request, req su
 // resolveWindowScope enforces that window mode (all-projects) requires a
 // GLOBAL admin key — a project-scoped key (one that stamped projectIDKey)
 // is refused — then parses the window.
-func (s *Server) resolveWindowScope(w http.ResponseWriter, r *http.Request, req supportReportRequest, br bundleRequest) (bundleRequest, bool) {
+func (s *Server) resolveWindowScope(w http.ResponseWriter, r *http.Request, req supportReportRequest, br supportbundle.Request) (supportbundle.Request, bool) {
 	if _, scoped := requestScopedProjectSet(r); scoped {
 		respondError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED",
 			"window-mode support reports span all projects and require a global admin key")
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	since, until, err := parseWindow(req.Since, req.Until)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
-		return bundleRequest{}, false
+		return supportbundle.Request{}, false
 	}
 	br.Window = true
 	br.Since = since
@@ -177,14 +177,14 @@ func (s *Server) resolveWindowScope(w http.ResponseWriter, r *http.Request, req 
 // (reusing archiveutil's TarGzDir + safe-path helpers — same as
 // backup.go), and streams it to the client. Returns the archive size +
 // bytes written.
-func streamSupportBundle(w http.ResponseWriter, res *buildResult) (size, written int64, err error) {
+func streamSupportBundle(w http.ResponseWriter, res *supportbundle.Result) (size, written int64, err error) {
 	staging, err := os.MkdirTemp("", "vornik-support-build-*")
 	if err != nil {
 		return 0, 0, fmt.Errorf("create staging dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
 
-	for name, content := range res.files {
+	for name, content := range res.Files {
 		target := filepath.Join(staging, filepath.FromSlash(name))
 		if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
 			return 0, 0, fmt.Errorf("stage: %w", mkErr)
@@ -194,7 +194,7 @@ func streamSupportBundle(w http.ResponseWriter, res *buildResult) (size, written
 		}
 	}
 
-	tmpArchive := filepath.Join(staging, "..", "vornik-support-"+sanitizeForFilename(res.manifest.Mode)+".tar.gz")
+	tmpArchive := filepath.Join(staging, "..", "vornik-support-"+sanitizeForFilename(res.Manifest.Mode)+".tar.gz")
 	if tErr := archiveutil.TarGzDir(staging, tmpArchive); tErr != nil {
 		return 0, 0, fmt.Errorf("archive: %w", tErr)
 	}
@@ -208,8 +208,8 @@ func streamSupportBundle(w http.ResponseWriter, res *buildResult) (size, written
 	size = archiveutil.FileSize(tmpArchive)
 
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("X-Vornik-Support-Mode", res.manifest.Mode)
-	w.Header().Set("X-Vornik-Support-Raw", fmt.Sprintf("%t", res.manifest.Raw))
+	w.Header().Set("X-Vornik-Support-Mode", res.Manifest.Mode)
+	w.Header().Set("X-Vornik-Support-Raw", fmt.Sprintf("%t", res.Manifest.Raw))
 	w.WriteHeader(http.StatusOK)
 	written, _ = io.Copy(w, f)
 	return size, written, nil
@@ -218,58 +218,81 @@ func streamSupportBundle(w http.ResponseWriter, res *buildResult) (size, written
 // newBundleBuilder wires a builder from the Server's repositories +
 // detector + config. Repos absent on this deployment are left nil; the
 // builder degrades those sections gracefully (best-effort, LLD §7).
-func (s *Server) newBundleBuilder() *bundleBuilder {
-	b := &bundleBuilder{
-		detector: s.secretsDetector,
-		version:  version.Default,
+func (s *Server) newBundleBuilder() *supportbundle.Builder {
+	b := &supportbundle.Builder{
+		Detector: s.secretsDetector,
+		// s.BuildVersion(), NOT version.Default — which is the literal string
+		// "unstamped". Every bundle built before 2026-09-04 reported that as
+		// its version, which is exactly the failure api.go documents against
+		// this same constant: "GetCapabilities reported the version.Default
+		// CONSTANT to every client because the only version on the Server
+		// looked like it belonged to telemetry. It does not — it is the build
+		// version, and it is the right answer for any surface that needs one."
+		// A support bundle whose version field says "unstamped" cannot answer
+		// the first question a support engineer asks.
+		Version: bundleVersion(s.BuildVersion()),
+		// The edition the reader needs in order to interpret an absent
+		// section. adminSurfacePresent IS the edition signal on the Server —
+		// the service container sets it only inside its Enterprise providers
+		// gate — so it is the honest source here rather than a second flag
+		// that could disagree with the surface actually being served.
+		Edition: editionFromAdminSurface(s.adminSurfacePresent),
 		// EE-only; nil on Community, which omits the section rather than erroring.
-		blackbox: s.blackboxService,
+		Blackbox: s.blackboxService,
 	}
-	b.repos = supportRepos{}
+	// The deployed registry and the webhook ingress audit. Both degrade to an
+	// omitted section when absent (support-report design §5, 2026-09-04).
+	if s.projectRegistry != nil {
+		b.Registry = s.projectRegistry
+	}
+	if s.webhookEventRepo != nil {
+		b.Webhooks = s.webhookEventRepo
+	}
+	b.Repos = supportbundle.Repos{}
 	if s.taskRepo != nil {
-		b.repos.Tasks = s.taskRepo
+		b.Repos.Tasks = s.taskRepo
 	}
 	if s.executionRepo != nil {
-		b.repos.Executions = s.executionRepo
+		b.Repos.Executions = s.executionRepo
 	}
 	if s.stepOutcomeRepo != nil {
-		b.repos.Outcomes = s.stepOutcomeRepo
+		b.Repos.Outcomes = s.stepOutcomeRepo
 	}
 	if s.toolAuditRepo != nil {
-		b.repos.ToolAudit = s.toolAuditRepo
+		b.Repos.ToolAudit = s.toolAuditRepo
 	}
 	if s.llmUsageRepo != nil {
-		b.repos.LLMUsage = s.llmUsageRepo
+		b.Repos.LLMUsage = s.llmUsageRepo
 	}
 	if s.taskMessageRepo != nil {
-		b.repos.Messages = s.taskMessageRepo
+		b.Repos.Messages = s.taskMessageRepo
 	}
 	if s.adminAuditRepo != nil {
-		b.repos.AdminAudit = s.adminAuditRepo
+		b.Repos.AdminAudit = s.adminAuditRepo
 	}
 	if s.artifactRepo != nil {
-		b.repos.Artifacts = s.artifactRepo
+		b.Repos.Artifacts = s.artifactRepo
 	}
 	if s.artifactOpener != nil {
-		b.opener = supportArtifactOpenerAdapter{s.artifactOpener}
+		b.Opener = supportArtifactOpenerAdapter{s.artifactOpener}
 	}
 	// Doctor / health / metrics + judge / postmortem are wired by the
 	// service container when available via Set* hooks; nil → those
 	// sections degrade gracefully.
 	if s.supportDoctor != nil {
-		b.doctor = s.supportDoctor
+		b.Doctor = s.supportDoctor
 	}
 	if s.supportHealth != nil {
-		b.health = s.supportHealth
+		b.Health = s.supportHealth
 	}
 	if s.supportMetrics != nil {
-		b.metrics = s.supportMetrics
+		b.Metrics = s.supportMetrics
 	}
 	if s.supportJudgeRepo != nil {
-		b.repos.JudgeVerdct = s.supportJudgeRepo
+		b.Repos.JudgeVerdct = s.supportJudgeRepo
 	}
 	if s.supportPostMortemRepo != nil {
-		b.repos.PostMortem = s.supportPostMortemRepo
+		b.Repos.PostMortem = s.supportPostMortemRepo
 	}
 
 	// Config snapshot: field-name redaction (redactSecrets) → YAML.
@@ -277,7 +300,7 @@ func (s *Server) newBundleBuilder() *bundleBuilder {
 	// redaction over the result (defense in depth).
 	if s.config != nil {
 		if yml, err := redactedConfigYAML(s.config); err == nil {
-			b.configYAML = yml
+			b.ConfigYAML = yml
 		}
 	}
 	return b
@@ -285,12 +308,12 @@ func (s *Server) newBundleBuilder() *bundleBuilder {
 
 // supportArtifactOpenerAdapter bridges the Server's ArtifactOpener
 // (returns io.ReadCloser) to the builder's supportArtifactOpener
-// (returns readCloser, a structural alias of io.ReadCloser).
+// (returns supportbundle.ReadCloser, a structural alias of io.ReadCloser).
 type supportArtifactOpenerAdapter struct {
 	o ArtifactOpener
 }
 
-func (a supportArtifactOpenerAdapter) Open(ctx context.Context, id string) (readCloser, error) {
+func (a supportArtifactOpenerAdapter) Open(ctx context.Context, id string) (supportbundle.ReadCloser, error) {
 	rc, err := a.o.Open(ctx, id)
 	if err != nil {
 		return nil, err
@@ -300,56 +323,21 @@ func (a supportArtifactOpenerAdapter) Open(ctx context.Context, id string) (read
 
 // redactedConfigYAML field-name-redacts the config then marshals to
 // YAML so config.redacted.yaml is honestly YAML-shaped.
+//
+// The implementation lives with the collector: the CLI's local driver renders
+// the same section from the same config struct, and the design's one rule is
+// that the redaction path has exactly one implementation
+// (support-bundle-in-CE design §3).
 func redactedConfigYAML(cfg any) (string, error) {
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return "", err
-	}
-	var generic any
-	if err := json.Unmarshal(raw, &generic); err != nil {
-		return "", err
-	}
-	redacted := redactSecrets(generic)
-	out, err := yaml.Marshal(redacted)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+	return supportbundle.RedactedConfigYAML(cfg)
 }
 
-// parseWindow resolves since/until. since accepts an RFC3339 timestamp
-// or a Go duration (interpreted as "now - duration"). until defaults to
-// now.
+// parseWindow resolves since/until. It delegates to the collector package:
+// the CLI's local driver resolves the SAME flags into the same Request, and a
+// window that means one thing over HTTP and another locally would produce two
+// bundles that disagree about what they cover.
 func parseWindow(sinceStr, untilStr string) (time.Time, time.Time, error) {
-	now := time.Now().UTC()
-	since, err := parseTimeOrDuration(sinceStr, now)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid since: %w", err)
-	}
-	until := now
-	if strings.TrimSpace(untilStr) != "" {
-		until, err = parseTimeOrDuration(untilStr, now)
-		if err != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid until: %w", err)
-		}
-	}
-	if until.Before(since) {
-		return time.Time{}, time.Time{}, fmt.Errorf("until is before since")
-	}
-	return since, until, nil
-}
-
-// parseTimeOrDuration accepts an RFC3339 timestamp OR a Go duration
-// (relative to ref, subtracted: "2h" → ref-2h).
-func parseTimeOrDuration(s string, ref time.Time) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC(), nil
-	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return ref.Add(-d), nil
-	}
-	return time.Time{}, fmt.Errorf("not an RFC3339 timestamp or Go duration: %q", s)
+	return supportbundle.ParseWindow(sinceStr, untilStr)
 }
 
 func sanitizeForFilename(s string) string {
@@ -359,4 +347,25 @@ func sanitizeForFilename(s string) string {
 		return "bundle"
 	}
 	return s
+}
+
+// editionFromAdminSurface maps the Server's edition signal to a version
+// edition string. adminSurfacePresent is set only inside the service
+// container's Enterprise providers gate, so it cannot claim an edition whose
+// surface is not actually wired.
+func editionFromAdminSurface(present bool) string {
+	if present {
+		return version.EditionEnterprise
+	}
+	return version.EditionCommunity
+}
+
+// bundleVersion falls back to the compiled-in default when the daemon's build
+// version was never wired, so the field is never empty — but it prefers the
+// real build every time it has one.
+func bundleVersion(build string) string {
+	if b := strings.TrimSpace(build); b != "" {
+		return b
+	}
+	return version.Default
 }

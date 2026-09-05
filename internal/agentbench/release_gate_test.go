@@ -425,3 +425,25 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 		}
 	})
 }
+
+// TestCalibratedTierSets_RefusesAttemptsBelowTheFloor — the floor is asserted
+// on the DERIVED manifest value, not only on each task, so it survives someone
+// relaxing the per-task condition. Architectural review, 2026-08-17.
+func TestCalibratedTierSets_RefusesAttemptsBelowTheFloor(t *testing.T) {
+	tiers := map[string]TaskTier{"t1": TaskTierGate}
+	cal := CalibrationManifest{
+		MinimumAttempts: MinimumCalibrationAttempts - 1,
+		Tasks: []CalibrationTask{
+			{TaskID: "t1", Tier: TaskTierGate, Attempts: MinimumCalibrationAttempts, Passed: 1, PassRate: 1.0 / float64(MinimumCalibrationAttempts)},
+		},
+	}
+	if _, _, _, err := calibratedTierSets(cal, tiers); err == nil {
+		t.Fatal("a manifest claiming fewer than the floor must be refused")
+	}
+
+	// And the honest shape passes.
+	cal.MinimumAttempts = MinimumCalibrationAttempts
+	if _, _, _, err := calibratedTierSets(cal, tiers); err != nil {
+		t.Fatalf("a calibration at the floor must be accepted: %v", err)
+	}
+}

@@ -1,0 +1,422 @@
+[
+  {
+    "function": {
+      "description": "Read the contents of a file. Paths are relative to /app/workspace/ (the working directory); the persistent project folder is at project/ (e.g. 'project/src/main.py'). Output is capped at 30KB per file — for larger files use grep to find specific lines, run_shell with `head -c 200000` for a bigger window (200KB), or read_many_files which has the same per-file cap but lets you pull a directory in one call.",
+      "name": "file_read",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Write content to a file. Creates parent directories as needed. Paths are relative to /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+      "name": "file_write",
+      "parameters": {
+        "properties": {
+          "content": {
+            "description": "File content to write",
+            "type": "string"
+          },
+          "path": {
+            "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Run a shell command in the workspace directory. Use for tasks like listing files, running builds, etc. stdout+stderr is capped at 200KB; if you need more, pipe through grep/awk/tail to filter at the source (e.g. `go tool cover -func=cov.out | grep ^github.com/myorg/mypkg/`). gcc + libc6-dev are installed so `go test -race` works.",
+      "name": "run_shell",
+      "parameters": {
+        "properties": {
+          "command": {
+            "description": "Shell command to execute",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Return the current date and time in a requested IANA timezone, with UTC included for verification. Use this whenever the task depends on today's date, current time, market hours, deadlines, or timezone conversion. Do not calculate timezone offsets yourself.",
+      "name": "current_time",
+      "parameters": {
+        "properties": {
+          "timezone": {
+            "description": "IANA timezone name such as 'UTC', 'Europe/Prague', 'America/New_York', or 'Asia/Tokyo'. Defaults to UTC.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Edit a file by replacing an exact string. Prefer this over file_write for modifying existing files — it only sends the diff region and fails fast if old_string is absent or ambiguous. Fails if old_string does not match exactly once (unless replace_all is true). Paths are relative to /app/workspace/ — use 'project/' prefix for the persistent project folder.",
+      "name": "file_edit",
+      "parameters": {
+        "properties": {
+          "new_string": {
+            "description": "Replacement string. May be empty to delete the match.",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "Exact string to replace. Must match byte-for-byte including whitespace and indentation.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Relative path from /app/workspace/.",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "Replace every occurrence instead of requiring exactly one. Default: false.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Read multiple files in one call. Returns a concatenated blob with '===== FILE: <path> =====' headers per file. Each file is capped at 30KB; total output is capped at 120KB (later files are truncated or dropped). Prefer this over N sequential file_read calls when exploring a directory.",
+      "name": "read_many_files",
+      "parameters": {
+        "properties": {
+          "paths": {
+            "description": "Relative paths from /app/workspace/.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Search file contents for a regex pattern. Faster and more token-efficient than run_shell 'grep -r'. Default output is files_with_matches; switch to content mode only when you need line numbers and the matching lines themselves. Results are capped at head_limit lines (default 200) — if a search returns 'truncated' or you want narrower results, supply a more specific pattern, scope via path/glob, or raise head_limit.",
+      "name": "grep",
+      "parameters": {
+        "properties": {
+          "glob": {
+            "description": "Filename glob filter (e.g. '*.go', '**/*.py'). Default: all files.",
+            "type": "string"
+          },
+          "head_limit": {
+            "description": "Max result lines (at least 1). Default: 200.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "ignore_case": {
+            "description": "Case-insensitive match.",
+            "type": "boolean"
+          },
+          "output_mode": {
+            "description": "files_with_matches (default): paths only. content: matching lines with line numbers. count: per-file match counts.",
+            "enum": [
+              "files_with_matches",
+              "content",
+              "count"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Directory to search under. Default: workspace root.",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Regex pattern (POSIX extended).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "List files matching a glob pattern. Supports '**' for recursive matching. Faster than run_shell 'find'. Returns paths sorted by modification time (newest first), capped at 500 entries.",
+      "name": "glob",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Root directory. Default: workspace root.",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Glob pattern (e.g. '**/*.go', 'project/src/*.ts').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Show git working-tree status as typed JSON {branch, ahead, behind, files:[{path,status}]}. Use this before committing or when assessing what a prior role changed.",
+      "name": "git_status",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Repo root. Default: 'project'.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Show a unified diff. Default compares working tree to index (unstaged changes); set staged=true to compare index to HEAD, or revision to diff arbitrary refs.",
+      "name": "git_diff",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Repo root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Restrict diff to these paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "Revision spec (e.g. 'HEAD~3..HEAD', 'main'). Overrides staged.",
+            "type": "string"
+          },
+          "staged": {
+            "description": "Diff index vs HEAD instead of working tree vs index.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Show commit history as typed JSON [{sha, short_sha, author, date, subject}]. More token-efficient than parsing run_shell 'git log' output.",
+      "name": "git_log",
+      "parameters": {
+        "properties": {
+          "max": {
+            "description": "Max commits. Default: 20.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "Repo root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Limit history to commits touching these paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "Revision range (e.g. 'main..HEAD'). Default: HEAD.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Show a commit's metadata plus its diff. Use when inspecting what a specific commit changed.",
+      "name": "git_show",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Repo root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Restrict diff to these paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "Revision to show (e.g. 'HEAD', 'abc1234'). Default: HEAD.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Detect project language and run the test suite. Returns {language, runner, passed, failed, skipped, failures:[{test,message}], output}. Gracefully reports when the required toolchain is not installed in the agent image.",
+      "name": "test_run",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Project root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Limit to specific test files/packages.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Detect project language and run the configured linter (go vet / eslint / ruff). Returns {language, linter, issues:[{file,line,message}], output}.",
+      "name": "lint_run",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Project root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Limit to specific files or packages.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Detect project language and run type checking (go build / tsc --noEmit / mypy). Returns {language, checker, errors:[{file,line,message}], output}.",
+      "name": "typecheck_run",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Project root. Default: 'project'.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Limit to specific files or packages.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Record an OFF-SCOPE finding (bug, optimisation opportunity, code inefficiency, refactor candidate) into the project backlog WITHOUT changing any code. Use when you notice something worth fixing that is outside your current task's scope. Never use it for work you are currently assigned.",
+      "name": "backlog_deposit",
+      "parameters": {
+        "properties": {
+          "detail": {
+            "description": "What is wrong / suboptimal and what better looks like",
+            "maxLength": 2000,
+            "type": "string"
+          },
+          "evidence": {
+            "description": "file:line reference(s) plus one-sentence proof",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "bug",
+              "optimisation",
+              "inefficiency",
+              "refactor"
+            ],
+            "type": "string"
+          },
+          "regression": {
+            "description": "Set ONLY when re-reporting a previously-fixed finding that has returned; requires evidence",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "Specific, imperative, self-contained (a future task prompt)",
+            "maxLength": 140,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "detail"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]

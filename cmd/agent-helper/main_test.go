@@ -571,3 +571,19 @@ func TestMainBuildUserContentWithoutPromptEmitsImageArray(t *testing.T) {
 		t.Fatalf("payload bytes mismatch: %x", decoded)
 	}
 }
+
+// exec-tool always answers on stdout (agent-tool dispatch design §2): an
+// unknown or shell-runtime name, missing arguments and malformed JSON are all
+// ERROR lines, never a non-zero exit the loop has no branch for.
+func TestExecTool_RefusalsAreStdoutText(t *testing.T) {
+	ws := t.TempDir()
+	if got := execTool(nil, ws); got != "ERROR: exec-tool requires a tool name" {
+		t.Errorf("no name: %q", got)
+	}
+	if got := execTool([]string{"run_shell", `{"command":"true"}`}, ws); got != "ERROR: tool 'run_shell' does not run in the helper" {
+		t.Errorf("shell-runtime tool: %q", got)
+	}
+	if got := execTool([]string{"nope"}, ws); got != "ERROR: tool 'nope' does not run in the helper" {
+		t.Errorf("undeclared: %q", got)
+	}
+}

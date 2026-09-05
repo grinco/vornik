@@ -70,6 +70,7 @@ func (a *retentionPreviewAdapter) resolvePolicy(projectID string) retention.Poli
 		ProjectID:        projectID,
 		TaskLLMUsageDays: a.defaults.TaskLLMUsageDays,
 		ToolAuditDays:    a.defaults.ToolAuditDays,
+		ChatAuditDays:    a.defaults.ChatAuditDays,
 		TasksDays:        a.defaults.TasksDays,
 		ExecutionsDays:   a.defaults.ExecutionsDays,
 		ArtifactsDays:    a.defaults.ArtifactsDays,

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/sqlite"
@@ -107,5 +108,44 @@ func TestProfileUseAuditRepository_SQLiteNoOp(t *testing.T) {
 	}
 	if err := repo.DeleteAllForOperator(ctx, "op"); err != nil {
 		t.Fatalf("DeleteAllForOperator (no-op): expected nil, got %v", err)
+	}
+}
+
+// TestProjectSpawnRepository_SQLiteUnsupported pins the stub. The backend
+// coverage allowlist listed this repository as "dual-backend debt" on
+// 2026-09-04; reading the SQLite implementation on 2026-09-05 shows it is a
+// deliberate Postgres-only-in-v1 stub, and the allowlist now says so.
+func TestProjectSpawnRepository_SQLiteUnsupported(t *testing.T) {
+	ctx := context.Background()
+	repo := sqlite.NewProjectSpawnRepository(newTestDB(t).DB)
+
+	if err := repo.Create(ctx, &persistence.ProjectSpawn{ID: "ps1"}); !errors.Is(err, sqlite.ErrProjectSpawnSQLiteNotSupported) {
+		t.Fatalf("Create: expected ErrProjectSpawnSQLiteNotSupported, got %v", err)
+	}
+	if _, err := repo.GetBySpawnedProject(ctx, "p"); !errors.Is(err, sqlite.ErrProjectSpawnSQLiteNotSupported) {
+		t.Fatalf("GetBySpawnedProject: expected ErrProjectSpawnSQLiteNotSupported, got %v", err)
+	}
+	if n, err := repo.CountForProjectSince(ctx, "p", time.Time{}); !errors.Is(err, sqlite.ErrProjectSpawnSQLiteNotSupported) || n != 0 {
+		t.Fatalf("CountForProjectSince: expected (0, ErrProjectSpawnSQLiteNotSupported), got (%d, %v)", n, err)
+	}
+}
+
+// TestWorkflowHealingOverrideRepository_SQLiteUnsupported pins the stub, for
+// the same reason and the same day as the project-spawn one above.
+func TestWorkflowHealingOverrideRepository_SQLiteUnsupported(t *testing.T) {
+	ctx := context.Background()
+	repo := sqlite.NewWorkflowHealingOverrideRepository(newTestDB(t).DB)
+
+	if err := repo.Upsert(ctx, &persistence.HealingTriggerOverride{}); !errors.Is(err, sqlite.ErrSQLiteHealingOverridesUnsupported) {
+		t.Fatalf("Upsert: expected ErrSQLiteHealingOverridesUnsupported, got %v", err)
+	}
+	if _, err := repo.Get(ctx, "p", "w", "c"); !errors.Is(err, sqlite.ErrSQLiteHealingOverridesUnsupported) {
+		t.Fatalf("Get: expected ErrSQLiteHealingOverridesUnsupported, got %v", err)
+	}
+	if _, err := repo.List(ctx, 10); !errors.Is(err, sqlite.ErrSQLiteHealingOverridesUnsupported) {
+		t.Fatalf("List: expected ErrSQLiteHealingOverridesUnsupported, got %v", err)
+	}
+	if err := repo.Delete(ctx, "p", "w", "c"); !errors.Is(err, sqlite.ErrSQLiteHealingOverridesUnsupported) {
+		t.Fatalf("Delete: expected ErrSQLiteHealingOverridesUnsupported, got %v", err)
 	}
 }

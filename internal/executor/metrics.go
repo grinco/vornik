@@ -84,6 +84,23 @@ type Metrics struct {
 	// contract violation worth investigating (design §9 R1).
 	ResidueDiscardTotal *prometheus.CounterVec
 
+	// PromptHashMismatchTotal counts step_prompt.json parts whose
+	// container-computed sha256 differed from the hash of the bytes the daemon
+	// stored (step-prompt persistence design §4). reason=redacted: the seam
+	// changed the bytes — expected whenever a secret was scrubbed, and worth
+	// counting in itself. reason=drift: the bytes were unchanged and the
+	// hashes still differ — the image and the daemon disagree about the file's
+	// shape; check image freshness first, then file a bug. Never a step failure.
+	PromptHashMismatchTotal *prometheus.CounterVec
+
+	// StepIOSkippedTotal counts boundary files (part=input|result) the
+	// executor did NOT persist, by reason (step-I/O persistence design §3).
+	// reason=too_large: the file exceeded stepIOMaxBytes. An absent
+	// result.json is not a skip (the outcome row's container_exit_code says
+	// why) and a result.json that failed to parse is stored, not skipped —
+	// neither increments this.
+	StepIOSkippedTotal *prometheus.CounterVec
+
 	// TaskBudgetTierTotal counts per-task cost-governor evaluations by outcome
 	// tier (ok/soft/hard), labelled by project (LLD 2026-07-24 §4). Incremented
 	// per step-boundary evaluation and NOT deduped: a task that sits in "soft"
@@ -172,6 +189,17 @@ type Metrics struct {
 	// also failed. The counter rate by (primary_model) tells
 	// operators which models need replacing in role configs.
 	ModelFallbackTotal *prometheus.CounterVec
+
+	// FallbackInfraAttemptsSuppressedTotal counts infra-retry attempts NOT
+	// spent on the model-fallback hop because of
+	// fallbackInfraRetryMaxAttempts.
+	//
+	// It exists because that change makes something STOP happening, which is
+	// otherwise invisible. The rung it removed had recovered nothing in ~66
+	// production attempts over thirty days; if that population stops being
+	// empty, this counter rising alongside fallback recoveries elsewhere is
+	// what would say so.
+	FallbackInfraAttemptsSuppressedTotal *prometheus.CounterVec
 
 	// IngestSkippedProducerFailedTotal counts OUTPUT artifacts NOT enqueued
 	// for RAG ingest because the producing task did not reach COMPLETED
@@ -619,6 +647,15 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 			},
 			[]string{"role", "primary_model", "fallback_model"},
 		),
+		FallbackInfraAttemptsSuppressedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "fallback_infra_attempts_suppressed_total",
+				Help:      "Infra-retry attempts not spent on the model-fallback hop, per role (the hop gets one attempt; the primary's ladder is unchanged). Measured at 0 recoveries in ~66 attempts over 30 days before the cap; a rise here alongside fallback recoveries elsewhere is the signal that measurement has gone stale.",
+			},
+			[]string{"role"},
+		),
 		IngestSkippedProducerFailedTotal: promauto.With(registerer).NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: executorNamespace,
@@ -741,6 +778,24 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 		),
 	}
 
+	m.PromptHashMismatchTotal = promauto.With(registerer).NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: executorNamespace,
+			Subsystem: executorSubsystem,
+			Name:      "prompt_hash_mismatch_total",
+			Help:      "step_prompt.json parts whose container-side sha256 differed from the stored bytes' hash, by reason (redacted|drift).",
+		},
+		[]string{"reason"},
+	)
+	m.StepIOSkippedTotal = promauto.With(registerer).NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: executorNamespace,
+			Subsystem: executorSubsystem,
+			Name:      "step_io_skipped_total",
+			Help:      "Boundary files (task.json as part=input, result.json as part=result) not persisted, by reason. too_large = over the 4 MiB ceiling. An absent result.json is not a skip, and an unparseable one is stored, so neither counts here.",
+		},
+		[]string{"part", "reason"},
+	)
 	return m
 }
 
@@ -1152,6 +1207,16 @@ func (m *Metrics) RecordModelFallback(role, primaryModel, fallbackModel string) 
 		return
 	}
 	m.ModelFallbackTotal.WithLabelValues(role, primaryModel, fallbackModel).Inc()
+}
+
+// RecordFallbackInfraAttemptsSuppressed counts the infra-retry attempts the
+// model-fallback hop did NOT get. n is the difference between the step's
+// resolved ladder and the fallback cap.
+func (m *Metrics) RecordFallbackInfraAttemptsSuppressed(role string, n int) {
+	if m == nil || role == "" || n <= 0 || m.FallbackInfraAttemptsSuppressedTotal == nil {
+		return
+	}
+	m.FallbackInfraAttemptsSuppressedTotal.WithLabelValues(role).Add(float64(n))
 }
 
 // RecordToolBudgetResolved counts a dynamic tool-budget resolution at worker

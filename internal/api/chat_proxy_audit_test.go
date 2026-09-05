@@ -44,11 +44,12 @@ func (s *stubChatAuditRepoAPI) Insert(_ context.Context, e *persistence.ChatAudi
 func (s *stubChatAuditRepoAPI) List(_ context.Context, _ persistence.ChatAuditFilter) ([]*persistence.ChatAuditEntry, error) {
 	return nil, nil
 }
-func (s *stubChatAuditRepoAPI) SavePrompt(_ context.Context, hash, body string) error {
+func (s *stubChatAuditRepoAPI) SavePrompt(_ context.Context, body string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	hash := persistence.HashChatSystemPrompt(body)
 	s.prompts[hash] = body
-	return nil
+	return hash, nil
 }
 func (s *stubChatAuditRepoAPI) GetPrompt(_ context.Context, hash string) (string, error) {
 	s.mu.Lock()

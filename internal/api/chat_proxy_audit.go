@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"strings"
 	"time"
@@ -53,18 +51,24 @@ func (s *Server) recordChatAPIAudit(
 	systemPrompt, userMessage := extractAuditContent(messages)
 	systemPromptHash := ""
 	if systemPrompt != "" {
-		sum := sha256.Sum256([]byte(systemPrompt))
-		systemPromptHash = hex.EncodeToString(sum[:])
-		// Persist the prompt body keyed by its hash so future
-		// audit-log readers can resolve the hash → body. Best-
-		// effort: a SavePrompt failure logs at debug and proceeds
-		// (the row still records the hash so an operator can
-		// reconcile later by reading the same prompt off another
-		// row that succeeded).
-		if err := s.chatAuditRepo.SavePrompt(ctx, systemPromptHash, systemPrompt); err != nil {
+		// Persist the prompt body; the repository hashes what it stores and
+		// returns that digest, so the hash on this row always names the
+		// bytes in the store even when the redaction seam rewrote them
+		// (chat-audit retention and redaction design §3.1). Best-effort: a
+		// failure logs at debug and proceeds with an empty hash rather than
+		// recording one whose body was never stored.
+		// Best-effort, and the hash is kept EVEN ON FAILURE: SavePrompt
+		// returns the digest of the bytes it tried to store, so a turn whose
+		// body write failed still points at what a later successful save
+		// lands under. Recording an empty hash instead would strand this row
+		// permanently — the reconciliation path the old comment described
+		// ("read the same prompt off another row that succeeded") only works
+		// if the row carries the hash.
+		var err error
+		if systemPromptHash, err = s.chatAuditRepo.SavePrompt(ctx, systemPrompt); err != nil {
 			s.logger.Debug().Err(err).
 				Str("hash", systemPromptHash).
-				Msg("chat audit: SavePrompt failed (best-effort)")
+				Msg("chat audit: SavePrompt failed (best-effort; hash still recorded)")
 		}
 	}
 

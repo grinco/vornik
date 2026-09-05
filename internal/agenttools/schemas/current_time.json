@@ -1,0 +1,16 @@
+{
+  "function": {
+    "description": "Return the current date and time in a requested IANA timezone, with UTC included for verification. Use this whenever the task depends on today's date, current time, market hours, deadlines, or timezone conversion. Do not calculate timezone offsets yourself.",
+    "name": "current_time",
+    "parameters": {
+      "properties": {
+        "timezone": {
+          "description": "IANA timezone name such as 'UTC', 'Europe/Prague', 'America/New_York', or 'Asia/Tokyo'. Defaults to UTC.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

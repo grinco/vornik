@@ -22,7 +22,14 @@ import (
 // both fields are nil and the client should treat that as "no scope
 // filter, full registry visible".
 type CapabilitiesResponse struct {
-	Version          string            `json:"version"`
+	Version string `json:"version"`
+	// Edition is the daemon's build edition, normalized ("community" or
+	// "enterprise"). Added 2026-09-04 for the support bundle's version
+	// provenance rule: a bundle collected locally states WHOSE version it
+	// carries, and reporting the daemon's version beside the CLI's edition
+	// would be a mixed answer to the one field a support engineer trusts
+	// first (support-bundle-in-CE design §4.1).
+	Edition          string            `json:"edition"`
 	APIVersion       string            `json:"apiVersion"`
 	Transports       []string          `json:"transports"`
 	Features         map[string]bool   `json:"features"`
@@ -58,7 +65,11 @@ func (s *Server) GetCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := CapabilitiesResponse{
-		Version:    reportedVersion,
+		Version: reportedVersion,
+		// adminSurfacePresent is the honest edition signal on the Server —
+		// the service container sets it only inside its Enterprise providers
+		// gate — so this cannot disagree with the surface actually served.
+		Edition:    editionFromAdminSurface(s.adminSurfacePresent),
 		APIVersion: "v1",
 		Transports: []string{"http", "sse"},
 		Features:   s.featureFlags(),

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,18 +60,45 @@ func (h *fixedSystemHandler) Execute(context.Context, SystemStepInput) (SystemSt
 // The executor cleans the input dir after the run, so reading it afterwards
 // races the teardown — capture it while the container is notionally starting,
 // which is also exactly when the agent would read it.
+//
+// ITS OWN MUTEX, NOT MockRuntime's. StartContainer is called from the
+// executor's goroutine while the test polls from its own, so `captured` needs
+// synchronisation on BOTH sides. The first version of this double took
+// `mock.mu` on the read side only and left the append bare, which `go test
+// -race` fails — caught by CI on 2026-09-03, after the tests had shipped in
+// 2026.9.1 green under a plain `go test ./...`.
+//
+// Borrowing `mock.mu` would not be the fix: MockRuntime.StartContainer takes
+// that lock itself, so holding it across the delegate call below would
+// deadlock. A dedicated lock, held only around the append, keeps the critical
+// section to the field it actually guards.
 type capturingRuntime struct {
 	*MockRuntime
+
+	mu       sync.Mutex
 	captured [][]byte
 }
 
 func (c *capturingRuntime) StartContainer(ctx context.Context, cfg *runtime.ContainerConfig) (string, error) {
 	if cfg != nil && cfg.InputDir != "" {
 		if raw, err := os.ReadFile(filepath.Join(cfg.InputDir, "task.json")); err == nil {
+			c.mu.Lock()
 			c.captured = append(c.captured, raw)
+			c.mu.Unlock()
 		}
 	}
 	return c.MockRuntime.StartContainer(ctx, cfg)
+}
+
+// latestCapture returns the most recent task.json seen, or nil. Under the same
+// lock the writer uses, so the poll loop below is race-free.
+func (c *capturingRuntime) latestCapture() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.captured) == 0 {
+		return nil
+	}
+	return c.captured[len(c.captured)-1]
 }
 
 // runSystemThenAgent drives a real `system → agent` workflow through the
@@ -134,12 +162,7 @@ func runSystemThenAgent(t *testing.T, handler SystemHandler) map[string]any {
 	// been captured rather than sleeping a fixed time.
 	var raw []byte
 	for i := 0; i < 200; i++ {
-		mock.mu.Lock()
-		if len(rt.captured) > 0 {
-			raw = rt.captured[len(rt.captured)-1]
-		}
-		mock.mu.Unlock()
-		if raw != nil {
+		if raw = rt.latestCapture(); raw != nil {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)

@@ -167,7 +167,7 @@ func TestReportProblem_TellsThemAboutTheEvidenceBundle(t *testing.T) {
 		url: "https://github.com/grinco/vornik/issues/new?title=x",
 		// Enterprise: support-report only exists there, so that is the edition
 		// whose response names it. The Community response is asserted by
-		// TestReportProblem_CommunityDoesNotNameSupportReport below.
+		// TestReportProblem_CommunityNamesTheLocalBundleCommand below.
 		body:    "### vornik problem report\n\n- **edition:** enterprise (EE)\n",
 		edition: "enterprise",
 	}
@@ -194,13 +194,15 @@ func TestReportProblem_TellsThemAboutTheEvidenceBundle(t *testing.T) {
 	}
 }
 
-// TestReportProblem_CommunityDoesNotNameSupportReport — the chat reporter has no
-// terminal, so being told to run an Enterprise-only command is worse here than
-// in the CLI: they cannot even see the 501 that would explain it. A Community
-// deployment must not name support-report in the tool response at all.
+// TestReportProblem_CommunityNamesTheLocalBundleCommand — the second half of
+// the 2026-08-05 CE dead end.
 //
-// Regression for the 2026-08-05 CE dead end.
-func TestReportProblem_CommunityDoesNotNameSupportReport(t *testing.T) {
+// The first fix was to stop naming an Enterprise-only command to a Community
+// chat reporter, who cannot even see the 501 that would explain it. The real
+// fix, 2026-09-04, was to give Community a path that works: `support-report
+// --local` collects the bundle on the host. So the CE response names it again
+// — the local form only, since the plain form still 501s.
+func TestReportProblem_CommunityNamesTheLocalBundleCommand(t *testing.T) {
 	b := &stubReportBuilder{
 		url:     "https://github.com/grinco/vornik/issues/new?title=x",
 		body:    "### vornik problem report\n\n- **edition:** community (CE)\n",
@@ -210,13 +212,16 @@ func TestReportProblem_CommunityDoesNotNameSupportReport(t *testing.T) {
 
 	got := te.reportProblem(context.Background(), `{"summary":"tasks complete with no output"}`).Content
 
-	if strings.Contains(got, "vornikctl support-report") {
-		t.Errorf("Community response must not name the Enterprise-only bundle command:\n%s", got)
+	if !strings.Contains(got, "vornikctl support-report --local") {
+		t.Errorf("Community response must name the local bundle path, which works there:\n%s", got)
 	}
-	// It still has to explain itself rather than silently dropping the section.
-	for _, want := range []string{"Enterprise", "doctor"} {
+	if strings.Contains(got, "vornikctl support-report --task <task id>\n\nIt writes") {
+		t.Errorf("Community response named the DAEMON form, which still 501s there:\n%s", got)
+	}
+	// It still has to state the limits rather than implying a full bundle.
+	for _, want := range []string{"Enterprise", "doctor", "health and metrics"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("Community response missing %q — it must say why there is no bundle:\n%s", want, got)
+			t.Errorf("Community response missing %q — it must say which sections it cannot collect:\n%s", want, got)
 		}
 	}
 }

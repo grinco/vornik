@@ -46,7 +46,11 @@ func (r *CapabilityUsageRepository) Usage(ctx context.Context, since time.Time) 
 		q := fmt.Sprintf(
 			"SELECT COALESCE(%s,'') AS p, count(*) AS n, max(%s) AS last FROM %s WHERE %s%s",
 			proj, c.TsCol, c.Table, where, group)
-		rows, err := r.db.QueryContext(ctx, q, since)
+		// The timestamp column is RFC3339Nano TEXT; binding a time.Time
+		// directly compares the driver's own rendering against it and the
+		// window silently matched everything (RunCapabilityUsageSuite,
+		// "window_excludes_older_signals_but_keeps_the_key", 2026-09-05).
+		rows, err := r.db.QueryContext(ctx, q, sqliteTime(since))
 		if err != nil {
 			// Absent table or column on this schema: report the capability as
 			// unused rather than failing the whole report.
@@ -56,15 +60,21 @@ func (r *CapabilityUsageRepository) Usage(ctx context.Context, since time.Time) 
 		sawRow := false
 		for rows.Next() {
 			var u persistence.CapabilityUsage
-			var last sql.NullTime
+			// SQLite stores timestamps as TEXT, so max() of the column is a
+			// string; scanning it into sql.NullTime failed on EVERY table
+			// that had a row, which made the whole report an error on the
+			// Community default backend. Caught by RunCapabilityUsageSuite
+			// on 2026-09-05, the first time the two backends shared a test.
+			var last sql.NullString
 			if err := rows.Scan(&u.ProjectID, &u.Count, &last); err != nil {
 				_ = rows.Close()
 				return nil, fmt.Errorf("capability usage: scan %s: %w", c.Key, err)
 			}
 			u.Key = c.Key
-			if last.Valid {
-				t := last.Time
-				u.LastUsed = &t
+			if last.Valid && last.String != "" {
+				if t, perr := parseSqliteTime(last.String); perr == nil {
+					u.LastUsed = &t
+				}
 			}
 			out = append(out, u)
 			sawRow = true

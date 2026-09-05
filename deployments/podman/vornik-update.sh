@@ -32,6 +32,9 @@
 #   ./vornik-update.sh --yes              # skip the confirmation prompt (automation)
 #   ./vornik-update.sh --no-build         # reuse binaries already in <repo>/.bin
 #   ./vornik-update.sh --no-rebuild-images  # skip the image rebuild (see below)
+#   ./vornik-update.sh --no-recreate-sidecars  # rebuild images but leave the
+#                                              # scraper/broker containers on
+#                                              # the old ones (see below)
 #   ./vornik-update.sh --force            # rebuild+reinstall even if the checkout already matches
 #   ./vornik-update.sh --check            # only report current vs. available version, then exit
 #
@@ -91,6 +94,11 @@ FORCE=0
 # The previous default (REBUILD_AGENT=0, opt-in via --rebuild-agent) is the
 # defect this inversion fixes.
 REBUILD_IMAGES=1
+# A rebuilt image changes nothing already running: the scraper and broker
+# sidecars keep the image they were created from until recreated (design §12,
+# C5). Recreating them is part of the update; --no-recreate-sidecars opts out
+# and says what is left stale.
+RECREATE_SIDECARS=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref)          TARGET_REF="${2:-}"; shift 2 ;;
@@ -100,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --check)        CHECK_ONLY=1; shift ;;
     --force)        FORCE=1; shift ;;
     --no-rebuild-images) REBUILD_IMAGES=0; shift ;;
+    --no-recreate-sidecars) RECREATE_SIDECARS=0; shift ;;
     # Retained so cron wrappers and timers carrying the old flag keep working.
     # It is now the default, so the flag is a no-op with a nudge.
     --rebuild-agent) REBUILD_AGENT_DEPRECATED=1; shift ;;
@@ -273,16 +282,24 @@ rebuild_images() {
       --build-arg "VORNIK_GID=$(id -g)"
       -t "$tag"
     )
-    [[ -n "$target" ]] && build_args+=(--target "$target")
+    # The emitter prints "-" for a single-stage image so that no column is
+    # ever empty — bash's tab-IFS read collapses an empty column and shifts
+    # everything after it (design §12 C8). Anything else is a real --target.
+    [[ -n "$target" && "$target" != "-" ]] && build_args+=(--target "$target")
     build_args+=("$REPO_DIR/$context")
 
     podman "${build_args[@]}" \
       || die "image build failed for $tag — nothing swapped, the running install is untouched"
     built=$((built + 1))
+    # Remember the row: the containers created from this tag are recreated
+    # in step 3c, and only those — a tag skipped as current changed nothing.
+    printf '%s\t%s\t%s\t%s\t%s\n' "$tag" "$containerfile" "$target" "$context" "$condition" >> "$REBUILT_ROWS"
   done < <("$emitter")
 
   log "Images: $built rebuilt, $skipped already current"
 }
+REBUILT_ROWS="$(mktemp)"
+trap 'rm -f "$REBUILT_ROWS"' EXIT
 
 if [[ "$REBUILD_IMAGES" == 1 ]]; then
   log "Rebuilding container images that drifted from $TARGET_REF"
@@ -298,6 +315,31 @@ else
   warn "  release than its daemon. While they are stale, 'vornikctl doctor'"
   warn "  reports a WARNING on every run — that confirms the pin is intentional,"
   warn "  it is not a fault to be silenced."
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. Recreate the sidecar containers created from the images just rebuilt
+#     (design §12, C5/C6). A rebuilt tag alters no existing container; the
+#     scraper and broker sidecars would keep running the previous image with
+#     nothing to report it — the agent pool drains at the cutover, they do
+#     not. Before the cutover, because the daemon's MCP client to a recreated
+#     broker reconnects only when the daemon restarts, which step 5 does; and
+#     fatal, so a failure leaves old daemon + old containers + new images
+#     (which image_freshness reports) rather than new daemon + old sidecars
+#     (which nothing does). Recreating is not graceful — a tool call in
+#     flight against that sidecar fails — but the cutover interrupts every
+#     running task anyway and the in-flight warning above covers both.
+# ---------------------------------------------------------------------------
+if [[ "$REBUILD_IMAGES" == 1 && -s "$REBUILT_ROWS" ]]; then
+  if [[ "$RECREATE_SIDECARS" == 1 ]]; then
+    log "Recreating sidecar containers created from the rebuilt images"
+    "$REPO_DIR/deployments/podman/recreate-sidecars.sh" < "$REBUILT_ROWS" \
+      || die "sidecar recreate failed — nothing swapped; the daemon and its sidecars still run the previous release, and the rebuilt images wait (vornikctl doctor reports them)"
+  else
+    warn "--no-recreate-sidecars: containers created from the rebuilt images are NOT being recreated."
+    warn "  They keep running the previous image until you recreate them; this is what would run:"
+    "$REPO_DIR/deployments/podman/recreate-sidecars.sh" --dry-run < "$REBUILT_ROWS" || true
+  fi
 fi
 
 # ---------------------------------------------------------------------------

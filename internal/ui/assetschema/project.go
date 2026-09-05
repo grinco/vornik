@@ -95,6 +95,7 @@ func ProjectSchema() AssetSchema {
 				Fields: []Field{
 					{Path: "retention.task_llm_usage_days", Label: "Task LLM usage", Kind: KindInt},
 					{Path: "retention.tool_audit_days", Label: "Tool audit", Kind: KindInt},
+					{Path: "retention.chat_audit_days", Label: "Chat audit", Kind: KindInt},
 					{Path: "retention.tasks_days", Label: "Tasks", Kind: KindInt},
 					{Path: "retention.executions_days", Label: "Executions", Kind: KindInt},
 					{Path: "retention.artifacts_days", Label: "Artifacts", Kind: KindInt},
@@ -103,6 +104,15 @@ func ProjectSchema() AssetSchema {
 					{Path: "retention.memory_ingest_audit_days", Label: "Memory ingest audit", Kind: KindInt},
 					{Path: "retention.memory_policy_eval_allow_days", Label: "Policy eval (allow)", Kind: KindInt},
 					{Path: "retention.memory_policy_eval_block_days", Label: "Policy eval (block)", Kind: KindInt},
+					{Path: "retention.memory_eviction_audit_days", Label: "Eviction audit", Kind: KindInt},
+				},
+			},
+			{
+				Title:    "Recording",
+				Advanced: true,
+				Help:     "Per-project opt-ins that cost storage. Rows live as long as their execution and follow its retention.",
+				Fields: []Field{
+					{Path: "recording.llm_exchanges", Label: "Record model exchanges", Kind: KindBool, Help: "Store every request/response pair of this project's agent steps (after secret redaction) for `vornikctl execution exchanges` and replay. Off by default: roughly 30x a step's final context per 30-iteration step."},
 				},
 			},
 			{
@@ -204,8 +214,12 @@ var ProjectDeferredPaths = []string{
 	"github_app.auto_review_on_push", "github_app.review_draft_prs",
 	"github.app_id", "github.installation_id", "github.private_key_path", "github.api_base_url",
 	"github.repo",
-	// Forge automation.
-	"forge.provider", "forge.github.app_id", "forge.github.installation_id",
+	// Forge automation. mention_handle joins the rest of the block as YAML-only:
+	// it is a deployment identity (the operator's own GitHub App slug) set once
+	// alongside the credentials it belongs with, not a per-project knob the
+	// project form edits.
+	"forge.provider", "forge.mention_handle",
+	"forge.github.app_id", "forge.github.installation_id",
 	"forge.github.private_key_path", "forge.github.api_base_url",
 	"forge.github.repo",
 	// Email connector (IMAP/SMTP, secrets via env).

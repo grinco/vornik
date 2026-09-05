@@ -101,6 +101,13 @@ type APIMetrics struct {
 	// cooldown, invalid (field validation failures). vornik_backlog_
 	// deposits_total — autonomous-development-loop design C1.
 	BacklogDepositsTotal *prometheus.CounterVec
+
+	// LLMExchangeRecordFailedTotal counts exchanges the chat proxy could not
+	// record for an opted-in execution, by reason: no_step (the image predates
+	// the X-Vornik-Step-ID header), canonical, marshal, store.
+	// vornik_llm_exchange_record_failed_total — llm-exchange record/replay
+	// design §2.2.
+	LLMExchangeRecordFailedTotal *prometheus.CounterVec
 }
 
 // NewAPIMetrics creates and registers API metrics.
@@ -176,13 +183,18 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Name:      "support_report_bytes_total",
 			Help:      "Total bytes of support-report bundles streamed by the daemon, by mode.",
 		}, []string{"mode"}),
+		LLMExchangeRecordFailedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vornik",
+			Name:      "llm_exchange_record_failed_total",
+			Help:      "Agent-step model exchanges the chat proxy could not record for an opted-in execution, by reason.",
+		}, []string{"reason"}),
 		BacklogDepositsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "vornik",
 			Name:      "backlog_deposits_total",
 			Help:      "backlog-deposit endpoint outcomes, by project and outcome (accepted/duplicate/secret/cap/cooldown/invalid).",
 		}, []string{"project", "outcome"}),
 	}
-	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal, m.BacklogDepositsTotal, m.MCPResultGuardFindingsTotal, m.MCPResultGuardScanSeconds)
+	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal, m.BacklogDepositsTotal, m.MCPResultGuardFindingsTotal, m.MCPResultGuardScanSeconds, m.LLMExchangeRecordFailedTotal)
 	return m
 }
 
@@ -387,4 +399,13 @@ func (m *APIMetrics) RecordMCPResultGuard(tool string, rep outputguard.Report, d
 		}
 		m.MCPResultGuardFindingsTotal.WithLabelValues(tool, string(f.Severity), string(f.Kind), rule).Inc()
 	}
+}
+
+// RecordLLMExchangeRecordFailed bumps the recorder's failure counter; nil-safe
+// so a Server built without metrics (tests) records nothing.
+func (m *APIMetrics) RecordLLMExchangeRecordFailed(reason string) {
+	if m == nil || m.LLMExchangeRecordFailedTotal == nil {
+		return
+	}
+	m.LLMExchangeRecordFailedTotal.WithLabelValues(reason).Inc()
 }

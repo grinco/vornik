@@ -32,14 +32,14 @@ func TestIsMCPTool(t *testing.T) {
 
 func TestNamesSortedAndComplete(t *testing.T) {
 	names := Names()
-	if len(names) != len(builtinTools) {
-		t.Fatalf("Names() returned %d entries, want %d", len(names), len(builtinTools))
+	if len(names) != len(Tools) {
+		t.Fatalf("Names() returned %d entries, want %d", len(names), len(Tools))
 	}
 	if !sort.StringsAreSorted(names) {
 		t.Errorf("Names() not sorted: %v", names)
 	}
 	for _, n := range names {
-		if !builtinTools[n] {
+		if Get(n) == nil {
 			t.Errorf("Names() returned unknown tool %q", n)
 		}
 	}
@@ -47,12 +47,16 @@ func TestNamesSortedAndComplete(t *testing.T) {
 
 func TestSetIsCopy(t *testing.T) {
 	s := Set()
-	if !reflect.DeepEqual(s, builtinTools) {
-		t.Fatal("Set() should equal the builtin set")
+	want := map[string]bool{}
+	for _, n := range Names() {
+		want[n] = true
+	}
+	if !reflect.DeepEqual(s, want) {
+		t.Fatal("Set() should equal the declared set")
 	}
 	// Mutating the returned map must not affect the package state.
 	s["injected_tool"] = true
-	if builtinTools["injected_tool"] {
+	if IsBuiltin("injected_tool") {
 		t.Error("Set() returned a live reference, not a copy")
 	}
 }

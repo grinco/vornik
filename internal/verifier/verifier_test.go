@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1535,4 +1536,64 @@ func TestVerify_CVClaimsGrounded_RunDispatch(t *testing.T) {
 	require.NotNil(t, v)
 	assert.Equal(t, SeverityWarn, v.Severity)
 	assert.Contains(t, v.Detail, "Globex")
+}
+
+// COVERAGE BOUNDARY. Finding D of the 2026-08-26 silent-controls audit: entries
+// classifyAuditEntry cannot understand are dropped, and nothing counted the
+// drops — so the denominator max_block_ratio and min_successful_fetches are
+// judged against was taken over an unpublished subset, and zero coverage read
+// exactly like a clean result.
+//
+// This was not theoretical: 2,651 of 4,481 production web_fetch rows were
+// invalid JSON after a blind 4096-char tool_output slice, so more than half the
+// population could not be classified. The truncation fix removed the largest
+// CAUSE; it did not publish the BOUNDARY, and the doctor design that claimed
+// this finding was "closed separately" was wrong and has been corrected.
+//
+// The verdict is deliberately unchanged — what COUNTS stays as it was, because
+// that moves pass/fail and needs its own review. Only the report gains the
+// number.
+func TestNoStatus429_PublishesUnclassifiableCount(t *testing.T) {
+	cfg := Config{Type: "no_status_429_in_audit"}
+	in := Input{
+		AuditEntries: []*persistence.ToolAuditEntry{
+			// One real block, so a violation is produced at all.
+			{
+				ToolName:   "mcp__scraper__web_fetch",
+				ToolOutput: `{"status_code":429,"body":"rate limited"}`,
+			},
+			// Two in-scope entries whose output cannot be parsed — the
+			// truncated-JSON shape that dominated the production population.
+			{ToolName: "mcp__scraper__web_fetch", ToolOutput: `{"status":200,"body":"<html>tru`},
+			{ToolName: "mcp__scraper__web_fetch", ToolOutput: `{"status":200,"body":"<html>als`},
+		},
+	}
+	v, err := Run(context.Background(), cfg, in)
+	require.NoError(t, err)
+	require.NotNil(t, v)
+
+	assert.Contains(t, v.Detail, "2",
+		"the count of unclassifiable in-scope entries must appear in the report")
+	assert.Contains(t, strings.ToLower(v.Detail), "classif",
+		"the report must say the dropped entries could not be CLASSIFIED, not merely that they exist — "+
+			"a bare number beside the denominator does not tell the operator the denominator is partial")
+}
+
+// The complement: with full coverage the report must NOT carry a boundary
+// clause, or the number becomes noise on every clean run and stops being read.
+func TestNoStatus429_SaysNothingWhenCoverageIsComplete(t *testing.T) {
+	cfg := Config{Type: "no_status_429_in_audit"}
+	in := Input{
+		AuditEntries: []*persistence.ToolAuditEntry{
+			{
+				ToolName:   "mcp__scraper__web_fetch",
+				ToolOutput: `{"status_code":429,"body":"rate limited"}`,
+			},
+		},
+	}
+	v, err := Run(context.Background(), cfg, in)
+	require.NoError(t, err)
+	require.NotNil(t, v)
+	assert.NotContains(t, strings.ToLower(v.Detail), "could not be classified",
+		"a fully-classified population must not carry a coverage caveat")
 }

@@ -21,6 +21,7 @@ import (
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/telemetryclient"
 )
 
 // buildSecretsDetector translates daemon-config SecretsConfig into a
@@ -155,11 +156,12 @@ func (c *Container) initRegistry() error {
 		// embed worker pool) are boot-only and are NOT applied live; see
 		// applyHotConfig.
 		if c.ConfigPath != "" {
-			staged, err := config.LoadFromPath(c.ConfigPath)
+			staged, prov, err := config.LoadFromPathWithProvenance(c.ConfigPath)
 			if err != nil {
 				return fmt.Errorf("reload: re-parse config.yaml: %w", err)
 			}
 			c.stagedConfig = staged
+			c.stagedProvenance = prov
 		}
 		return nil
 	})
@@ -228,7 +230,70 @@ func (c *Container) initRegistry() error {
 	}
 
 	c.Logger.Info().Str("config_dir", configDir).Msg("registry loaded")
+	c.emitFirstSeenProjects(context.Background())
 	return nil
+}
+
+// emitFirstSeenProjects fires project_created for projects the daemon has never
+// observed before — the file-drop path, which emitted nothing at all.
+//
+// A project is creatable four ways and only three were counted: `vornikctl init
+// --template`, `vornikctl init`, and the API/UI template create. Writing
+// `configs/projects/<id>.yaml` — by hand, by config management, or by copying an
+// existing project — emitted nothing, because internal/registry has no telemetry
+// in it. That is the path an operator uses for every project after their first,
+// and the one every deployed project in this installation came from. The error
+// is also CORRELATED WITH MATURITY: the more established the deployment, the
+// larger the share of its projects the counter cannot see.
+//
+// FIRST-SEEN, NOT LOADED. This function runs on every daemon start and every
+// registry reload; the marker table is what stops it becoming a restart counter.
+// The insert-and-report is one statement, so a start racing a reload cannot emit
+// twice (see persistence.ProjectFirstSeenRepository).
+//
+// IT MARKS EVERY PROJECT, INCLUDING WIZARD-CREATED ONES, and emits for none of
+// those it can avoid: a wizard path already emitted at creation, and it wrote the
+// file the registry then loads. Marking silently on the first observation is
+// what keeps the wizard project from emitting a SECOND event here. The one case
+// this cannot separate is a wizard-created project on a deployment whose marker
+// table is empty (a first upgrade to this version), which counts every existing
+// project once — a one-time backfill of a population that was never counted,
+// which is the correct reading rather than a defect.
+//
+// Nil-safe throughout: a deployment with no first-seen repository (or telemetry
+// off) does nothing, silently. An adoption counter must never be able to stop a
+// daemon from booting.
+func (c *Container) emitFirstSeenProjects(ctx context.Context) {
+	if c == nil || c.repos == nil || c.repos.ProjectFirstSeen == nil || c.Registry == nil {
+		return
+	}
+	enabled, _, err := c.Config.Telemetry.Resolve(os.Getenv("VORNIK_TELEMETRY"))
+	if err != nil {
+		return
+	}
+	client := telemetryclient.ProductionClient(enabled)
+
+	// ListProjects, not ListActiveProjects: an archived project still EXISTS and
+	// was still created, and counting only live ones would rebuild the same
+	// under-count one predicate over.
+	for _, p := range c.Registry.ListProjects() {
+		first, err := c.repos.ProjectFirstSeen.MarkSeen(ctx, p.ID, telemetryclient.SourceConfigFile)
+		if err != nil {
+			c.Logger.Debug().Err(err).Str("project_id", p.ID).
+				Msg("telemetry: could not record first-seen marker for project")
+			continue
+		}
+		if !first {
+			continue
+		}
+		// Template is "custom" for this path by construction — there was no
+		// template — and ProjectEvent already forces that when builtIn is false,
+		// so passing it explicitly would be a second place to keep in step.
+		_ = client.Emit(ctx, telemetryclient.ProjectEvent(
+			c.Version(), telemetryclient.SourceConfigFile, "", false,
+			p.Autonomy.Enabled,
+		))
+	}
 }
 
 // applyHotConfig pushes the safe-to-hot-apply config.yaml keys from the freshly
@@ -249,10 +314,16 @@ func (c *Container) initRegistry() error {
 // to avoid racing the many goroutines that hold its pointer.
 func (c *Container) applyHotConfig() {
 	staged := c.stagedConfig
+	prov := c.stagedProvenance
 	c.stagedConfig = nil
+	c.stagedProvenance = nil
 	if staged == nil {
 		return
 	}
+	// The dump follows the reload even though c.Config does not: the snapshot
+	// is what `config show` reads (resolved-config provenance design §4.1).
+	// Written under the reloader's reloadMu, which serialises reload attempts.
+	c.configSnapshot.Store(staged, prov)
 	// control_plane.self_heal_enabled hot-applies (actionable-proposals §7):
 	// the tune/self-heal workers read the live value per tick, so flipping
 	// the flag + reload hands the failed-rate signal over/back without a

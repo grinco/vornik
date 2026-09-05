@@ -3,6 +3,8 @@ package executor
 import (
 	"testing"
 
+	"vornik.io/vornik/internal/stepid"
+
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
@@ -135,7 +137,7 @@ func TestProducerRoleForExecution_RetrySuffixesStripped(t *testing.T) {
 func TestStripRetryStepSuffix_UnchangedForUnknownSuffix(t *testing.T) {
 	cases := []string{"write", "research", "write_post", "plan_v2"}
 	for _, s := range cases {
-		if got := stripRetryStepSuffix(s); got != s {
+		if got := stepid.StripRetrySuffix(s); got != s {
 			t.Errorf("expected %q unchanged, got %q", s, got)
 		}
 	}

@@ -575,7 +575,7 @@ func (s *Server) collectKeyActivity(ctx context.Context, st *adoptionStats, quer
 	}
 
 	s.addRAGActivity(ctx, st, queryIDs, since, row)
-	s.addMemoryWrites(ctx, st, concreteProjects(queryIDs, allowed), row)
+	s.addMemoryWrites(ctx, st, concreteProjects(queryIDs, allowed), since, row)
 	s.addSpendActivity(ctx, st, queryIDs, since, row)
 
 	for _, r := range rows {
@@ -899,7 +899,7 @@ func machineInitiated(src persistence.TaskCreationSource) bool {
 // are counted toward the instance total but not credited to a credential —
 // a role is not a credential, and mapping one onto the other would put
 // "writer" on a leaderboard of people.
-func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, projects []string, row func(string) *keyRow) {
+func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, projects []string, since time.Time, row func(string) *keyRow) {
 	if s.memoryIngestAudit == nil {
 		return
 	}
@@ -913,7 +913,17 @@ func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, project
 			// rows in the database. Concrete ids are resolved by the caller.
 			continue
 		}
-		audits, err := s.memoryIngestAudit.ListByProject(ctx, pid, adoptionSampleCap)
+		// SINCE-FILTERED, like the retrieval collector above. ListByProject has
+		// no time bound (newest-first, capped), so every memory-write number on
+		// this panel counted ALL HISTORY while the template said "over the last
+		// {{.Stats.Days}} days" — an overstatement that grows with corpus age,
+		// on the panel whose own comments stress honest usage reporting.
+		// Introduced by d01b78f4; found by the 2026-09-03 audit.
+		audits, err := s.memoryIngestAudit.List(ctx, persistence.MemoryIngestAuditFilter{
+			ProjectID: pid,
+			Since:     since,
+			PageSize:  adoptionSampleCap,
+		})
 		if err != nil {
 			continue
 		}

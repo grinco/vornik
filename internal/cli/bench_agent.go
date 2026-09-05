@@ -282,6 +282,37 @@ func checkAgentRunScope() error {
 	return membench.CheckRunScope(agentRunScope())
 }
 
+// preflightGoldWrite applies every WRITE-TIME precondition `bench agent gold`
+// holds, at ARGUMENT-PARSING time.
+//
+// The command runs each task itself and builds the manifest only afterwards, so
+// a precondition checked at write time is a trap: on 2026-08-23 a `--topup` run
+// was given `topup0-<hash>` (71 chars), executed all 13 short tasks, completed
+// 13 of 13 over 3h40m, and was refused when the manifest was built. Nothing was
+// salvageable — rescore needs a journal the failed command never wrote. Both
+// facts checked here were knowable before the first container started.
+//
+// The destination probe CREATES NOTHING. Opening the gold path with O_CREATE
+// would leave a zero-length file behind on a run that later fails, which reads
+// as a partial write; a temp file in the same directory answers the same
+// question (is this directory writable by us) and is removed immediately.
+func preflightGoldWrite(goldPath, taskSetHash string) error {
+	if err := agentbench.ValidateTaskSetDigest(taskSetHash); err != nil {
+		return fmt.Errorf("--task-set-hash is not usable, refusing before the runs start "+
+			"(this is knowable now; discovering it at write time discards the whole run): %w", err)
+	}
+	dir := filepath.Dir(goldPath)
+	probe, err := os.CreateTemp(dir, ".gold-preflight-*")
+	if err != nil {
+		return fmt.Errorf("--gold destination %q is not writable, refusing before the runs start: %w",
+			goldPath, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
 func runBenchAgentGold(cmd *cobra.Command, _ []string) error {
 	if err := checkAgentRunScope(); err != nil {
 		return err
@@ -290,6 +321,12 @@ func runBenchAgentGold(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--task-set-hash is required: without it the regeneration fence " +
 			"has nothing to compare against, so gold could be silently rebuilt against a " +
 			"different task set")
+	}
+	// EVERY write-time precondition, before any container starts. See
+	// preflightGoldWrite: the alternative is discovering them after hours of
+	// work that cannot be recovered.
+	if err := preflightGoldWrite(benchAgentGoldPath, benchAgentTaskSetHash); err != nil {
+		return err
 	}
 
 	pinned, err := loadGoldIfPresent(benchAgentGoldPath)

@@ -37,7 +37,14 @@ func TestPricingCoverage_NoUncheckedModelField(t *testing.T) {
 
 		// Reached through the registry rather than the daemon snapshot, so they
 		// are covered by checkPricingCoverage without appearing in modelRefs.
-		"model":         "ambiguous bare tag: covered per-surface via modelRefs and the registry walk",
+		// TWO DIFFERENT CASES SHARE THIS TAG, and the ratchet keys on the tag
+		// name so it cannot separate them. Stated in full rather than left as
+		// the half-true "covered via modelRefs": most `model` fields ARE
+		// reached per-surface through modelRefs or the registry walk, but
+		// voice.stt.model is an absolute PATH to a whisper.cpp model file, not
+		// a billed model id — pricing it would be a category error, and
+		// reporting it missing would be a permanent false finding.
+		"model":         "ambiguous bare tag: per-surface fields are covered via modelRefs and the registry walk; voice.stt.model is a whisper.cpp FILE PATH and must never be priced",
 		"refiner_model": "memory refiner; reached via the memory config surfaces already in modelRefs",
 
 		// Memory subsystem models that do not bill through the pricing table's

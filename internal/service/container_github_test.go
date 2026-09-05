@@ -222,12 +222,12 @@ func TestBuildGitHubChannel_MultipleEnabled_SecretMismatch(t *testing.T) {
 // catches this, but resolve should never trust its inputs).
 func TestResolveGitHubAppConfig_RejectsPartialOutbound(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
-	_, err := resolveGitHubAppConfig(registry.ProjectGitHubApp{
+	_, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		WebhookSecretEnv: "GH_TEST_SECRET",
 		RepoAllowlist:    []string{"acme/api"},
 		AppID:            12345,
 		InstallationID:   99,
-	})
+	}})
 	if err == nil || !strings.Contains(err.Error(), "private_key_path") {
 		t.Errorf("err = %v, want partial-outbound failure", err)
 	}
@@ -240,13 +240,13 @@ func TestResolveGitHubAppConfig_MalformedPEM(t *testing.T) {
 	if err := os.WriteFile(pemPath, []byte("-----BEGIN RSA PRIVATE KEY-----\nbad\n-----END RSA PRIVATE KEY-----\n"), 0o600); err != nil {
 		t.Fatalf("write bad pem: %v", err)
 	}
-	_, err := resolveGitHubAppConfig(registry.ProjectGitHubApp{
+	_, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		WebhookSecretEnv: "GH_TEST_SECRET",
 		RepoAllowlist:    []string{"acme/api"},
 		AppID:            12345,
 		InstallationID:   99,
 		PrivateKeyPath:   pemPath,
-	})
+	}})
 	if err == nil {
 		t.Error("expected error on malformed PEM")
 	}
@@ -257,13 +257,13 @@ func TestResolveGitHubAppConfig_MalformedPEM(t *testing.T) {
 func TestResolveGitHubAppConfig_OutboundReturnsParsedKey(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
 	pemPath := writePEM(t, filepath.Join(t.TempDir(), "ok.pem"))
-	cfg, err := resolveGitHubAppConfig(registry.ProjectGitHubApp{
+	cfg, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		AppID:            12345,
 		InstallationID:   99,
 		PrivateKeyPath:   pemPath,
 		WebhookSecretEnv: "GH_TEST_SECRET",
 		RepoAllowlist:    []string{"acme/api"},
-	})
+	}})
 	if err != nil {
 		t.Fatalf("resolveGitHubAppConfig: %v", err)
 	}
@@ -280,10 +280,10 @@ func TestResolveGitHubAppConfig_OutboundReturnsParsedKey(t *testing.T) {
 // strings.TrimSpace).
 func TestResolveGitHubAppConfig_BlankSecretWhitespaceRejected(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "   ")
-	_, err := resolveGitHubAppConfig(registry.ProjectGitHubApp{
+	_, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		WebhookSecretEnv: "GH_TEST_SECRET",
 		RepoAllowlist:    []string{"acme/api"},
-	})
+	}})
 	if err == nil {
 		t.Error("expected error on whitespace-only secret")
 	}
@@ -294,13 +294,13 @@ func TestResolveGitHubAppConfig_BlankSecretWhitespaceRejected(t *testing.T) {
 // well-formed.
 func TestResolveGitHubAppConfig_InboundOnly(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
-	cfg, err := resolveGitHubAppConfig(registry.ProjectGitHubApp{
+	cfg, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		WebhookSecretEnv: "GH_TEST_SECRET",
 		RepoAllowlist:    []string{"acme/api"},
 		TaskLabels:       []string{"vornik-task"},
 		PRReviewLabels:   []string{"needs-review"},
 		SenderAllowlist:  []string{"vadim"},
-	})
+	}})
 	if err != nil {
 		t.Fatalf("resolveGitHubAppConfig: %v", err)
 	}

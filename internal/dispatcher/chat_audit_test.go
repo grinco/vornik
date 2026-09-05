@@ -50,14 +50,15 @@ func (s *stubChatAuditRepo) List(_ context.Context, _ persistence.ChatAuditFilte
 	return nil, nil
 }
 
-func (s *stubChatAuditRepo) SavePrompt(_ context.Context, hash, body string) error {
+func (s *stubChatAuditRepo) SavePrompt(_ context.Context, body string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.saveErr != nil {
-		return s.saveErr
+		return "", s.saveErr
 	}
+	hash := persistence.HashChatSystemPrompt(body)
 	s.prompts[hash] = body
-	return nil
+	return hash, nil
 }
 
 func (s *stubChatAuditRepo) GetPrompt(_ context.Context, hash string) (string, error) {

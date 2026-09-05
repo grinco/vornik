@@ -25,6 +25,7 @@ import (
 	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/observability"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/pipeline"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/replay"
@@ -75,6 +76,16 @@ type ExecutionRepository interface {
 	List(ctx context.Context, filter persistence.ExecutionFilter) ([]*persistence.Execution, error)
 	Update(ctx context.Context, execution *persistence.Execution) error
 	UpdateStatus(ctx context.Context, id string, status persistence.ExecutionStatus) error
+	// UpdateWorkflowID writes the resolved workflow id and nothing else.
+	// Update writes the WHOLE row from the struct it is given, including a
+	// possibly stale status + state_snapshot; using it to persist one field
+	// is what erased concurrent pauses (pause-write-ownership design §3.2).
+	UpdateWorkflowID(ctx context.Context, id, workflowID string) error
+	// TransitionStatusConditional is UpdateStatus's compare-and-set form:
+	// apply only from one of `from`, and report whether a row changed. The
+	// pause path uses it so it cannot reopen an execution that reached a
+	// terminal state while the pause was being decided.
+	TransitionStatusConditional(ctx context.Context, id string, from []persistence.ExecutionStatus, to persistence.ExecutionStatus) (bool, error)
 	SaveStateSnapshot(ctx context.Context, id string, snapshot []byte, currentStepID string, completedSteps []string) error
 	SetWorkflowSnapshot(ctx context.Context, id string, snapshot []byte) error
 	GetWorkflowSnapshot(ctx context.Context, id string) ([]byte, error)
@@ -334,13 +345,17 @@ type Executor struct {
 	distillLimiter skillDistillLimiter
 	// llmUsageRepo READS the ledger for budget env injection; spend BILLS the
 	// step. Two jobs, two fields.
-	llmUsageRepo  persistence.TaskLLMUsageRepository
-	spend         llmspend.Recorder
-	reservRepo    persistence.BudgetReservationRepository
-	outcomeRepo   persistence.ExecutionStepOutcomeRepository
-	notifier      CompletionNotifier
-	steering      SteeringNotifier
-	memoryIndexer MemoryIndexer
+	llmUsageRepo persistence.TaskLLMUsageRepository
+	spend        llmspend.Recorder
+	reservRepo   persistence.BudgetReservationRepository
+	outcomeRepo  persistence.ExecutionStepOutcomeRepository
+	// stepPromptRepo stores what each step was told at its first model
+	// request (step-prompt persistence design). nil disables persistence:
+	// outcome rows then carry empty hashes, never an error.
+	stepPromptRepo persistence.StepPromptRepository
+	notifier       CompletionNotifier
+	steering       SteeringNotifier
+	memoryIndexer  MemoryIndexer
 	// budgetNotifier receives per-task cost-governor soft-breach + hard-park
 	// alerts (LLD 2026-07-24 §3.5/§3.6). Optional — nil no-ops (same pattern
 	// as CompletionNotifier). Deduped once per task via taskBudgetWarned.
@@ -512,6 +527,10 @@ type Executor struct {
 	// Nil-safe; the executor still blocks on High signals when
 	// metrics is unset.
 	hallucinationMetrics *hallucination.Metrics
+	// stepOutcomeChain is the executor.step_outcome point (pipeline_points.go),
+	// built on first use by stepOutcomePoint().
+	stepOutcomeChain *pipeline.Decide[*StepOutcome]
+	stepOutcomeOnce  sync.Once
 	// instinctMetrics is the instinct subsystem metrics sink, shared with
 	// the instinct worker. The executor bumps vornik_instinct_applications_total
 	// when it surfaces a learned recovery remediation (slice 7). Nil-safe:
@@ -583,6 +602,16 @@ type Executor struct {
 
 	// activeExecutions tracks currently running executions.
 	activeExecutions map[string]*executionHandle
+
+	// pauseClaims records pauses that have been DECIDED but whose database
+	// writes may not have landed yet, keyed by task id. Guarded by claimMu,
+	// NOT by mu — see the locking note in pause_claim.go.
+	pauseClaims map[string]string
+	claimMu     sync.Mutex
+
+	// testHookAfterShutdownSnapshot is a test-only seam; see its call
+	// site in Shutdown. Always nil in production.
+	testHookAfterShutdownSnapshot func()
 
 	// workspaceLock serializes git operations per-project. It is the
 	// SAME shared *workspacelock.Locker the service container injects
@@ -820,6 +849,15 @@ func (e *Executor) settleBudgetReservation(ctx context.Context, taskID string) {
 func WithStepOutcomeRepository(repo persistence.ExecutionStepOutcomeRepository) Option {
 	return func(e *Executor) {
 		e.outcomeRepo = repo
+	}
+}
+
+// WithStepPromptRepository wires the content-addressed step-prompt store. The
+// container hands in auditredact's decorator, so every part is scanned before
+// it is stored; a nil repo leaves outcome rows with empty hashes.
+func WithStepPromptRepository(repo persistence.StepPromptRepository) Option {
+	return func(e *Executor) {
+		e.stepPromptRepo = repo
 	}
 }
 
@@ -1711,6 +1749,12 @@ func (e *Executor) ExecuteWithContext(ctx context.Context, taskID string) error 
 		return fmt.Errorf("task %s is already being executed", taskID)
 	}
 
+	// A task being dispatched afresh is not paused. Drop any claim left
+	// behind by an earlier pause that was never resumed, or every checkpoint
+	// this new run writes would carry a pause reason from the last one
+	// (pause_claim.go).
+	e.releasePauseClaim(taskID)
+
 	// Initialize context if needed
 	if e.ctx == nil {
 		e.ctx, e.cancel = context.WithCancel(context.Background())
@@ -2042,7 +2086,13 @@ func (e *Executor) runExecution(ctx context.Context, task *persistence.Task, exe
 	// have a placeholder ("default-workflow") if the task had no explicit
 	// workflow_id. The resolved ID from the project config is authoritative.
 	span.SetAttributes(attribute.String("workflow_id", execution.WorkflowID))
-	_ = e.execRepo.Update(ctx, execution)
+	// ONE column. This was `execRepo.Update(ctx, execution)` — a whole-row
+	// write issued to persist a single field, which also put back the
+	// in-memory struct's Status (RUNNING, stamped just above) and its
+	// StateSnapshot as loaded at dispatch. A pause landing in between was
+	// erased by it: reason gone, RUNNING reinstated. Narrow writer, no
+	// incidental fields, nothing to race (pause-write-ownership §3.2/§5.6).
+	_ = e.execRepo.UpdateWorkflowID(ctx, execution.ID, execution.WorkflowID)
 
 	// Resolve the project directory and set up workspace isolation.
 	var projectDir string
@@ -2686,30 +2736,53 @@ func (e *Executor) Shutdown(ctx context.Context) error {
 	if e == nil {
 		return nil
 	}
+	// Claim every active execution's pause in the SAME critical section that
+	// sets shuttingDown and snapshots the active set. That ordering is the
+	// whole fix: shuttingDown is the signal the in-flight goroutines are
+	// waiting on, so the instant this lock is released they may bail and
+	// delete their own handles. A claim taken afterwards — or an authority
+	// resolved from activeExecutions afterwards, which is what this used to
+	// do — loses that footrace and writes no pause at all
+	// (pause-write-ownership design §2, §5.1).
+	//
+	// The handles are snapshotted too, so the pause path has the container id
+	// and cancel func it needs without a second lookup that could miss.
 	e.mu.Lock()
 	e.shuttingDown = true
-	taskIDs := make([]string, 0, len(e.activeExecutions))
-	for id := range e.activeExecutions {
-		taskIDs = append(taskIDs, id)
+	claimed := make([]*executionHandle, 0, len(e.activeExecutions))
+	for id, h := range e.activeExecutions {
+		if e.claimPause(id, PauseReasonShutdown) {
+			claimed = append(claimed, h)
+		}
 	}
 	e.mu.Unlock()
 
-	if len(taskIDs) == 0 {
+	if len(claimed) == 0 {
 		// No active executions — Stop() is the right cleanup path
 		// (still cancels e.ctx, releases timers, etc).
 		return e.Stop(ctx)
 	}
 
-	e.logger.Info().Int("active_executions", len(taskIDs)).
+	e.logger.Info().Int("active_executions", len(claimed)).
 		Msg("executor: shutdown — pausing active executions for resume on next start")
 
-	for _, taskID := range taskIDs {
-		if _, err := e.pauseWithReason(taskID, PauseReasonShutdown); err != nil {
+	// Test seam, nil in production: fires after the active set has been
+	// snapshotted and before any execution is paused. It exists so a test
+	// can force the interleaving this path used to lose — the in-flight
+	// goroutine observing shuttingDown, bailing, and deleting its own
+	// handle before the pause loop reaches it (pause-write-ownership
+	// design §7). Hoping for it costs 6000 runs to see 9 times.
+	if e.testHookAfterShutdownSnapshot != nil {
+		e.testHookAfterShutdownSnapshot()
+	}
+
+	for _, handle := range claimed {
+		if _, err := e.pauseClaimedHandle(handle, PauseReasonShutdown); err != nil {
 			// Don't abort the loop on one bad pause — we want to do
 			// the best we can across every active execution. The
 			// per-execution log message is enough; an aggregate
 			// failure would just hide the per-task ones.
-			e.logger.Warn().Err(err).Str("task_id", taskID).
+			e.logger.Warn().Err(err).Str("task_id", handle.taskID).
 				Msg("executor: shutdown: pause failed (execution will be recovered as RUNNING)")
 		}
 	}

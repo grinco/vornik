@@ -2,8 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -229,14 +227,23 @@ func (t *chatAuditTurn) finish(ctx context.Context, req Request, result Result) 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatAuditWriteTimeout)
 	defer cancel()
 
-	// Persist the prompt body keyed by its sha256 hex digest. The
-	// row references the hash so the prompt body is stored once
-	// across every turn that used it.
+	// Persist the prompt body; the repository returns its sha256 hex digest,
+	// and the row references that so the body is stored once across every
+	// turn that used it.
+	//
+	// The hash used to be computed HERE, which put it ahead of the
+	// repository's redaction seam — the stored body could be redacted while
+	// the hash named the raw bytes. The repository hashes what it stores
+	// (chat-audit retention and redaction design §3.1).
 	hash := ""
 	if t.systemPrompt != "" {
-		sum := sha256.Sum256([]byte(t.systemPrompt))
-		hash = hex.EncodeToString(sum[:])
-		_ = t.agent.chatAuditRepo.SavePrompt(ctx, hash, t.systemPrompt)
+		// The hash is kept even when the write fails — see the chat proxy's
+		// twin for why (it is the row's only reconciliation pointer).
+		var perr error
+		if hash, perr = t.agent.chatAuditRepo.SavePrompt(ctx, t.systemPrompt); perr != nil {
+			t.agent.logger.Debug().Err(perr).Str("hash", hash).
+				Msg("chat_audit: SavePrompt failed (best-effort; hash still recorded)")
+		}
 	}
 
 	responseText := result.Text

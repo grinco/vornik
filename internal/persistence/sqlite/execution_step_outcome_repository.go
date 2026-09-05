@@ -54,8 +54,10 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 			finalized_at, recorded_at, hallucination_signals,
 			complexity_tier, effective_tool_budget, tool_calls_used,
 			untrusted_content_used, untrusted_sources, requires_review,
-			container_exit_code
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			container_exit_code,
+			prompt_system_hash, prompt_user_hash, prompt_tools_hash,
+			input_hash, result_hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.ID, o.ProjectID, o.TaskID, o.ExecutionID, o.StepID,
 		o.Role, o.Model, nullableString(o.AgentImageID), o.Outcome, o.AttributedToStepID,
 		o.ErrorClass, o.ErrorDetail, duration,
@@ -64,6 +66,8 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 		nullableString(o.ComplexityTier), effectiveBudget, toolCallsUsed,
 		o.UntrustedContentUsed, nullableBlob(o.UntrustedSources), o.RequiresReview,
 		o.ContainerExitCode,
+		o.PromptHashes.System, o.PromptHashes.User, o.PromptHashes.Tools,
+		o.PromptHashes.Input, o.PromptHashes.Result,
 	)
 	return err
 }
@@ -149,7 +153,45 @@ func (r *ExecutionStepOutcomeRepository) SweepPendingForTerminalExecutions(ctx c
 		    ORDER BY o2.recorded_at ASC
 		    LIMIT ?
 		)`,
-		string(stepoutcome.Superseded), sqliteTime(time.Now().UTC()), cutoff, limit)
+		string(stepoutcome.Orphaned), sqliteTime(time.Now().UTC()), cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// SweepPendingForTaskOrphans finalizes the pending outcomes under a task's
+// TERMINAL executions, to `orphaned`, with no settle grace.
+//
+// Called by the two paths that terminalise a task's leftover executions —
+// supersedeStaleExecutions and cascadeOrphanExecutions — immediately after they
+// do it, so the fact is recorded by the code that knows it rather than inferred
+// minutes later by the watchdog backstop. No grace, because the caller has just
+// finished terminalising these rows itself: there is nothing to race with.
+//
+// Scoped by TASK, not by execution id, because the supersede sweeps report a
+// COUNT rather than the ids they touched. It is idempotent and bounded to one
+// task.
+//
+// It does NOT replace the backstop: a step can be writing its outcome row while
+// its execution is being cancelled, and that row commits after this sweep has
+// run. The backstop is for exactly that race.
+//
+// https://docs.vornik.io
+func (r *ExecutionStepOutcomeRepository) SweepPendingForTaskOrphans(ctx context.Context, taskID string) (int64, error) {
+	if taskID == "" {
+		return 0, nil
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE execution_step_outcomes
+		SET outcome = ?, finalized_at = ?
+		WHERE outcome = 'pending_validation'
+		  AND execution_id IN (
+		      SELECT e.id FROM executions e
+		      WHERE e.task_id = ?
+		        AND e.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+		  )`,
+		string(stepoutcome.Orphaned), sqliteTime(time.Now().UTC()), taskID)
 	if err != nil {
 		return 0, err
 	}
@@ -165,7 +207,9 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		       finalized_at, recorded_at, hallucination_signals,
 		       complexity_tier, effective_tool_budget, tool_calls_used,
 		       untrusted_content_used, untrusted_sources, requires_review,
-		       container_exit_code
+		       container_exit_code,
+		       prompt_system_hash, prompt_user_hash, prompt_tools_hash,
+		       input_hash, result_hash
 		FROM execution_step_outcomes WHERE 1=1`)
 	args := make([]any, 0, 10)
 	if f.ProjectID != nil {
@@ -257,6 +301,8 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			&complexityTier, &effectiveToolBudget, &toolCallsUsed,
 			&untrustedUsed, &untrustedSources, &requiresReview,
 			&containerExitCode,
+			&o.PromptHashes.System, &o.PromptHashes.User, &o.PromptHashes.Tools,
+			&o.PromptHashes.Input, &o.PromptHashes.Result,
 		); err != nil {
 			return nil, err
 		}

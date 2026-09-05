@@ -50,12 +50,13 @@ func (f *fakeChatAudit) List(_ context.Context, filter persistence.ChatAuditFilt
 	return out, nil
 }
 
-func (f *fakeChatAudit) SavePrompt(_ context.Context, hash, body string) error {
+func (f *fakeChatAudit) SavePrompt(_ context.Context, body string) (string, error) {
 	if f.prompts == nil {
 		f.prompts = map[string]string{}
 	}
+	hash := persistence.HashChatSystemPrompt(body)
 	f.prompts[hash] = body
-	return nil
+	return hash, nil
 }
 
 func (f *fakeChatAudit) GetPrompt(_ context.Context, hash string) (string, error) {

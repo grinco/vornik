@@ -201,7 +201,7 @@ func (s *recordingSink) SetStateGauge(model string, state chat.CircuitState) {
 	defer s.mu.Unlock()
 	s.states[model] = int(state)
 }
-func (s *recordingSink) IncTrips(model string) {
+func (s *recordingSink) IncTrips(model, _ string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.trips[model]++

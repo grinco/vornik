@@ -252,12 +252,13 @@ func TestBuildFormPatches_PathOrderAndShape(t *testing.T) {
 		AutonomyEnabled: true,
 	}
 	patches := buildFormPatches(data)
-	// 45 patches across Identity / Routing / Autonomy /
+	// 46 patches across Identity / Routing / Autonomy /
 	// Permissions / Budget / Rate limit / Retention / Chat /
 	// Judge / Trading / GitHub App. Counted explicitly so
 	// adding/removing a form field surfaces here rather than
-	// silently shifting structure.
-	require.Len(t, patches, 45)
+	// silently shifting structure. (45 → 46 on 2026-09-04 with
+	// retention.chat_audit_days.)
+	require.Len(t, patches, 46)
 
 	// Per-block presence: each top-level prefix appears at
 	// least once, in the expected emit order. Routing fields

@@ -490,13 +490,14 @@ func buildSteps(
 	steps := make([]Step, 0, len(outcomes))
 	for _, o := range outcomes {
 		s := Step{
-			StepID:      o.StepID,
-			Role:        o.Role,
-			Model:       o.Model,
-			RecordedAt:  o.RecordedAt,
-			Outcome:     o.Outcome,
-			ErrorClass:  o.ErrorClass,
-			ErrorDetail: o.ErrorDetail,
+			StepID:       o.StepID,
+			Role:         o.Role,
+			Model:        o.Model,
+			RecordedAt:   o.RecordedAt,
+			Outcome:      o.Outcome,
+			ErrorClass:   o.ErrorClass,
+			ErrorDetail:  o.ErrorDetail,
+			PromptHashes: o.PromptHashes,
 		}
 		if o.DurationMS != nil {
 			s.DurationMs = *o.DurationMS

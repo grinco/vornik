@@ -58,7 +58,9 @@ func (s *stubChatAuditAdminRepo) List(_ context.Context, filter persistence.Chat
 	return out, nil
 }
 
-func (s *stubChatAuditAdminRepo) SavePrompt(_ context.Context, _, _ string) error { return nil }
+func (s *stubChatAuditAdminRepo) SavePrompt(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 func (s *stubChatAuditAdminRepo) GetPrompt(_ context.Context, _ string) (string, error) {
 	return "", persistence.ErrNotFound
 }

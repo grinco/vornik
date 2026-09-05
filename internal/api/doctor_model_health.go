@@ -373,14 +373,24 @@ func (h *DoctorHandlers) queryModelHealthStats(ctx context.Context) ([]modelHeal
 	// Failure aggregation from the purpose-built outcomes table. 'ok' and
 	// 'pending_validation' (not yet finalized) are NOT failures; everything
 	// else in the outcome taxonomy is. Row-capped via a bounded subquery.
+	//
+	// EXCEPT the two audit labels, which are absences rather than outcomes:
+	// 'superseded' (an operator replaced the run) and 'orphaned' (the
+	// execution went terminal by a path that never finalised the row). Neither
+	// says anything about the MODEL, and counting them as failures charged a
+	// model for attempts it may never have been asked to make — 809 such rows
+	// existed on 2026-09-04, and they are excluded from every other quality
+	// surface (quality_repository's canonStepFilter, workflow-stats' first-pass
+	// denominator). This check was the one place still counting them.
 	outcomeRows, err := h.db.QueryContext(ctx, `
 		SELECT model,
 		       COUNT(*) AS samples,
-		       COUNT(*) FILTER (WHERE outcome NOT IN ('ok', 'pending_validation')) AS failures
+		       COUNT(*) FILTER (WHERE outcome NOT IN ('ok', 'pending_validation', 'superseded', 'orphaned')) AS failures
 		FROM (
 		    SELECT model, outcome
 		    FROM execution_step_outcomes
 		    WHERE recorded_at >= $1 AND model <> ''
+		      AND outcome NOT IN ('superseded', 'orphaned')
 		    ORDER BY recorded_at DESC
 		    LIMIT $2
 		) recent

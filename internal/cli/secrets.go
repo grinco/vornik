@@ -34,7 +34,7 @@ var secretsCmd = &cobra.Command{
 	Long: `Operator surface for the secret-leak detection engine (secret-leak Phase 3).
 
   list-patterns   print the effective detection pattern corpus
-  scan-history    retro-scan historical tool-audit rows for secret-shaped values
+  scan-history    retro-scan historical audit + prompt rows for secret-shaped values
 `,
 }
 
@@ -51,7 +51,7 @@ daemon actually scans with.`,
 var secretsScanHistoryCmd = &cobra.Command{
 	Use:   "scan-history",
 	Short: "Retro-scan historical tool-audit rows for secret-shaped values",
-	Long: `Scan tool_audit_log rows for secret-shaped values and, with --apply, redact
+	Long: `Scan the historical audit + prompt stores for secret-shaped values and, with --apply, redact
 them in place. The tool_audit checkpoint defaults to REDACT, so a current daemon
 cleans rows as it writes them — but rows written before that default changed, or
 under an explicit checkpoints.tool_audit: detect override, or by a writer that
@@ -220,9 +220,35 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// One pass per target. tool_audit_log first because it is the oldest and
+	// largest; the two content-addressed prompt stores last, since re-keying a
+	// body is the only operation here that moves rows rather than rewriting
+	// them (chat-audit design §5).
 	result, err := scanToolAuditHistory(ctx, db, detector, secretsScanProject, since, secretsScanApply, selection, secretsScanSample)
 	if err != nil {
 		return err
+	}
+	targets := []scanTargetResult{{table: "tool_audit_log", result: result}}
+
+	chatRes, err := scanChatAuditHistory(ctx, db, detector, secretsScanProject, since, secretsScanApply, selection, secretsScanSample)
+	if err != nil {
+		return err
+	}
+	targets = append(targets, scanTargetResult{table: "chat_audit_log", result: chatRes})
+
+	for _, store := range contentStores {
+		storeRes, serr := scanContentStore(ctx, db, store, detector, since, secretsScanApply, selection, secretsScanSample)
+		if serr != nil {
+			return serr
+		}
+		targets = append(targets, scanTargetResult{table: store.table, result: storeRes})
+	}
+	// The admin-audit rows and the JSON envelope below report the whole run,
+	// so the totals are the sum over targets rather than tool_audit_log's
+	// counts standing in for everything (which is what they used to do).
+	for _, t := range targets[1:] {
+		result.RowsScanned += t.result.RowsScanned
+		result.RowsMatched += t.result.RowsMatched
 	}
 
 	if secretsScanSample > 0 {
@@ -262,29 +288,51 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 	if secretsScanJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+		out := struct {
+			scanHistoryResult
+			Targets map[string]scanHistoryResult `json:"targets"`
+		}{scanHistoryResult: result, Targets: map[string]scanHistoryResult{}}
+		for _, t := range targets {
+			out.Targets[t.table] = t.result
+		}
+		return enc.Encode(out)
 	}
 	mode := fmt.Sprintf("DRY-RUN (nothing changed; re-run with --apply to redact the %s rules)", selection.spec)
 	if result.Applied {
-		mode = fmt.Sprintf("APPLIED (rows redacted in place under --rules %s)", selection.spec)
+		mode = fmt.Sprintf("APPLIED (rows redacted under --rules %s)", selection.spec)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "tool_audit_log: scanned %d row(s), %d contained secret-shaped value(s)\n",
-		result.RowsScanned, result.RowsMatched)
-
-	_, _ = fmt.Fprintf(os.Stdout, "  selected (--rules %s):\n", selection.spec)
-	printCounts(result.SelectedByType, "    none\n")
-	if len(result.ExcludedByType) > 0 {
-		_, _ = fmt.Fprintf(os.Stdout, "  NOT selected (add --rules all to include):\n")
-		printCounts(result.ExcludedByType, "")
-	}
-	if len(result.Samples) > 0 {
-		_, _ = fmt.Fprintf(os.Stdout, "\nsamples (matched values are never printed; tok= is salted per run):\n")
-		for _, line := range result.Samples {
-			_, _ = fmt.Fprintln(os.Stdout, line)
+	for _, t := range targets {
+		// Every target is printed, INCLUDING the ones with nothing in them: a
+		// store that is silently absent from the report is indistinguishable
+		// from a store that is clean, which is the confusion this whole seam
+		// exists to remove.
+		_, _ = fmt.Fprintf(os.Stdout, "%s: scanned %d row(s), %d contained secret-shaped value(s)\n",
+			t.table, t.result.RowsScanned, t.result.RowsMatched)
+		if t.result.RowsMatched == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "  selected (--rules %s):\n", selection.spec)
+		printCounts(t.result.SelectedByType, "    none\n")
+		if len(t.result.ExcludedByType) > 0 {
+			_, _ = fmt.Fprintf(os.Stdout, "  NOT selected (add --rules all to include):\n")
+			printCounts(t.result.ExcludedByType, "")
+		}
+		if len(t.result.Samples) > 0 {
+			_, _ = fmt.Fprintf(os.Stdout, "\n  samples (matched values are never printed; tok= is salted per run):\n")
+			for _, line := range t.result.Samples {
+				_, _ = fmt.Fprintln(os.Stdout, line)
+			}
 		}
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "%s\n", mode)
 	return nil
+}
+
+// scanTargetResult pairs a store with what the scan found in it, so the report
+// names its sources instead of presenting one table's numbers as the whole.
+type scanTargetResult struct {
+	table  string
+	result scanHistoryResult
 }
 
 // printCounts renders a finding-type histogram in a stable order. emptyNote is

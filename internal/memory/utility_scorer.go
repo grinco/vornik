@@ -118,7 +118,13 @@ scored_hits AS (
     LEFT JOIN execution_step_outcomes o
         ON o.execution_id = r.execution_id
        AND o.step_id      = r.step_id
-       AND o.outcome      NOT IN ('pending_validation','superseded','verifier_warn')
+       -- 'orphaned' joins the excluded set for the same reason as the other
+       -- three: the execution went terminal by a path that never finalised the
+       -- row, so it says nothing about whether the retrieved chunk helped.
+       -- Without it those rows fall to the 0.3 "neither ok nor a listed
+       -- failure" weight and credit a chunk for an outcome nobody observed
+       -- (2026-09-04; 800+ such rows existed at the time).
+       AND o.outcome      NOT IN ('pending_validation','superseded','orphaned','verifier_warn')
     GROUP BY r.chunk_id
 ),
 joined AS (

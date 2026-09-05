@@ -20,6 +20,46 @@ set -uo pipefail
 VORNIK_URL="${VORNIK_URL:-http://localhost:8080}"
 TOKEN="${VORNIK_COMPANION_TOKEN:-}"
 
+# ----- Compaction awareness -------------------------------------------
+# WHY THIS EXISTS. hooks.json registered SessionStart with NO matcher and this
+# script was not source-aware, so the digest, the repo-scope directive and the
+# RAG-first guidance were injected ONCE, at session open, and never refreshed.
+# Compaction puts a long session back into exactly the state the hook exists to
+# prevent — and takes those directives with it, at the point where the most
+# context has already been lost.
+#
+# MEASURED in the 2026-08-22/23 session, which was compacted mid-flight: the
+# digest still in context listed delegations up to 2026-08-21T17:54 and omitted
+# three RAG ingests run that same day. Cost after the compaction: a documented
+# bench trap re-derived from source over ~10 tool calls, and two API keys minted
+# against the PRODUCTION daemon because vornikctl reads VORNIK_API_URL while the
+# harnesses read VORNIK_URL. Both facts were in an ACTIVE knowledge skill and in
+# a RAG note at confidence 0.9. The operator had to prompt "use rag and relevant
+# skills" to recover them.
+#
+# ESTABLISHED 2026-09-03 against the published hook reference, because the fix
+# depended on it and the item that filed this said to measure before building:
+#
+#   - SessionStart DOES take a matcher, and `compact` is one of its values
+#     (with `startup`, `resume`, `clear`, `fork`).
+#   - PreCompact exists too, matching `manual` / `auto`.
+#   - There is NO documented `source` field on the hook's stdin. The MATCHER is
+#     how a hook learns why it fired, so the branch has to come from how the
+#     hook is registered — not from parsing the payload. hooks.json therefore
+#     registers `compact` as its own entry passing --refresh.
+#
+# WHAT A REFRESH DELIBERATELY OMITS. After a compaction the delegation digest is
+# the least valuable half — it is a point-in-time list the model has usually
+# already acted on, and re-printing it spends the context a compaction just
+# freed. The DIRECTIVES are the half that was load-bearing and lost: repo scope,
+# RAG-first, skill capture. So a refresh re-plants those and skips the digest.
+VORNIK_HOOK_REFRESH=0
+for arg in "$@"; do
+  case "$arg" in
+    --refresh) VORNIK_HOOK_REFRESH=1 ;;
+  esac
+done
+
 # Degrade gracefully when the plugin isn't fully configured.
 if [[ -z "$TOKEN" ]]; then
   exit 0
@@ -211,14 +251,23 @@ EOF
     fi
   fi
 
-  # Emit the scope directive AFTER the digests so Claude reads the
-  # context first then the rule. Without this nudge the host LLM has
-  # no way to know that calls without repo_scope will pollute other
-  # repos' RAG. We make it a hard rule in the prose so Claude treats
-  # it as a load-bearing instruction, not a suggestion. We emit the
-  # directive even when both digests were empty — the operator may
-  # still issue a manual recall in the new session and we want the
-  # scope rule active anyway.
+}
+
+# ----- Repo-scope directive (LLD 21 §B; LLD 2026-07-12 §9) -----
+# Emitted AFTER the digest so Claude reads the context first, then the rule.
+# Without this nudge the host LLM has no way to know that calls without
+# repo_scope will pollute other repos' RAG, so it is phrased as a hard rule.
+# Emitted even when the digest was empty — the operator may still issue a manual
+# recall and the scope rule must be active.
+#
+# A STANDING directive, so it is emitted from its own function on EVERY path —
+# new session and --refresh alike — never from inside build_digest(). 0.19.0
+# nested it there, and two things dropped it: a post-compaction refresh (which
+# skips the digest by design) and an offline session (build_digest returns early
+# when the daemon is unreachable). Both re-planted RAG-first and skill capture
+# and lost the one directive whose absence routes recall/remember/delegate at
+# the wrong repo's RAG. The test's Case 1 and Case 3 pin both paths.
+emit_repo_scope_directive() {
   if [[ -n "$REPO_SCOPE" ]]; then
     cat <<EOF
 
@@ -247,7 +296,22 @@ EOF
 # welcome banner AND lands in the model's context. Raw markdown to
 # stdout still reaches context (proven 2026-05-28) but doesn't
 # render in the banner.
-DIGEST=$(build_digest)
+# On a refresh the digest is skipped entirely — see VORNIK_HOOK_REFRESH above.
+# Skipping the daemon call also means a post-compaction refresh cannot stall on
+# an unreachable daemon at the moment the session is least able to afford it.
+if [[ "$VORNIK_HOOK_REFRESH" -eq 1 ]]; then
+  DIGEST="## vornik-companion: context refreshed after compaction
+
+The standing directives below survived the compaction only because this hook
+re-planted them. The delegation digest is deliberately NOT reprinted — it is a
+point-in-time list you have most likely already acted on, and reprinting it
+would spend the context the compaction just freed. Use \`/peek\` if you need it."
+else
+  DIGEST=$(build_digest)
+fi
+
+REPO_SCOPE_DIRECTIVE=$(emit_repo_scope_directive)
+DIGEST=$(printf '%s\n%s' "$DIGEST" "$REPO_SCOPE_DIRECTIVE")
 
 # ----- Knowledge-skill self-authoring directive (learning-loop E2) ----
 # Vornik cannot see this session's transcript — only the MCP calls this

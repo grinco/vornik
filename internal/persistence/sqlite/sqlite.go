@@ -175,6 +175,10 @@ var sqliteAdditiveColumns = []additiveColumn{
 	{"project_skills", "embedding_model", `TEXT NOT NULL DEFAULT ''`},
 	{"project_skills", "supersedes_id", `TEXT NOT NULL DEFAULT ''`},
 	{"project_skills", "distinct_justification", `TEXT NOT NULL DEFAULT ''`},
+	// Postgres migration 175 — step-prompt persistence: hashes into step_prompts.
+	{"execution_step_outcomes", "prompt_system_hash", `TEXT NOT NULL DEFAULT ''`},
+	{"execution_step_outcomes", "prompt_user_hash", `TEXT NOT NULL DEFAULT ''`},
+	{"execution_step_outcomes", "prompt_tools_hash", `TEXT NOT NULL DEFAULT ''`},
 }
 
 // applyAdditiveColumns adds any registered column missing from an existing

@@ -1021,8 +1021,8 @@ func TestMentionsVornik_Cases(t *testing.T) {
 		{"@vornik-companionoesthing", false},
 	}
 	for _, c := range cases {
-		if got := mentionsVornik(c.body); got != c.want {
-			t.Errorf("mentionsVornik(%q) = %v, want %v", c.body, got, c.want)
+		if got := mentionsHandle(c.body, resolveMentionHandle("")); got != c.want {
+			t.Errorf("mentionsHandle(%q, default) = %v, want %v", c.body, got, c.want)
 		}
 	}
 }

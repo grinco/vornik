@@ -844,6 +844,19 @@ func validateArtifactProvenance(calibration CalibrationManifest, noise NoiseFloo
 	return nil
 }
 
+// MinimumCalibrationAttempts is the fewest repeats a task may be calibrated
+// from before its pass rate may be believed. Three is not a statistical claim —
+// it is the point below which "passed 1 of 2" cannot distinguish a
+// discriminating task from a coin, and the gate tier's whole premise is that a
+// task passes STRICTLY between 0 and 1 of its repeats.
+//
+// Named and asserted rather than left implied by the per-task check below,
+// because the derived manifest-level MinimumAttempts is what every later
+// consumer reads: the implication "min over tasks each >= 3 is itself >= 3"
+// is true today and invisible, and it stops being true the moment someone
+// relaxes the per-task condition. Architectural review, 2026-08-17.
+const MinimumCalibrationAttempts = 3
+
 func calibratedTierSets(calibration CalibrationManifest, tiers map[string]TaskTier) (map[string]bool, map[string]bool, map[string]bool, error) {
 	gate, tripwire, exploratory := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	seen := map[string]bool{}
@@ -853,7 +866,7 @@ func calibratedTierSets(calibration CalibrationManifest, tiers map[string]TaskTi
 			return nil, nil, nil, fmt.Errorf("task %q is duplicate or has a tier mismatch", task.TaskID)
 		}
 		seen[task.TaskID] = true
-		if task.Attempts < 3 || task.Passed < 0 || task.Passed > task.Attempts ||
+		if task.Attempts < MinimumCalibrationAttempts || task.Passed < 0 || task.Passed > task.Attempts ||
 			math.Abs(task.PassRate-float64(task.Passed)/float64(task.Attempts)) > 1e-12 {
 			return nil, nil, nil, fmt.Errorf("task %q has invalid calibration counts", task.TaskID)
 		}
@@ -883,6 +896,12 @@ func calibratedTierSets(calibration CalibrationManifest, tiers map[string]TaskTi
 	if calibration.MinimumAttempts != minimumAttempts {
 		return nil, nil, nil, fmt.Errorf("calibration minimumAttempts=%d does not match task evidence minimum=%d",
 			calibration.MinimumAttempts, minimumAttempts)
+	}
+	// The floor, asserted on the DERIVED value and not merely on each task.
+	if calibration.MinimumAttempts < MinimumCalibrationAttempts {
+		return nil, nil, nil, fmt.Errorf("calibration minimumAttempts=%d is below the floor of %d — "+
+			"a pass rate from fewer repeats cannot show a task is discriminating",
+			calibration.MinimumAttempts, MinimumCalibrationAttempts)
 	}
 	return gate, tripwire, exploratory, nil
 }

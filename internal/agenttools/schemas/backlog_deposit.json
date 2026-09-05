@@ -1,0 +1,45 @@
+{
+  "function": {
+    "description": "Record an OFF-SCOPE finding (bug, optimisation opportunity, code inefficiency, refactor candidate) into the project backlog WITHOUT changing any code. Use when you notice something worth fixing that is outside your current task's scope. Never use it for work you are currently assigned.",
+    "name": "backlog_deposit",
+    "parameters": {
+      "properties": {
+        "detail": {
+          "description": "What is wrong / suboptimal and what better looks like",
+          "maxLength": 2000,
+          "type": "string"
+        },
+        "evidence": {
+          "description": "file:line reference(s) plus one-sentence proof",
+          "maxLength": 500,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "bug",
+            "optimisation",
+            "inefficiency",
+            "refactor"
+          ],
+          "type": "string"
+        },
+        "regression": {
+          "description": "Set ONLY when re-reporting a previously-fixed finding that has returned; requires evidence",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Specific, imperative, self-contained (a future task prompt)",
+          "maxLength": 140,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "detail"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

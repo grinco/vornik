@@ -134,6 +134,16 @@ type Container struct {
 	// Single-threaded within one reload pass (the ConfigReloader serialises
 	// loader→validator→activator), so no lock is needed.
 	stagedConfig *config.Config
+	// stagedProvenance is the provenance of stagedConfig, published with it
+	// into configSnapshot when the reload activates.
+	stagedProvenance *config.Provenance
+	// configSnapshot is what `config show` reads: the config the daemon is
+	// running with its provenance, written at boot and by every activated
+	// reload. c.Config is deliberately never swapped (see applyHotConfig);
+	// this holder is the seam that lets the API see a reload anyway.
+	// Resolved-config provenance design §4.1.
+	configSnapshot config.SnapshotHolder
+	bootProvenance *config.Provenance
 	// cpSelfHealLive is the hot-reloadable live value of
 	// control_plane.self_heal_enabled (actionable-proposals §7 emergency
 	// brake). nil until the first hot-reload stages a value; the control-plane
@@ -188,9 +198,13 @@ type Container struct {
 	// handlers). backend owns the lifecycle + driver-specific
 	// helpers (Close / Migrate / IsReady / PG pointer for the
 	// pg_stat_user_tables query that has no SQLite analog).
-	DB                  *sql.DB
-	backend             *storage.Backend
-	Registry            *registry.Registry
+	DB       *sql.DB
+	backend  *storage.Backend
+	Registry *registry.Registry
+	// ProjectFirstSeen gates project_created telemetry on FIRST observation
+	// rather than on every registry load. Nil disables the file-drop emit
+	// entirely — an adoption counter must never be able to stop a boot.
+	ProjectFirstSeen    persistence.ProjectFirstSeenRepository
 	Scheduler           *scheduler.Scheduler
 	externalWaitMonitor *scheduler.ExternalWaitMonitor // Phase 30
 	Executor            *executor.Executor
@@ -795,6 +809,10 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 		Config:     cfg,
 		ConfigPath: configPath,
 	}
+	// Published before any option or init runs, so a handler wired later
+	// always finds a snapshot; bootProvenance arrives through an option and
+	// is attached right after applyOptions.
+	c.configSnapshot.Store(cfg, nil)
 
 	// Apply edition options immediately after struct allocation so c.providers
 	// is set before every downstream init site (initLogship @617,
@@ -803,6 +821,7 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 	// WithProviders override) and has no dependency on anything constructed
 	// between here and line 918, so the move is safe. See design §3.
 	c.applyOptions(opts)
+	c.configSnapshot.Store(cfg, c.bootProvenance)
 
 	// Phase 1 Step 1: Initialize structured JSON logger
 	c.initLogger()
@@ -2357,8 +2376,9 @@ func Run(version, buildDate, edition string, providers ProviderSet) error {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Load configuration
-	cfg, configPath, err := config.Load()
+	// Load configuration, keeping the provenance the loader recorded so
+	// `config show --provenance` can serve it.
+	cfg, configPath, bootProv, err := config.LoadWithProvenance()
 	if err != nil {
 		if err == config.ErrVersionRequested {
 			fmt.Println(editionpkg.BuildLine("vornik", version, buildDate, edition))
@@ -2379,6 +2399,7 @@ func Run(version, buildDate, edition string, providers ProviderSet) error {
 	// (operator report 2026-08-07 — banner said enterprise, four capability
 	// lines said community). Gating was never affected, only the logs.
 	container, err := NewContainerWithObservability(cfg, configPath, obsCfg,
+		WithBootProvenance(bootProv),
 		WithProviders(providers), WithEdition(edition))
 	if err != nil {
 		return fmt.Errorf("failed to initialize container: %w", err)

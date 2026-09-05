@@ -1,0 +1,123 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__vornik__document_get_metadata",
+      "description": "[vornik] Return the operator-visible metadata for an attached document (title, author, publisher, ISBN, language, section count, MIME type, extractor version). Returns a small JSON blob — use BEFORE reading sections so you know the structure exists.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "description": "Source artifact ID (typically email-att-... from the [Attached files] block)."
+          }
+        },
+        "required": [
+          "artifact_id"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__vornik__document_get_outline",
+      "description": "[vornik] Return the document's table of contents — a flat list of {section_id, title, depth, text_bytes} entries in reading order. Use this to decide which sections to read in detail instead of dumping the whole document into context.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "description": "Source artifact ID."
+          }
+        },
+        "required": [
+          "artifact_id"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__vornik__document_read_section",
+      "description": "[vornik] Read one section's text content (markdown). Bounded by limit_chars (default 8000). For very large sections, page through by passing the next_offset returned in the previous response.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "description": "Source artifact ID."
+          },
+          "section_id": {
+            "type": "string",
+            "description": "Section identifier returned by document_get_outline."
+          },
+          "offset_chars": {
+            "type": "integer",
+            "description": "Character offset to start reading from. Default 0.",
+            "default": 0
+          },
+          "limit_chars": {
+            "type": "integer",
+            "description": "Maximum characters to return. Default 8000.",
+            "default": 8000
+          }
+        },
+        "required": [
+          "artifact_id",
+          "section_id"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__consult__vornik_architecture",
+      "description": "Vornik architecture source of truth: how the daemon, executor, workflows, memory/RAG, channels, and the A2A surface are designed and why. Ask one clear question; get a grounded, cited answer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The question to ask the domain expert. One clear question."
+          }
+        },
+        "required": [
+          "question"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__vornik__grant_step_tools",
+      "description": "Narrow which MCP tools a step of THIS execution is offered, to keep its prompt small. Pass the tools that step actually needs. You can only ever narrow within what the role is already permitted — you cannot grant a tool the role lacks, and the request is refused if it names one. Call again with a superset to escalate if a step turns out to need more (limited attempts per step).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "step_id": {
+            "type": "string",
+            "description": "Step to scope. Defaults to the current step."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A SUBSET of the tools you already have available in this step, named exactly as they appear in your tool list. This narrows what a step is offered; it cannot add a tool you do not already hold, and naming one refuses the whole request. Do not guess at names."
+          },
+          "escalation": {
+            "type": "boolean",
+            "description": "True when widening an earlier grant for the same step."
+          }
+        },
+        "required": [
+          "tools"
+        ]
+      }
+    }
+  }
+]

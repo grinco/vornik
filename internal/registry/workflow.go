@@ -1347,6 +1347,13 @@ func (w *Workflow) reachableFrom(current string, visited map[string]bool) {
 
 // LoadWorkflows loads all workflow YAML files from the specified directory
 func LoadWorkflows(dir string) (map[string]*Workflow, error) {
+	return loadWorkflows(dir, nil)
+}
+
+// loadWorkflows is LoadWorkflows recording each accepted file into the index
+// (nil-safe). A workflow that fails to parse or validate is fatal to the whole
+// load, as it always was.
+func loadWorkflows(dir string, index *TreeIndex) (map[string]*Workflow, error) {
 	workflows := make(map[string]*Workflow)
 
 	workflowsDir := filepath.Join(dir, "workflows")
@@ -1407,6 +1414,7 @@ func LoadWorkflows(dir string) (map[string]*Workflow, error) {
 		}
 
 		workflows[workflow.ID] = &workflow
+		index.source("workflow", workflow.ID, filepath.Join("workflows", name))
 	}
 
 	return workflows, nil

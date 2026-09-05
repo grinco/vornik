@@ -131,6 +131,46 @@ retention:
 The minimum effective retention is one day. Setting a field to `0` means
 "inherit the default," not "delete immediately."
 
+### Recording a project's model exchanges
+
+A project can opt in to keeping every model request and response of its agent
+steps, redacted, for replay and post-mortem:
+
+```yaml
+# projects/<id>.yaml
+recording:
+  llm_exchanges: true    # default false
+```
+
+Off by default because it costs storage: one row per model call carrying the
+whole conversation at that point, so a 30-iteration step stores roughly 30
+times its final context. The rows live exactly as long as their execution and
+are swept with it; `vornikctl retention preview` reports how many are waiting
+under `llm_exchanges`. Read them back with
+`vornikctl execution exchanges <executionId> <stepId>`, or export a replayable
+recording with `--export`. The switch is read at each model call, so a reload
+takes effect at a running step's next request.
+
+### Reading what a step was handed and what it handed back
+
+Every agent step keeps, beside the prompt its model was first told, the two
+files at the container boundary: the `task.json` the daemon wrote for the
+container and the `result.json` the container wrote back. Both are stored
+after secret redaction (a `[REDACTED:type]` marker stands where a credential
+was, so do not read the stored input as exactly what the container saw where
+one appears), content-addressed, and pruned with the step outcome that
+references them — there is no separate retention setting. A file over 4 MiB is
+not stored; `vornik_executor_step_io_skipped_total` counts it.
+
+```
+vornikctl execution input  <executionId> <stepId> [--export task.json]
+vornikctl execution result <executionId> <stepId> [--export result.json]
+```
+
+Bare JSON on stdout, so both pipe into `jq`; `--export` writes the file with
+mode 0600. A step run before the daemon kept these files answers "not
+recorded", and one whose file has since been pruned answers "gone".
+
 ### Previewing and applying
 
 `vornikctl retention` runs in preview mode by default — it shows what *would*

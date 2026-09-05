@@ -1,0 +1,31 @@
+{
+  "function": {
+    "description": "Show a unified diff. Default compares working tree to index (unstaged changes); set staged=true to compare index to HEAD, or revision to diff arbitrary refs.",
+    "name": "git_diff",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Repo root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Restrict diff to these paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "Revision spec (e.g. 'HEAD~3..HEAD', 'main'). Overrides staged.",
+          "type": "string"
+        },
+        "staged": {
+          "description": "Diff index vs HEAD instead of working tree vs index.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

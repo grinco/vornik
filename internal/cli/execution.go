@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -162,6 +164,14 @@ func init() {
 	// Add subcommands
 	executionCmd.AddCommand(executionListCmd)
 	executionCmd.AddCommand(executionInspectCmd)
+	executionPromptCmd.Flags().StringVar(&executionPromptPart, "part", "", "Print one part only: system, user or tools")
+	executionCmd.AddCommand(executionPromptCmd)
+	executionExchangesCmd.Flags().StringVar(&executionExchangesExport, "export", "", "Write the step's exchanges as a JSONL recording to this path instead of printing the table")
+	executionCmd.AddCommand(executionExchangesCmd)
+	executionInputCmd.Flags().StringVar(&executionStepFileExport, "export", "", "Write the file to this path (0600) instead of printing it")
+	executionResultCmd.Flags().StringVar(&executionStepFileExport, "export", "", "Write the file to this path (0600) instead of printing it")
+	executionCmd.AddCommand(executionInputCmd)
+	executionCmd.AddCommand(executionResultCmd)
 
 	// Add to root
 	rootCmd.AddCommand(executionCmd)
@@ -261,6 +271,72 @@ func runExecutionList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+var executionPromptPart string
+
+var executionPromptCmd = &cobra.Command{
+	Use:   "prompt <executionId> <stepId>",
+	Short: "Print what a step's model was told at its first request",
+	Long: `Print the step's first model request as the daemon stored it — the system
+prompt, the user content and the tools array — content-addressed and redacted at
+write. Model-visible means persisted: a step that failed in prompt assembly
+leaves this behind, so read it before blaming the tool. Empty for a step run by
+an agent image that predates step-prompt persistence.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runExecutionPrompt,
+}
+
+func runExecutionPrompt(_ *cobra.Command, args []string) error {
+	raw, err := fetchJSON(fmt.Sprintf("/api/v1/executions/%s/steps/%s/prompt", args[0], args[1]))
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		ExecutionID string            `json:"execution_id"`
+		StepID      string            `json:"step_id"`
+		RecordedAt  string            `json:"recorded_at"`
+		Hashes      map[string]string `json:"hashes"`
+		Parts       map[string]string `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("decode prompt: %w", err)
+	}
+	return renderExecutionPrompt(os.Stdout, resp.ExecutionID, resp.StepID, resp.RecordedAt, resp.Hashes, resp.Parts, executionPromptPart)
+}
+
+// renderExecutionPrompt prints the parts in the order the model saw them —
+// system, then user, then the tools array — each under a header carrying its
+// hash, or one part bare when --part is given (so it can be piped).
+func renderExecutionPrompt(out io.Writer, executionID, stepID, recordedAt string, hashes, parts map[string]string, only string) error {
+	order := []string{"system", "user", "tools"}
+	if only != "" {
+		body, ok := parts[only]
+		if !ok {
+			return fmt.Errorf("unknown or unrecorded part %q (system, user, tools)", only)
+		}
+		_, err := fmt.Fprintln(out, body)
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "execution %s  step %s  recorded %s\n", executionID, stepID, recordedAt); err != nil {
+		return err
+	}
+	for _, part := range order {
+		body, ok := parts[part]
+		if !ok {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "\n=== %s  (sha256 %s)\n", part, hashes[part]); err != nil {
+			return err
+		}
+		if body == "" {
+			body = "(body no longer stored — pruned by retention)"
+		}
+		if _, err := fmt.Fprintln(out, body); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func runExecutionInspect(cmd *cobra.Command, args []string) error {
 	client := ClientFromEnv()
 	executionID := args[0]
@@ -320,5 +396,167 @@ func runExecutionInspect(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Error Code:     %s\n", result.ErrorCode)
 	}
 
+	return nil
+}
+
+var executionExchangesExport string
+
+var executionExchangesCmd = &cobra.Command{
+	Use:   "exchanges <executionId> <stepId>",
+	Short: "List a step's recorded model exchanges, or export them as a replay recording",
+	Long: `List every model request/response pair the chat proxy recorded for the step —
+seq, iteration, model, tokens, duration, how many secrets were redacted, and
+the finish reason. Recorded only for projects with recording.llm_exchanges
+set; a step of any other project prints nothing. With --export the same rows
+are written as the JSONL recording internal/llmreplay serves, so a test can
+replay the step's model without the model.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runExecutionExchanges,
+}
+
+func runExecutionExchanges(_ *cobra.Command, args []string) error {
+	base := fmt.Sprintf("/api/v1/executions/%s/steps/%s/exchanges", args[0], args[1])
+	if executionExchangesExport != "" {
+		raw, err := fetchJSON(base + "?format=jsonl")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(executionExchangesExport, raw, 0o600); err != nil {
+			return fmt.Errorf("write recording: %w", err)
+		}
+		lines := strings.Count(strings.TrimSpace(string(raw)), "\n")
+		if len(strings.TrimSpace(string(raw))) > 0 {
+			lines++
+		}
+		fmt.Printf("wrote %d exchange(s) to %s\n", lines, executionExchangesExport)
+		return nil
+	}
+	raw, err := fetchJSON(base)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		ExecutionID string `json:"execution_id"`
+		StepID      string `json:"step_id"`
+		Exchanges   []struct {
+			Seq              int    `json:"seq"`
+			Iteration        *int   `json:"iteration"`
+			Model            string `json:"model"`
+			PromptTokens     int    `json:"prompt_tokens"`
+			CompletionTokens int    `json:"completion_tokens"`
+			DurationMs       int    `json:"duration_ms"`
+			Redactions       int    `json:"redactions"`
+			FinishReason     string `json:"finish_reason"`
+		} `json:"exchanges"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("decode exchanges: %w", err)
+	}
+	return renderExecutionExchanges(os.Stdout, resp.ExecutionID, resp.StepID, func(yield func(exchangeRow)) {
+		for _, x := range resp.Exchanges {
+			yield(exchangeRow{Seq: x.Seq, Iteration: x.Iteration, Model: x.Model, PromptTokens: x.PromptTokens,
+				CompletionTokens: x.CompletionTokens, DurationMs: x.DurationMs, Redactions: x.Redactions, Finish: x.FinishReason})
+		}
+	})
+}
+
+type exchangeRow struct {
+	Seq              int
+	Iteration        *int
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+	DurationMs       int
+	Redactions       int
+	Finish           string
+}
+
+func renderExecutionExchanges(out io.Writer, executionID, stepID string, rows func(func(exchangeRow))) error {
+	if _, err := fmt.Fprintf(out, "execution %s  step %s\n", executionID, stepID); err != nil {
+		return err
+	}
+	n := 0
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "SEQ\tITER\tMODEL\tPROMPT\tCOMPLETION\tDURATION\tREDACTED\tFINISH")
+	rows(func(x exchangeRow) {
+		n++
+		iter := "-"
+		if x.Iteration != nil {
+			iter = strconv.Itoa(*x.Iteration)
+		}
+		_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%d\t%dms\t%d\t%s\n", x.Seq, iter, x.Model, x.PromptTokens, x.CompletionTokens, x.DurationMs, x.Redactions, x.Finish)
+	})
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if n == 0 {
+		_, err := fmt.Fprintln(out, "(no exchanges recorded — the project has recording.llm_exchanges off, or the step ran before it was set)")
+		return err
+	}
+	return nil
+}
+
+// executionStepFileExport is the --export path shared by `execution input`
+// and `execution result` (one flag variable: the two verbs never run in the
+// same process).
+var executionStepFileExport string
+
+var executionInputCmd = &cobra.Command{
+	Use:   "input <executionId> <stepId>",
+	Short: "Print the task.json the executor handed the step's container",
+	Long: `Print the step's input file as the daemon stored it — the task.json the
+executor wrote for the container, redacted at write (step-I/O persistence design
+§5). A [REDACTED:type] marker stands where the container saw a value; do not read
+the stored file as what the container saw where one appears. Bare JSON on stdout
+so it pipes into jq; --export writes it 0600. Empty for a step run before the
+daemon persisted boundary files, and for a step no container ran.`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		return runExecutionStepFile("input", args[0], args[1], executionStepFileExport, os.Stdout)
+	},
+}
+
+var executionResultCmd = &cobra.Command{
+	Use:   "result <executionId> <stepId>",
+	Short: "Print the result.json the step's container handed back",
+	Long: `Print the step's result file as the daemon read it back — whole, after the
+result_json secrets checkpoint, even when it did not parse (that is the case
+where keeping it has value). Bare JSON on stdout so it pipes into jq; --export
+writes it 0600, which is how a replay fixture's expected_result.json is taken
+from the production run rather than from the first replay.`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		return runExecutionStepFile("result", args[0], args[1], executionStepFileExport, os.Stdout)
+	},
+}
+
+// runExecutionStepFile fetches one boundary file and hands it to
+// emitStepFile.
+func runExecutionStepFile(part, executionID, stepID, export string, out io.Writer) error {
+	raw, err := fetchJSON(fmt.Sprintf("/api/v1/executions/%s/steps/%s/%s", executionID, stepID, part))
+	if err != nil {
+		return err
+	}
+	return emitStepFile(out, raw, export)
+}
+
+// emitStepFile prints the bytes (with a trailing newline when the file lacks
+// one) or writes them to export with 0600 and says how much it wrote. The
+// stored file is served verbatim, never re-encoded: a fixture's task.json is
+// the bytes the container read, and a re-marshalled copy would not be.
+func emitStepFile(out io.Writer, raw []byte, export string) error {
+	if export != "" {
+		if err := os.WriteFile(export, raw, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", export, err)
+		}
+		_, _ = fmt.Fprintf(out, "wrote %d bytes to %s\n", len(raw), export)
+		return nil
+	}
+	if _, err := out.Write(raw); err != nil {
+		return err
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		_, _ = fmt.Fprintln(out)
+	}
 	return nil
 }

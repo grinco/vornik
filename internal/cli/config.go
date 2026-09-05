@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -28,7 +30,14 @@ var (
 	configShowCmd = &cobra.Command{
 		Use:   "show",
 		Short: "Dump effective daemon config (secrets redacted)",
-		RunE:  runConfigShow,
+		Long: `Print the configuration the running daemon resolved, secrets redacted.
+
+The dump follows a hot reload. With --provenance every key is printed with
+where its value came from — file, env, placeholder, alias, default, derived,
+secret_file, or unset (the zero value; nothing set it, which is how a key
+written to a tree the daemon never reads looks). An origin of env_invalid
+names a variable that was set and did not parse.`,
+		RunE: runConfigShow,
 	}
 	configReloadCmd = &cobra.Command{
 		Use:   "reload",
@@ -47,10 +56,14 @@ overwrite semantics, etc).`,
 
 	configReloadForce bool
 	configJSON        bool
+	configProvenance  bool
+	configTrees       bool
 )
 
 func init() {
-	configShowCmd.Flags().BoolVar(&configJSON, "json", true, "JSON output (the only supported shape — default)")
+	configShowCmd.Flags().BoolVar(&configJSON, "json", true, "JSON output (default; --json=false with --provenance prints a table)")
+	configShowCmd.Flags().BoolVar(&configProvenance, "provenance", false, "Print every key with the origin and source of its value")
+	configShowCmd.Flags().BoolVar(&configTrees, "trees", false, "Add the registry trees: which file supplied each project, swarm, workflow and role, and the files the loader refused")
 	configReloadCmd.Flags().BoolVar(&configReloadForce, "force", false, "Reload even when validation errors are present")
 	configReloadStatusCmd.Flags().BoolVar(&configJSON, "json", false, "JSON output instead of the human summary")
 
@@ -59,11 +72,94 @@ func init() {
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
-	raw, err := fetchJSON("/api/v1/config")
+	if !configProvenance && !configTrees {
+		raw, err := fetchJSON("/api/v1/config")
+		if err != nil {
+			return err
+		}
+		return prettyPrintJSON(raw)
+	}
+	raw, err := fetchJSON(fmt.Sprintf("/api/v1/config?provenance=%t&trees=%t", configProvenance, configTrees))
 	if err != nil {
 		return err
 	}
-	return prettyPrintJSON(raw)
+	if configJSON {
+		return prettyPrintJSON(raw)
+	}
+	var view configProvenanceView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		return fmt.Errorf("decode provenance: %w", err)
+	}
+	return renderConfigProvenance(os.Stdout, &view)
+}
+
+type configProvenanceView struct {
+	ConfigPath string `json:"config_path"`
+	LoadedAt   string `json:"loaded_at"`
+	Values     map[string]struct {
+		Value  any    `json:"value"`
+		Origin string `json:"origin"`
+		Source string `json:"source"`
+	} `json:"values"`
+	Trees *struct {
+		Layers  []string `json:"layers"`
+		Sources []struct {
+			Kind, ID, Path, Layer string
+			ShadowedBy            string `json:"shadowed_by"`
+		} `json:"sources"`
+		Rejected []struct {
+			Kind, Path, Layer, Error string
+		} `json:"rejected"`
+	} `json:"trees"`
+}
+
+// renderConfigProvenance prints one line per key: key, value, origin, source.
+// Sorted by key so a diff between two dumps reads.
+func renderConfigProvenance(out io.Writer, view *configProvenanceView) error {
+	if view.ConfigPath != "" {
+		_, _ = fmt.Fprintf(out, "config: %s  (loaded %s)\n", view.ConfigPath, view.LoadedAt)
+	}
+	if len(view.Values) > 0 {
+		keys := make([]string, 0, len(view.Values))
+		for k := range view.Values {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "KEY\tVALUE\tORIGIN\tSOURCE")
+		for _, k := range keys {
+			e := view.Values[k]
+			val := fmt.Sprintf("%v", e.Value)
+			if e.Value == nil {
+				val = ""
+			}
+			if len(val) > 60 {
+				val = val[:57] + "..."
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", k, val, e.Origin, e.Source)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if view.Trees != nil {
+		_, _ = fmt.Fprintf(out, "\ntrees: %d layer(s): %s\n", len(view.Trees.Layers), strings.Join(view.Trees.Layers, " < "))
+		tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "KIND\tID\tFILE\tLAYER\tSHADOWED BY")
+		for _, s := range view.Trees.Sources {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Kind, s.ID, s.Path, s.Layer, s.ShadowedBy)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if len(view.Trees.Rejected) > 0 {
+			_, _ = fmt.Fprintf(out, "\nrejected by the loader (%d) — written, and NOT in effect:\n", len(view.Trees.Rejected))
+			for _, r := range view.Trees.Rejected {
+				_, _ = fmt.Fprintf(out, "  %s %s (%s): %s\n", r.Kind, r.Path, r.Layer, r.Error)
+			}
+		}
+	}
+	return nil
 }
 
 func runConfigReload(cmd *cobra.Command, args []string) error {

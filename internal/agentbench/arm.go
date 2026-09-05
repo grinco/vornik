@@ -110,6 +110,19 @@ type ArmFields struct {
 	// AgentImages is the observed (role → immutable image IDs) map. Configured
 	// tags are intent and can be retagged; only the IDs reported by the runtime
 	// prove which agent loop executed the arm.
+	//
+	// A VALUE IS NOT NECESSARILY ONE IMAGE ID, and is not a readable string.
+	// When a role ran under more than one image within a single run — an image
+	// rebuilt mid-arm, most often — the recorder joins every observed id with
+	// `+` (store_sql.go: `strings.Join(ids, "+")`, and the same delimiter for
+	// Models when a role served two models). That is deliberate: the joined
+	// value cannot compare equal to a clean single-image arm, so a run that
+	// drifted mid-flight can never silently match one that did not.
+	//
+	// Consequences for anyone reading this field: split on `+` before treating
+	// a value as an image id, expect a `+` to mean "this arm is not clean"
+	// rather than "here is an image", and do not render it to an operator as
+	// though it were one. Architectural review, 2026-08-17.
 	AgentImages map[string]string `json:"agentImages"`
 
 	// ContextPolicy is the thing under test: suppression set, advertisement

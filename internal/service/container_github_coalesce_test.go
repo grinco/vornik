@@ -68,16 +68,22 @@ func (f *fakeReviewState) SetTask(_ context.Context, p, r string, n int, taskID 
 	return nil
 }
 
-func (f *fakeReviewState) BeginClosing(_ context.Context, p, r string, n int, sha string) error {
+// BeginClosing models the real backends' COMPARE-AND-SET on pending_head_sha.
+// A double that applied unconditionally would be looser than production and
+// would certify the very hole the 2026-09-03 audit found.
+func (f *fakeReviewState) BeginClosing(_ context.Context, p, r string, n int, sha, expectedPending string) (persistence.ClosingOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := f.key(p, r, n)
 	if f.rows[k] == nil {
 		f.rows[k] = &persistence.ForgePRReviewState{ProjectID: p, Repo: r, Number: n}
 	}
+	if f.rows[k].PendingHeadSHA != expectedPending {
+		return persistence.ClosingOutcome{PendingHeadSHA: f.rows[k].PendingHeadSHA}, nil
+	}
 	f.rows[k].TaskID = ""
 	f.rows[k].ReviewingHeadSHA = sha
-	return nil
+	return persistence.ClosingOutcome{Applied: true}, nil
 }
 
 func (f *fakeReviewState) MarkReviewed(_ context.Context, p, r string, n int, sha string, at time.Time) error {
@@ -345,6 +351,11 @@ func TestCommand_RoutesToTheReviewWorkflow(t *testing.T) {
 	ev := syncEvent("d-cmd", "sha-1")
 	ev.Kind = "pull_request.comment_command"
 	ev.OnDemand = true
+	// A trusted author, stated rather than defaulted: an on-demand job whose
+	// author has no standing in the repository is REFUSED by the coordinator
+	// (2026-09-03 audit), so a command fixture that omits this is testing a
+	// request that would never have been allowed to run.
+	ev.AuthorAssociation = "OWNER"
 	if err := g.Create(context.Background(), ev); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -378,6 +389,7 @@ func TestCommand_IsNeverCoalescedAway(t *testing.T) {
 	cmd := syncEvent("d2", "sha-1")
 	cmd.Kind = "pull_request.comment_command"
 	cmd.OnDemand = true
+	cmd.AuthorAssociation = "OWNER"
 	if err := g.Create(context.Background(), cmd); err != nil {
 		t.Fatalf("command Create: %v", err)
 	}
@@ -408,6 +420,7 @@ func TestPause_SuppressesPushesButNotCommands(t *testing.T) {
 	cmd := syncEvent("d2", "sha-2")
 	cmd.Kind = "pull_request.comment_command"
 	cmd.OnDemand = true
+	cmd.AuthorAssociation = "OWNER"
 	if err := g.Create(context.Background(), cmd); err != nil {
 		t.Fatalf("command Create: %v", err)
 	}
@@ -470,6 +483,56 @@ func TestForgeJob_CarriesTheFullReviewFlag(t *testing.T) {
 	}
 }
 
+// THE AUTHORIZATION INPUTS — regression for the 2026-09-03 four-week audit's P1.
+//
+// The shared coordinator refuses an OnDemand job whose author has no standing
+// in the repository, and it reads BOTH facts off the job. This function set
+// neither, so every command arriving through the GitHub App channel reached the
+// coordinator looking like an automatic trigger and was reviewed regardless of
+// who asked.
+func TestForgeJob_CarriesTheAuthorizationInputs(t *testing.T) {
+	for assoc, wantTrusted := range map[string]bool{
+		"OWNER":        true,
+		"MEMBER":       true,
+		"COLLABORATOR": true,
+		"collaborator": true,
+		// CONTRIBUTOR describes the past, not permission to spend.
+		"CONTRIBUTOR": false,
+		"NONE":        false,
+		// Absent / unrecognised fails closed.
+		"":       false,
+		"FUTURE": false,
+	} {
+		t.Run(assoc, func(t *testing.T) {
+			job := forgeJobFromEvent(github.TaskCreationEvent{
+				Kind: "pull_request.comment_command", Repo: "acme/api", Number: 12,
+				OnDemand: true, AuthorAssociation: assoc,
+			})
+			if !job.OnDemand {
+				t.Fatal("OnDemand did not survive into the forge job — the gate only applies to on-demand jobs, " +
+					"so losing this flag disables the gate entirely")
+			}
+			if job.AuthorIsTrusted != wantTrusted {
+				t.Errorf("AuthorIsTrusted = %v for author_association=%q, want %v", job.AuthorIsTrusted, assoc, wantTrusted)
+			}
+		})
+	}
+}
+
+// A push has no comment and no author standing. It must stay OnDemand=false, or
+// the author gate would refuse every automatic review.
+func TestForgeJob_PushIsNotOnDemand(t *testing.T) {
+	job := forgeJobFromEvent(github.TaskCreationEvent{
+		Kind: "pull_request.synchronize", Repo: "acme/api", Number: 12, HeadSHA: "sha-1",
+	})
+	if job.OnDemand {
+		t.Fatal("a synchronize job is OnDemand — it would be gated on an author standing it can never carry")
+	}
+	if job.AuthorIsTrusted {
+		t.Error("a synchronize job claims a trusted author; there is no comment behind it")
+	}
+}
+
 // Two humans asking at once must BOTH be served, while a redelivery of one
 // request must not run twice. Both properties rest on the same thing: the
 // idempotency key is "github-app:" + the webhook delivery id, and GitHub gives
@@ -489,6 +552,7 @@ func TestCommand_DistinctDeliveriesBothRun_RedeliveryDoesNot(t *testing.T) {
 		ev := syncEvent(delivery, "sha-1")
 		ev.Kind = "pull_request.comment_command"
 		ev.OnDemand = true
+		ev.AuthorAssociation = "OWNER"
 		return ev
 	}
 

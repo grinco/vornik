@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "List files matching a glob pattern. Supports '**' for recursive matching. Faster than run_shell 'find'. Returns paths sorted by modification time (newest first), capped at 500 entries.",
+    "name": "glob",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Root directory. Default: workspace root.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Glob pattern (e.g. '**/*.go', 'project/src/*.ts').",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

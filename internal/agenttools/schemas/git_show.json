@@ -1,0 +1,27 @@
+{
+  "function": {
+    "description": "Show a commit's metadata plus its diff. Use when inspecting what a specific commit changed.",
+    "name": "git_show",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Repo root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Restrict diff to these paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "Revision to show (e.g. 'HEAD', 'abc1234'). Default: HEAD.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

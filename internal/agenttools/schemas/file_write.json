@@ -1,0 +1,24 @@
+{
+  "function": {
+    "description": "Write content to a file. Creates parent directories as needed. Paths are relative to /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+    "name": "file_write",
+    "parameters": {
+      "properties": {
+        "content": {
+          "description": "File content to write",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

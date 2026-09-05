@@ -8,6 +8,10 @@ set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENTRYPOINT="$REPO_ROOT/images/vornik-agent/entrypoint.sh"
+# The Go helper implements the filesystem/git tools; outside the image the Go
+# test wrapper (or make) builds it into VORNIK_HELPER_DIR.
+if [ -n "${VORNIK_HELPER_DIR:-}" ]; then export PATH="$VORNIK_HELPER_DIR:$PATH"; fi
+
 if [ ! -f "$ENTRYPOINT" ]; then
     echo "FAIL: entrypoint.sh not found at $ENTRYPOINT" >&2
     exit 1

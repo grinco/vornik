@@ -14,6 +14,9 @@ import (
 	"sort"
 	"text/tabwriter"
 
+	"vornik.io/vornik/internal/stepid"
+	"vornik.io/vornik/internal/stepoutcome"
+
 	"github.com/spf13/cobra"
 )
 
@@ -122,6 +125,95 @@ func runWorkflowStats(_ *cobra.Command, _ []string) error {
 }
 
 // renderWorkflowStats prints the rollup in operator-friendly form.
+// renderWorkflowRates prints the two rates a reader is likely to conflate, each
+// named for what it actually measures.
+//
+// THE MOTIVATING CONFUSION, 2026-08-26. An operator asked why
+// `companion-doc-review` sat at 42% and `plan-and-write` at 67%, and was about
+// to prioritise work on `plan-and-write` — which had failed ZERO of fourteen
+// runs. Its "67%" was passing-steps over total-steps across three steps (27/40);
+// doc-review's "42%" was one step's first-attempt rate (ok=5 of 12). Both
+// numbers are real and both are useful. Neither is a run success rate, and
+// nothing said so.
+//
+// A metric that misroutes attention is worse than no metric, which is why this
+// prints BOTH rather than picking one: the gap between them is largest exactly
+// where the retry ladder is working best, so seeing only the step rate makes a
+// healthy workflow look broken.
+//
+// Named "run success" and "step pass (first attempt)" rather than "success rate"
+// — the bare phrase is what let one number stand in for the other.
+func renderWorkflowRates(out *os.File, r *workflowStatsResponse) {
+	if r.RunCount <= 0 {
+		return
+	}
+	runSuccess := float64(r.SuccessCount) / float64(r.RunCount) * 100
+
+	// The step rate is computed HERE from the outcome distribution the rollup
+	// already carries, rather than read from the A1 gauge: the gauge is windowed
+	// and swarm-scoped, so a figure taken from it would not be over the same
+	// runs as the line above it. Two numbers side by side must share a
+	// denominator's worth of provenance or the comparison is the bug again.
+	// Both come from ONE rollup response, built over one window by
+	// workflowtelemetry.ForWorkflow: RunCount counts the executions in it and
+	// Steps aggregates the step-outcome rows of those same executions. If the
+	// backend ever windows the two differently, this pairing is the bug.
+	//
+	// "First attempt" means base-step rows ONLY. The executor persists every
+	// retry rung as its own row under a suffixed id (_shape_retry,
+	// _model_fallback, _infra_retryN, …), and a rung's own `ok` is the ladder
+	// rescuing a step, not the step passing first time. Folding the rungs in
+	// inflated the rate most where the ladder works best — the misdirection
+	// this rendering exists to prevent, one level down (review 2026-09-03).
+	// `orphaned` leaves the denominator too, and for a stronger reason than
+	// the rungs: a rung at least tells you the ladder ran. An orphaned row is
+	// an attempt whose execution was terminalised — the task started a new
+	// run, or its parent went terminal — before anything learned the step's
+	// outcome. Counting it as a non-pass reports an absence as a failure.
+	//
+	// This is not a rounding correction. On `adaptive`, 200 of `route`'s 294
+	// recorded attempts are orphaned, and including them printed 6% where the
+	// attempts that actually concluded give 18% — the number a backlog item
+	// was built on for two weeks (design 2026-09-04-orphaned-step-outcomes §1).
+	// The count is PRINTED rather than quietly dropped: a figure that rose
+	// from 6% to 18% without saying what left the denominator would be the
+	// same misdirection pointed the other way.
+	var stepOK, stepTotal, stepOrphaned int
+	for _, s := range r.Steps {
+		if stepid.IsRetryAttempt(s.StepID) {
+			continue
+		}
+		for outcome, n := range s.OutcomeDist {
+			if outcome == string(stepoutcome.Orphaned) {
+				stepOrphaned += n
+				continue
+			}
+			stepTotal += n
+			if outcome == "ok" {
+				stepOK += n
+			}
+		}
+	}
+
+	_, _ = fmt.Fprintf(out, "  run success: %.0f%% (%d/%d runs)",
+		runSuccess, r.SuccessCount, r.RunCount)
+	if stepTotal > 0 {
+		_, _ = fmt.Fprintf(out, "  •  step pass (first attempt): %.0f%% (%d/%d step attempts",
+			float64(stepOK)/float64(stepTotal)*100, stepOK, stepTotal)
+		if stepOrphaned > 0 {
+			_, _ = fmt.Fprintf(out, "; %d orphaned attempts excluded", stepOrphaned)
+		}
+		_, _ = fmt.Fprint(out, ")")
+	}
+	_, _ = fmt.Fprintln(out)
+	if stepTotal > 0 && stepOK < stepTotal && r.SuccessCount == r.RunCount {
+		// Say it outright in the case that caused the confusion, rather than
+		// leaving the reader to notice two numbers disagree.
+		_, _ = fmt.Fprintln(out, "  (every run completed; the step rate below 100% is the retry "+
+			"ladder doing its job, not runs failing)")
+	}
+}
+
 // Sections: header (workflow + window + counts), per-step table,
 // top failure classes, quality signals. Empty sections collapse so
 // a low-traffic workflow doesn't show a wall of zeros.
@@ -136,6 +228,7 @@ func renderWorkflowStats(out *os.File, r *workflowStatsResponse) error {
 		r.WorkflowID, r.RunCount, truncate(r.WindowStart, 19), truncate(r.WindowEnd, 19))
 	_, _ = fmt.Fprintf(out, "  %d completed  •  %d failed  •  %d cancelled\n",
 		r.SuccessCount, r.FailureCount, r.CancelledCount)
+	renderWorkflowRates(out, r)
 	if r.AvgCostUSD > 0 {
 		_, _ = fmt.Fprintf(out, "  avg cost: $%.4f / run  •  avg duration: %.1fs\n",
 			r.AvgCostUSD, r.AvgDurationSeconds)

@@ -33,6 +33,11 @@ type toolOutcomeBuffer struct {
 	// (a crashed agent), and keeping it risks stamping it onto an unrelated
 	// later call of the same tool.
 	maxAge time.Duration
+	// lastSweep is when the whole map was last walked for expired keys. See
+	// sweepExpiredLocked: pruneLocked only ever touches the key being
+	// written or read, so without this walk an observation whose audit row
+	// never arrived is never revisited and its key is never freed.
+	lastSweep time.Time
 	// maxPerKey bounds memory for a step that calls one tool in a tight loop
 	// while its audit posts are failing. Oldest observations are dropped
 	// first, because the newest is the one most likely to be claimed next.
@@ -52,7 +57,11 @@ type toolOutcome struct {
 }
 
 const (
-	defaultToolOutcomeMaxAge    = 5 * time.Minute
+	defaultToolOutcomeMaxAge = 5 * time.Minute
+	// toolOutcomeSweepInterval bounds how often the whole map is walked for
+	// expired keys. Nothing can expire faster than maxAge, so sweeping more
+	// often than that only makes a hot path O(n) for no gain.
+	toolOutcomeSweepInterval    = defaultToolOutcomeMaxAge
 	defaultToolOutcomeMaxPerKey = 64
 )
 
@@ -94,6 +103,10 @@ func (b *toolOutcomeBuffer) Record(executionID, toolName string, err error) {
 		list = list[len(list)-b.maxPerKey:]
 	}
 	b.entries[key] = list
+	// Free the keys nobody will ever claim. Rate-limited to once per maxAge,
+	// so this is not an O(n) walk on a hot path — see sweepExpiredLocked for
+	// why eviction rides Record rather than an execution's terminal state.
+	b.sweepExpiredLocked(out.at)
 }
 
 // Claim removes and returns the OLDEST unclaimed observation for a call.
@@ -143,17 +156,35 @@ func (b *toolOutcomeBuffer) pruneLocked(key toolOutcomeKey) []toolOutcome {
 	return list[i:]
 }
 
-// Forget drops every observation for an execution. Called when an execution
-// reaches a terminal state so a long-lived daemon does not accumulate one map
-// entry per tool per finished task.
-func (b *toolOutcomeBuffer) Forget(executionID string) {
-	if b == nil || executionID == "" {
+// sweepExpiredLocked drops every key whose observations are all older than
+// maxAge. Caller holds b.mu.
+//
+// THIS REPLACES A `Forget(executionID)` THAT NOTHING CALLED. Its doc comment
+// said it was "called when an execution reaches a terminal state", and no call
+// site ever existed (grep-verified across internal/ and cmd/ on 2026-09-04) —
+// a documented contract with no implementation, which is the shape the
+// 2026-08-26 silent-controls audit is about. The leak it was meant to close
+// was real: pruneLocked only runs on a Record or Claim touching the SAME key,
+// so an observation whose matching agent audit row never arrives (agent crash
+// mid-step, audit POST failure, task killed between the MCP call and the audit
+// flush) survived for the life of the daemon.
+//
+// Age, not terminality, is the right trigger. The buffer already defines when
+// an observation is dead — maxAge, five minutes, against an agent that posts
+// its audit row within milliseconds — and the API layer, which owns this
+// buffer, does not observe when an execution ends. Riding Record also means a
+// daemon that has stopped making tool calls has stopped growing, so there is
+// no goroutine to start, own, or shut down.
+func (b *toolOutcomeBuffer) sweepExpiredLocked(now time.Time) {
+	if now.Sub(b.lastSweep) < toolOutcomeSweepInterval {
 		return
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for key := range b.entries {
-		if key.executionID == executionID {
+	b.lastSweep = now
+	cutoff := now.Add(-b.maxAge)
+	for key, list := range b.entries {
+		if len(list) == 0 || !list[len(list)-1].at.After(cutoff) {
+			// The newest observation for this key is at or past the cutoff, so
+			// every one of them is: nothing here can be claimed any more.
 			delete(b.entries, key)
 		}
 	}

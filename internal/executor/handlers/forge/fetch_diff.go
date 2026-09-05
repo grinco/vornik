@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/executor"
 	forgeapi "vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/persistence"
@@ -57,29 +59,9 @@ func (h *FetchDiffHandler) Execute(ctx context.Context, in executor.SystemStepIn
 	if err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: resolve provider: %w", name, err)
 	}
-	diff, scope, head, err := h.diffForJob(ctx, provider, in.Task.ProjectID, job)
+	diff, scope, head, err := h.fetchAndClose(ctx, provider, in.Task.ProjectID, job, name)
 	if err != nil {
-		return executor.SystemStepResult{}, fmt.Errorf("%s: fetch diff for %s#%d: %w", name, job.Repo, job.Number, err)
-	}
-	// ABSORBING → CLOSING (design §5.2). The fetch above is this review's
-	// comparison point: from here it can no longer observe a newer head, so it
-	// must stop absorbing pushes. Releasing the claim is what makes a later
-	// push enqueue its OWN task rather than supersede a SHA nobody will read —
-	// without it, a push arriving after this line is silently lost whenever the
-	// developer then stops pushing, and a posted review sits on a head it never
-	// examined.
-	//
-	// FAILING THE STEP IS THE SAFE DIRECTION HERE, which is not obvious.
-	// Continuing with an unreleased claim looks kinder — the diff is already in
-	// hand — but it leaves this task ABSORBING for the rest of its run, so a
-	// push arriving before it finishes is swallowed and, if the developer then
-	// stops, that head is never reviewed. Failing instead drives the task
-	// terminal, at which point the claim reads as dead and the next push
-	// enqueues its own review. We lose this run and keep the coverage.
-	if h.reviewState != nil {
-		if err := h.reviewState.BeginClosing(ctx, in.Task.ProjectID, job.Repo, job.Number, head); err != nil {
-			return executor.SystemStepResult{}, fmt.Errorf("%s: release review claim for %s#%d: %w", name, job.Repo, job.Number, err)
-		}
+		return executor.SystemStepResult{}, err
 	}
 
 	out, _ := json.Marshal(map[string]any{
@@ -97,6 +79,123 @@ func (h *FetchDiffHandler) Execute(ctx context.Context, in executor.SystemStepIn
 	return executor.SystemStepResult{Result: out}, nil
 }
 
+// maxFetchAttempts bounds the re-fetch loop in fetchAndClose.
+//
+// Each attempt is one forge round-trip, and another attempt is only needed
+// because a push landed DURING the previous one — so converging takes a quiet
+// moment, not a fixed number of tries. Three is generous for a human push
+// burst and small enough that a pathological pusher cannot hold a review step
+// open indefinitely.
+const maxFetchAttempts = 3
+
+// fetchAndClose fetches the diff and performs the ABSORBING → CLOSING
+// transition (design §5.2), re-fetching when a push superseded the head while
+// the fetch was in flight.
+//
+// THE FETCH IS THE COMPARISON POINT, AND IT IS NOT INSTANT. §5.2 requires the
+// pending-head read and the transition to be one atomic step "so no trigger can
+// land between them"; a real forge round-trip sits between them here, and for
+// its whole duration the claim is still held — so a push landing in that window
+// is ABSORBED, its delivery skipped as "superseded", and only pending_head_sha
+// advances. Committing to the pre-fetch head then strands it: the baseline
+// advances past a head nobody read, and the ONLY consumer of pending_head_sha
+// is the read at the top of this loop. If the developer does not push again,
+// that head is permanently unreviewed while a posted review implies coverage —
+// the §5.2 "SHA_C is lost" failure the design calls unacceptable.
+//
+// So the transition is a compare-and-set, and a refusal means "a push you
+// absorbed is still yours to review": fetch again at the head it names. This is
+// §5.1's re-arm applied at the point that actually needs it. It converges as
+// soon as one fetch completes with no push landing during it.
+//
+// FAILING THE STEP IS THE SAFE DIRECTION when it does not converge, which is
+// not obvious. Continuing with an unreleased claim looks kinder — a diff is
+// already in hand — but it leaves this task ABSORBING for the rest of its run,
+// so a push arriving before it finishes is swallowed and, if the developer then
+// stops, that head is never reviewed. Failing instead drives the task terminal,
+// at which point the claim reads as dead and the next push enqueues its own
+// review. We lose this run and keep the coverage — and a failed task is loud,
+// where a narrowed review is silent.
+func (h *FetchDiffHandler) fetchAndClose(
+	ctx context.Context,
+	provider forgeapi.ForgeProvider,
+	projectID string,
+	job *forgeapi.ForgeJob,
+	name string,
+) ([]byte, string, string, error) {
+	// reported is the pending head the previous refusal named. It is the
+	// comparison point of last resort: see the unreadable-row case below.
+	reported, haveReported := "", false
+
+	for attempt := 1; ; attempt++ {
+		diff, scope, head, observed, err := h.diffForJob(ctx, provider, projectID, job)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("%s: fetch diff for %s#%d: %w", name, job.Repo, job.Number, err)
+		}
+		if h.reviewState == nil {
+			// No coalescing bookkeeping: nothing can have been absorbed, so
+			// there is nothing to reconcile. Failing a review because the
+			// bookkeeping is unavailable would trade a duplicate review for no
+			// review at all.
+			return diff, scope, head, nil
+		}
+
+		// AN UNREADABLE ROW MUST NOT FAIL THE REVIEW. diffForJob resolves a
+		// failed Get to a full review and reports no observation — and with no
+		// observation the compare-and-set has nothing true to compare, so it
+		// would refuse every attempt and the review would die because the
+		// BOOKKEEPING was unavailable. That is the opposite of this handler's
+		// stated asymmetry (see WithReviewState) and of §6's "every uncertainty
+		// resolves to full".
+		//
+		// A refusal always names the row's current pending head, so after one
+		// refusal we have a comparison point that did not come through Get.
+		// Using it converges in two attempts even while Get keeps failing, and
+		// it is still a compare-and-set — a push landing after that refusal
+		// refuses again rather than being stranded:
+		//
+		//   attempt 1  unknown, expects ""      → refused, reported = SHA_A
+		//   push lands, row advances to SHA_B
+		//   attempt 2  unknown, expects SHA_A   → refused, reported = SHA_B
+		//   attempt 3  unknown, expects SHA_B   → applies
+		//
+		// The two-attempt convergence is bounded by maxFetchAttempts like any
+		// other; it is not a second counter. A push arriving during those
+		// attempts moves the reported head without resetting the bound, which
+		// is right — an outage plus a sustained burst is exactly the case that
+		// should give up and let the claim die with the task.
+		expected := observed.value
+		if !observed.known && haveReported {
+			expected = reported
+			// Rare and worth seeing: the store is failing reads while this
+			// review is trying to close. Logged only on the fallback, so the
+			// nominal path stays silent.
+			zerolog.Ctx(ctx).Warn().
+				Str("repo", job.Repo).Int("number", job.Number).
+				Str("expected_head", expected).Int("attempt", attempt).
+				Msg("forge.fetch_diff: review state unreadable; closing against the head the last refusal reported")
+		}
+
+		out, err := h.reviewState.BeginClosing(ctx, projectID, job.Repo, job.Number, head, expected)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("%s: release review claim for %s#%d: %w", name, job.Repo, job.Number, err)
+		}
+		if out.Applied {
+			return diff, scope, head, nil
+		}
+		reported, haveReported = out.PendingHeadSHA, true
+
+		if attempt >= maxFetchAttempts {
+			return nil, "", "", fmt.Errorf(
+				"%s: %s#%d kept being superseded while fetching (%d attempts, last head %q, now %q); "+
+					"failing so the claim dies with this task and the next trigger enqueues its own review",
+				name, job.Repo, job.Number, attempt, head, out.PendingHeadSHA)
+		}
+		// Loop: diffForJob re-reads the row, so the next attempt fetches the
+		// head that superseded this one.
+	}
+}
+
 // diffScope names what a fetched diff covers, so the reviewer's prose can say so.
 const (
 	scopeFull        = "full"
@@ -112,15 +211,39 @@ const (
 // complete diff. The asymmetry is deliberate and is the core of §6: a full
 // review costs tokens and repeats some findings, while a wrongly-narrowed one
 // silently omits code nobody will look at again.
-func (h *FetchDiffHandler) diffForJob(ctx context.Context, provider forgeapi.ForgeProvider, projectID string, job *forgeapi.ForgeJob) ([]byte, string, string, error) {
+//
+// It also returns the PendingHeadSHA it observed, which is the value the
+// caller's compare-and-set must be made against — not the head it fetched. The
+// two differ whenever the row's pending head was empty or the job's own head
+// won, and comparing the wrong one would refuse transitions nothing superseded.
+func (h *FetchDiffHandler) diffForJob(ctx context.Context, provider forgeapi.ForgeProvider, projectID string, job *forgeapi.ForgeJob) ([]byte, string, string, pendingObservation, error) {
 	head := job.HeadSHA
-	full := func() ([]byte, string, string, error) {
+	observed := pendingObservation{}
+	full := func() ([]byte, string, string, pendingObservation, error) {
 		d, err := provider.FetchDiff(ctx, job.Repo, job.Number)
-		return d, scopeFull, head, err
+		return d, scopeFull, head, observed, err
 	}
 
 	// An explicit "full review" command, or no state to compare against.
 	if job.FullReview || h.reviewState == nil {
+		if job.FullReview && h.reviewState != nil {
+			// Still read the row: a full review absorbs pushes exactly like an
+			// incremental one, so its transition needs the same comparison
+			// point. Only the SCOPE ignores the baseline — skipping the
+			// compare-and-set here would leave the dropped-push hole open on
+			// the one command a human explicitly asked for.
+			//
+			// The head it RECORDS stays the job's own, deliberately. An
+			// incremental review names its upper bound in the request
+			// (CompareDiff base..head) so it can claim that head; a full fetch
+			// returns whatever the forge had at some instant during the call,
+			// which we cannot name. Claiming the pending head would assert
+			// coverage of commits we only hope were included. Under-claiming
+			// costs a repeated finding; over-claiming loses a commit.
+			if st, err := h.reviewState.Get(ctx, projectID, job.Repo, job.Number); err == nil {
+				observed = observePending(st)
+			}
+		}
 		return full()
 	}
 
@@ -130,6 +253,7 @@ func (h *FetchDiffHandler) diffForJob(ctx context.Context, provider forgeapi.For
 		// already reviewed, and the honest answer to that is "review it all".
 		return full()
 	}
+	observed = observePending(st)
 	// REVIEW THE SUPERSEDED HEAD, NOT THE ONE THAT CREATED THIS TASK.
 	//
 	// job.HeadSHA is the head of the delivery that enqueued this review; a push
@@ -159,7 +283,7 @@ func (h *FetchDiffHandler) diffForJob(ctx context.Context, provider forgeapi.For
 		// Head is exactly what was last reviewed. Re-reading the whole PR would
 		// repeat every finding the human has already seen; saying so plainly is
 		// better than handing the reviewer an empty diff to invent prose about.
-		return []byte("No new commits since the last review of " + head + "."), scopeNoChange, head, nil
+		return []byte("No new commits since the last review of " + head + "."), scopeNoChange, head, observed, nil
 	}
 
 	d, cerr := provider.CompareDiff(ctx, job.Repo, st.LastReviewedHeadSHA, head)
@@ -169,5 +293,26 @@ func (h *FetchDiffHandler) diffForJob(ctx context.Context, provider forgeapi.For
 		// was already reviewed, so review everything.
 		return full()
 	}
-	return d, scopeIncremental, head, nil
+	return d, scopeIncremental, head, observed, nil
+}
+
+// pendingObservation distinguishes "the row says there is no pending head" from
+// "the row could not be read".
+//
+// Both used to be the empty string, and conflating them is what made an
+// unreadable row indistinguishable from a genuinely empty pending head — which
+// turned a bookkeeping outage into a refused transition on every attempt, and
+// so into a failed review.
+type pendingObservation struct {
+	value string
+	known bool
+}
+
+func observePending(st *persistence.ForgePRReviewState) pendingObservation {
+	// A nil row is a REAL observation: the PR has no state yet, so its pending
+	// head is genuinely empty. Only a failed read is unknown.
+	if st == nil {
+		return pendingObservation{known: true}
+	}
+	return pendingObservation{value: st.PendingHeadSHA, known: true}
 }

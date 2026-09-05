@@ -1,6 +1,7 @@
 package service
 
 import (
+	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auditredact"
 	"vornik.io/vornik/internal/secrets"
 )
@@ -91,6 +92,24 @@ func (c *Container) initToolAuditRedaction() {
 	)
 	wired.SetMetrics(c.auditRedactMetrics)
 	c.repos.ToolAudit = wired
+	// The step-prompt store goes through the same detector at the same kind
+	// of seam (step-prompt persistence design §5): every part of a step's
+	// model input is scanned before it is stored, hash taken after. Same
+	// rule as above — any path that rebuilds c.repos must re-apply this.
+	if c.repos.StepPrompts != nil {
+		c.repos.StepPrompts = auditredact.NewStepPrompts(c.repos.StepPrompts, detector, c.repos.SecretRedaction, &c.Logger)
+	}
+	// The chat audit store is the third instance of the same seam
+	// (chat-audit retention and redaction design §3.2): two writers reach it
+	// — the dispatcher's turn audit and the chat proxy's — and neither
+	// scanned. Idempotent for the same reason the tool-audit wrap is: the
+	// observability rebuild re-runs this, and a double wrap would scan every
+	// row twice.
+	if c.repos.ChatAudit != nil {
+		if _, already := c.repos.ChatAudit.(*auditredact.ChatAudit); !already {
+			c.repos.ChatAudit = auditredact.NewChatAudit(c.repos.ChatAudit, detector, c.repos.SecretRedaction, &c.Logger)
+		}
+	}
 	c.Logger.Info().
 		Str("action", string(secrets.ResolveAction(secrets.CheckpointToolAudit, actions))).
 		Msg("secrets: tool-audit redaction wired at the repository seam — every writer is covered")
@@ -116,4 +135,25 @@ func (c *Container) toolAuditRedactionState() (auditredact.Reason, string) {
 		return reason, ""
 	}
 	return auditredact.ReasonNone, string(secrets.ResolveAction(secrets.CheckpointToolAudit, repo.Actions()))
+}
+
+// exchangeRedactor is the recorder's seam (llm-exchange record/replay design
+// §4): the same detector the step-prompt store was decorated with, exposed as
+// a function so the API server never holds the decorator itself. Nil when
+// the step-prompt store was not decorated (no detector configured), in which
+// case the recorder stores bodies as they are — the same position step
+// prompts are in on such a deployment.
+func (c *Container) exchangeRedactor() api.ExchangeRedactor {
+	sp, ok := c.repos.StepPrompts.(*auditredact.StepPrompts)
+	if !ok || sp == nil {
+		return nil
+	}
+	return func(body string) (string, int) {
+		out, counts := sp.RedactText(body)
+		n := 0
+		for _, v := range counts {
+			n += v
+		}
+		return out, n
+	}
 }

@@ -115,7 +115,27 @@ type ForgePRReviewStateRepository interface {
 	// trigger landing between a claim release and a SHA write would enqueue its
 	// own task (correct) against a row that then gets stamped with a SHA nobody
 	// agreed on.
-	BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA string) error
+	//
+	// CONDITIONAL ON expectedPendingHeadSHA — the value of PendingHeadSHA the
+	// caller read when it decided which head to fetch. Design §5.2 requires the
+	// read and the transition to be "ONE atomic step on the per-PR row, so no
+	// trigger can land between them", and no implementation can hold that
+	// atomicity across the forge round-trip the caller makes in between. The
+	// compare-and-set restores it: a push absorbed during the fetch advances
+	// PendingHeadSHA, the transition then does not apply, and the caller learns
+	// the newer head instead of committing to a stale one.
+	//
+	// Unconditional, this was the §5.2 "SHA_C is lost" failure reintroduced: the
+	// claim is held for the whole fetch, so a push landing in that window is
+	// ABSORBED and its delivery skipped as superseded — and nothing afterwards
+	// reads the leftover PendingHeadSHA, so if the developer does not push
+	// again that head is permanently unreviewed while a posted review implies
+	// coverage.
+	//
+	// Returns Applied=false and the row's current PendingHeadSHA when the
+	// transition did not apply. That is not an error: the caller's response is
+	// to fetch again at the newer head, not to give up.
+	BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA, expectedPendingHeadSHA string) (ClosingOutcome, error)
 
 	// MarkReviewed advances LastReviewedHeadSHA and clears the claim, and is
 	// called ONLY after the review has actually posted. Advancing it when a
@@ -126,4 +146,20 @@ type ForgePRReviewStateRepository interface {
 
 	// SetPaused sets or clears the per-PR automatic-review suppression.
 	SetPaused(ctx context.Context, projectID, repo string, number int, paused bool) error
+}
+
+// ClosingOutcome is BeginClosing's answer: whether the ABSORBING → CLOSING
+// transition applied, and if not, what the row now holds.
+//
+// A struct rather than a bare bool because the caller needs the newer head to
+// act on the refusal, and rather than an error because a superseding push is
+// the system working, not a fault.
+type ClosingOutcome struct {
+	// Applied reports that the claim was released and ReviewingHeadSHA written.
+	Applied bool
+
+	// PendingHeadSHA is the row's current pending head. Meaningful when
+	// Applied is false: it is the head that superseded the one the caller
+	// fetched, and the head the caller should fetch next.
+	PendingHeadSHA string
 }

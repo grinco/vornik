@@ -388,3 +388,96 @@ func TestSideEffectingUpstreamSteps(t *testing.T) {
 	bare, _, _, _, _ := setup()
 	assert.Nil(t, bare.sideEffectingUpstreamSteps(exec, []string{"index"}))
 }
+
+// TestRetryFromStep_AcceptsCurrentStep — the step that FAILED is not in
+// completed_steps, and an operator retrying "the step that broke" is the
+// most common retry there is. Before 2026-09-04 only the UI handler
+// (internal/ui/execution_actions.go) accepted it, through a second,
+// hand-rolled state writer; the executor refused it as unknown. The UI now
+// delegates here, so this is the one place the rule lives: the current step
+// is retryable, every completed step survives, and the failed step's own
+// outcome row is superseded like any other row at the retry point.
+// Backlog: "The UI's retry-from-step writes a state snapshot the executor
+// knows nothing about (2026-09-04)".
+func TestRetryFromStep_AcceptsCurrentStep(t *testing.T) {
+	e, _, er, _, tr := setup()
+	t.Cleanup(func() { _ = e.Stop(context.Background()) })
+	e.SetWorkflowResolver(&MockWorkflowResolver{
+		projects: map[string]*registry.Project{
+			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
+		},
+		swarms: map[string]*registry.Swarm{
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
+		},
+		workflows: map[string]*registry.Workflow{
+			"wf1": {
+				ID: "wf1", Entrypoint: "plan",
+				Steps: map[string]registry.WorkflowStep{
+					"plan":      {Type: "agent", Role: "worker", OnSuccess: "implement"},
+					"implement": {Type: "agent", Role: "worker", OnSuccess: "review"},
+					"review":    {Type: "agent", Role: "worker", OnSuccess: "done"},
+				},
+				Terminals: map[string]registry.WorkflowTerminal{"done": {Status: "COMPLETED"}},
+			},
+		},
+	})
+	tr.AddTask(&persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusFailed, MaxAttempts: 3, CreatedAt: time.Now()})
+
+	repo := newStubStepOutcomeRepo()
+	e.outcomeRepo = repo
+	t0 := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	for i, r := range []*persistence.ExecutionStepOutcome{
+		{ID: "o-plan", ExecutionID: "e1", StepID: "plan", Outcome: "ok", RecordedAt: t0},
+		{ID: "o-impl", ExecutionID: "e1", StepID: "implement", Outcome: "ok", RecordedAt: t0.Add(time.Minute)},
+		{ID: "o-rev", ExecutionID: "e1", StepID: "review", Outcome: "failed", RecordedAt: t0.Add(2 * time.Minute)},
+	} {
+		require.NoError(t, repo.Record(context.Background(), r), "row %d", i)
+	}
+
+	failed := "review"
+	exec := &persistence.Execution{
+		ID:             "e1",
+		TaskID:         "t1",
+		ProjectID:      "p1",
+		Status:         persistence.ExecutionStatusFailed,
+		CompletedSteps: []string{"plan", "implement"},
+		CurrentStepID:  &failed,
+	}
+	require.NoError(t, er.Create(context.Background(), exec))
+	require.NoError(t, e.RetryFromStep(context.Background(), "e1", "review"),
+		"the current (failed) step must be retryable — it was, via the UI's second writer")
+
+	got, err := er.Get(context.Background(), "e1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"plan", "implement"}, got.CompletedSteps, "every completed step survives a current-step retry")
+	require.NotNil(t, got.CurrentStepID)
+	assert.Equal(t, "review", *got.CurrentStepID)
+
+	rows, _ := repo.List(context.Background(), persistence.ExecutionStepOutcomeFilter{})
+	outcomes := make(map[string]string)
+	for _, r := range rows {
+		outcomes[r.ID] = r.Outcome
+	}
+	assert.Equal(t, "ok", outcomes["o-plan"])
+	assert.Equal(t, "ok", outcomes["o-impl"])
+	assert.Equal(t, "superseded", outcomes["o-rev"], "the failed step's own row is at the retry point and is superseded")
+}
+
+// TestRetryFromStep_UnknownStepIsStillRefused_WhenCurrentDiffers — accepting
+// the current step must not widen into accepting any name: a step that is
+// neither completed nor current is still the typo case.
+func TestRetryFromStep_UnknownStepIsStillRefused_WhenCurrentDiffers(t *testing.T) {
+	e, _, er, _, tr := setup()
+	tr.AddTask(&persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusFailed, CreatedAt: time.Now()})
+	failed := "review"
+	exec := &persistence.Execution{
+		ID: "e1", TaskID: "t1", ProjectID: "p1",
+		Status:         persistence.ExecutionStatusFailed,
+		CompletedSteps: []string{"plan"},
+		CurrentStepID:  &failed,
+	}
+	require.NoError(t, er.Create(context.Background(), exec))
+	err := e.RetryFromStep(context.Background(), "e1", "mystery")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRetryStepNotInExecution))
+}

@@ -290,6 +290,10 @@ type Agent struct {
 	// the offending claims are surfaced to the user via a warning
 	// banner in the reply. nil disables the layer.
 	hallucinationDetector *hallucination.Detector
+	// pts are the agent's pipeline points (pipeline_points.go), built on
+	// first use by points().
+	pts        *agentPoints
+	pointsOnce sync.Once
 	// hallucinationMetrics observes Phase 1 detector emissions for
 	// the dispatcher's chat-side scan. Nil disables — the detector
 	// still fires; signals just don't bump counters.

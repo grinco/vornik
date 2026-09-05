@@ -58,6 +58,14 @@ func (r *ChatAuditRepository) Insert(ctx context.Context, entry *persistence.Cha
 		entry.Iterations, entry.DurationMs, entry.CostUSD,
 		entry.HallucinationSignalsJSON,
 	)
+	// The interface promises ErrDuplicateKey on an ID collision and the
+	// Postgres implementation delivers it through mapDBError; until
+	// 2026-09-05 this returned the raw driver error, so a caller testing
+	// errors.Is saw a duplicate as an unknown failure on SQLite only
+	// (RunChatAuditSuite, "Insert_defaults_duplicate_and_GetByID").
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return persistence.ErrDuplicateKey
+	}
 	return err
 }
 
@@ -177,16 +185,26 @@ func (r *ChatAuditRepository) List(ctx context.Context, filter persistence.ChatA
 	return out, nil
 }
 
-func (r *ChatAuditRepository) SavePrompt(ctx context.Context, hash, body string) error {
-	if hash == "" {
-		return fmt.Errorf("chat_audit: empty hash")
+// SavePrompt stores a system prompt body under the digest of the bytes it is
+// storing, and returns that digest. INSERT OR IGNORE is the idempotent-by-hash
+// contract — the digest IS the identity. The repository hashes rather than the
+// caller so a redaction decorator cannot leave the stored hash naming bytes
+// the store does not hold (chat-audit design §3.1).
+func (r *ChatAuditRepository) SavePrompt(ctx context.Context, body string) (string, error) {
+	if body == "" {
+		return "", fmt.Errorf("chat_audit: empty prompt body")
 	}
+	hash := persistence.HashChatSystemPrompt(body)
 	_, err := r.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO chat_system_prompts (hash, body, created_at)
 		VALUES (?, ?, ?)`,
 		hash, body, sqliteTime(time.Now().UTC()),
 	)
-	return err
+	if err != nil {
+		// The hash goes back WITH the error — see the postgres twin.
+		return hash, err
+	}
+	return hash, nil
 }
 
 func (r *ChatAuditRepository) GetPrompt(ctx context.Context, hash string) (string, error) {

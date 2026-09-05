@@ -140,18 +140,30 @@ func (r *ForgePRReviewStateRepository) SetPaused(ctx context.Context, projectID,
 
 // BeginClosing releases the claim and records the head this review fetched, in
 // one statement so the pair cannot be separated.
-func (r *ForgePRReviewStateRepository) BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA string) error {
-	_, err := r.db.ExecContext(ctx,
+func (r *ForgePRReviewStateRepository) BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA, expectedPendingHeadSHA string) (persistence.ClosingOutcome, error) {
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO forge_pr_review_state
-		        (project_id, repo, number, task_id, reviewing_head_sha, updated_at)
-		 VALUES (?, ?, ?, '', ?, ?)
+		        (project_id, repo, number, task_id, pending_head_sha, reviewing_head_sha, updated_at)
+		 VALUES (?, ?, ?, '', ?, ?, ?)
 		 ON CONFLICT (project_id, repo, number) DO UPDATE
 		    SET task_id            = '',
 		        reviewing_head_sha = excluded.reviewing_head_sha,
-		        updated_at         = excluded.updated_at`,
-		projectID, repo, number, reviewingHeadSHA, sqliteTime(time.Now()))
+		        updated_at         = excluded.updated_at
+		  WHERE COALESCE(forge_pr_review_state.pending_head_sha, '') = ?`,
+		projectID, repo, number, expectedPendingHeadSHA, reviewingHeadSHA, sqliteTime(time.Now()), expectedPendingHeadSHA)
 	if err != nil {
-		return fmt.Errorf("sqlite: forge_pr_review_state begin closing: %w", err)
+		return persistence.ClosingOutcome{}, fmt.Errorf("sqlite: forge_pr_review_state begin closing: %w", err)
 	}
-	return nil
+	if n, aerr := res.RowsAffected(); aerr == nil && n > 0 {
+		return persistence.ClosingOutcome{Applied: true}, nil
+	}
+	cur, gerr := r.Get(ctx, projectID, repo, number)
+	if gerr != nil {
+		return persistence.ClosingOutcome{}, fmt.Errorf("sqlite: forge_pr_review_state begin closing: read superseding head: %w", gerr)
+	}
+	out := persistence.ClosingOutcome{}
+	if cur != nil {
+		out.PendingHeadSHA = cur.PendingHeadSHA
+	}
+	return out, nil
 }

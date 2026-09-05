@@ -1,0 +1,33 @@
+# Acknowledged grinco->EE back-merges already on main.
+#
+# check-no-grinco-backmerge.sh --trunk scans ALL of main's history for
+# back-merge signatures and fails on any commit not listed here. The point is
+# that these become a decision someone made, recorded, rather than history the
+# range-limited guard cannot see.
+#
+# Adding a line here is NOT routine. It says: this back-merge is on the trunk,
+# someone checked what it carried, and we are keeping it. A NEW back-merge
+# should be prevented (do not use GitHub's "Sync fork"), not acknowledged.
+#
+# Format: <sha> <reason>
+#
+# ---------------------------------------------------------------------------
+# All six predate the 2026-09-03 audit and are kept rather than rewritten.
+# Rewriting would mean excising six merges spread across three months of a
+# SHARED trunk — other clones and concurrent work would break — to remove
+# history that carries no content: the current tree is what the CE export
+# publishes (`git archive HEAD`), and the 2026.9.1 publish passed every leak,
+# structural and Art 50 gate. High risk, no content benefit.
+#
+# The habit is the finding, not any one commit: they run 2026-06-29 through
+# 2026-09-03, and a8eb9fbb added the guard in response to the FIRST one, after
+# which four more landed. The guard was never wrong; it inspects <base>..HEAD,
+# and "Sync fork" writes straight to main where no later run looks.
+
+435de78c the 2026-06-29 original; carried 2507aad0 ("sync: export CE from vornik-enterprise@05ff657d"), a CE-side commit onto EE main — the incident that prompted a8eb9fbb
+b7f9d077 2026-07-02 Sync fork
+383f782f 2026-07-06 Sync fork
+6e9a20a8 2026-07-17 Sync fork
+003dc7ad 2026-07-26 Sync fork
+e8a27706 2026-09-03 Sync fork right after PR #72 merged; content-neutral, verified (`git diff f3803094 e8a27706` empty). Its CI run was cancelled before any job ran, which is why the guard never saw it
+2507aad0 the CE-side export commit itself, ridden in by 435de78c. This is the shape the guard's header calls out as must-NEVER-appear-here; it is 2026-06-29 history and its content is long superseded by later EE work

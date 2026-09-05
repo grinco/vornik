@@ -104,16 +104,24 @@ func TestChatAuditRepository_PromptCache(t *testing.T) {
 	defer cleanup()
 	repo := NewChatAuditRepository(db)
 
+	// The repository hashes the body it is about to store and returns that
+	// digest — the caller no longer supplies one, so a hash naming bytes the
+	// store does not hold is unspellable (chat-audit design §3.1).
+	h1 := persistence.HashChatSystemPrompt("body")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_system_prompts")).
-		WithArgs("h1", "body", sqlmock.AnyArg()).
+		WithArgs(h1, "body", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := repo.SavePrompt(context.Background(), "h1", "body"); err != nil {
+	got1, err := repo.SavePrompt(context.Background(), "body")
+	if err != nil {
 		t.Fatalf("SavePrompt: %v", err)
 	}
+	if got1 != h1 {
+		t.Errorf("SavePrompt returned %q, want the digest of the stored body", got1)
+	}
 
-	// SavePrompt empty hash → guard.
-	if err := repo.SavePrompt(context.Background(), "", "body"); err == nil {
-		t.Error("empty hash should error")
+	// SavePrompt empty body → guard.
+	if _, err := repo.SavePrompt(context.Background(), ""); err == nil {
+		t.Error("empty body should error")
 	}
 
 	// GetPrompt happy path.

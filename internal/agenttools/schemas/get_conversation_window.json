@@ -1,0 +1,24 @@
+{
+  "function": {
+    "description": "Read messages from THIS task's conversation thread. Returns chronological messages (operator + lead exchanges, checkpoints, answers, directives, phase markers). Use this to recall older content the prompt's recent-window may have summarised away.",
+    "name": "get_conversation_window",
+    "parameters": {
+      "properties": {
+        "after": {
+          "description": "Optional cursor: only return messages created after this message ID",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Optional comma-separated message kinds to filter by (e.g. 'directive,answer')",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max messages to return (default 50, max 200)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

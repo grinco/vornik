@@ -207,29 +207,24 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 			// On High signals with a prior retry already burned,
 			// prepend a user-facing warning banner so the operator
 			// knows the answer is unverified.
-			if a.hallucinationDetector != nil {
-				gc := a.buildChatGroundingContext(ctx, msgs, projectIDsFromRegistry(req.Projects), activeProject)
-				signals := a.hallucinationDetector.Scan(text, gc)
-				a.hallucinationMetrics.ObserveSignals(activeProject, signals)
-				audit.recordHallucinationSignals(signals)
-				blocking := retainBlockingSignals(signals)
-				if len(blocking) > 0 {
-					a.logger.Warn().
-						Int64("chat_id", req.ChatID).
-						Int("signals", len(signals)).
-						Int("blocking", len(blocking)).
-						Bool("retry_used", hallucinationRetried).
-						Msg("dispatcher: hallucination detected in reply")
-					if !hallucinationRetried {
-						hallucinationRetried = true
-						msgs = append(msgs, chat.Message{
-							Role:    "user",
-							Content: formatHallucinationRetryPrompt(blocking),
-						})
-						continue
-					}
-					text = formatUserWarningBanner(blocking) + text
-				}
+			// The continuation point (pipeline_points.go): the hallucination
+			// participant asks for one retry, then a banner; the loop owns the
+			// once-only state and the branch.
+			v := a.points().continuation.Run(ctx, ContinuationInput{
+				Text: text, Messages: msgs, ActiveProject: activeProject,
+				ProjectIDs: projectIDsFromRegistry(req.Projects), ChatID: req.ChatID,
+				RetryUsed: hallucinationRetried, Streaming: false,
+				RecordSignals: audit.recordHallucinationSignals,
+			})
+			switch {
+			case v.Retry != "":
+				hallucinationRetried = true
+				msgs = append(msgs, chat.Message{Role: "user", Content: v.Retry})
+				continue
+			case v.Banner != "":
+				text = v.Banner + text
+			case v.Refused:
+				text = v.Reason
 			}
 
 			return Result{
@@ -251,29 +246,25 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 			// show it does nothing.
 			a.reportTurnStatus(ctx, req, toolStatusLine(tc.Function.Name))
 
-			// Intent judge: fire the heuristic verdict and (when
-			// the refiner is wired + risk meets the floor) the
-			// async LLM tier. The verdict is best-effort
-			// telemetry in this slice — the dispatcher does not
-			// block on it. A future iteration will gate tool
-			// execution behind the recommendation.
-			if a.intentJudge != nil {
-				var chatIDPtr *int64
-				if req.ChatID != 0 {
-					id := req.ChatID
-					chatIDPtr = &id
-				}
-				v := a.intentJudge.evaluate(ctx, activeProject, nil, nil, chatIDPtr,
-					tc.Function.Name, tc.Function.Arguments, nil, a.logger)
-				a.logger.Info().
-					Str("tool", tc.Function.Name).
-					Str("risk", string(v.Risk)).
-					Str("rec", string(v.Recommendation)).
-					Float64("confidence", v.Confidence).
-					Msg("intent judge: heuristic verdict")
+			// The pre-tool and post-tool points (pipeline_points.go). The
+			// intent judge runs before execution and never refuses today; the
+			// output guard wraps execution and rewrites what the model sees.
+			in := ToolCallInput{Tool: tc.Function.Name, Arguments: tc.Function.Arguments, ActiveProject: activeProject, ChatID: req.ChatID}
+			if v := a.points().preTool.Run(ctx, in); v.Refused {
+				a.logger.Warn().Str("tool", tc.Function.Name).Str("participant", v.Participant).Msg("dispatcher: tool call refused before execution")
+				msgs = append(msgs, chat.Message{Role: "tool", Content: v.Reason, ToolCallID: tc.ID, Name: tc.Function.Name})
+				continue
 			}
-
-			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
+			out, err := a.points().postTool.Run(ctx, in, func(ctx context.Context, in ToolCallInput) (ToolOutcome, error) {
+				tr := a.toolExecutor.Execute(ctx, tc, in.ActiveProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
+				return ToolOutcome{Result: tr, Content: tr.Content}, nil
+			})
+			if err != nil {
+				// A post-tool participant refused the call (none does today).
+				msgs = append(msgs, chat.Message{Role: "tool", Content: err.Error(), ToolCallID: tc.ID, Name: tc.Function.Name})
+				continue
+			}
+			tr := out.Result
 			audit.recordToolCall(tc.Function.Name, tc.Function.Arguments, tr.Content, "")
 
 			if tr.ProjectSwitch != nil {
@@ -282,29 +273,13 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 				// prompt — the lead persona is tied to the original project.
 				systemPrompt = BuildSystemPrompt(activeProject, req.Projects)
 			}
-
-			// Output guard: scan the tool result before appending it
-			// to conversation history. HIGH findings get redacted in
-			// place (if configured); INFO/WARN pass through. The
-			// LLM only ever sees the post-guard body.
-			content := tr.Content
-			if a.outputGuard != nil {
-				var w GuardWarning
-				content, w = a.outputGuard.applyOutputGuard(tc.Function.Name, tr.Content, tr.Provenance, a.metrics)
-				if w.MaxSeverity != "" {
-					a.logger.Warn().
-						Str("tool", w.Tool).
-						Str("severity", string(w.MaxSeverity)).
-						Strs("kinds", w.Kinds).
-						Bool("redacted", w.Redacted).
-						Msg("output guard: findings on tool result")
-					guardWarnings = append(guardWarnings, w)
-				}
+			if out.Warning != nil {
+				guardWarnings = append(guardWarnings, *out.Warning)
 			}
 
 			msgs = append(msgs, chat.Message{
 				Role:       "tool",
-				Content:    content,
+				Content:    out.Content,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})
@@ -422,29 +397,24 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 			if text == "" {
 				text = "Done."
 			}
-			if a.hallucinationDetector != nil {
-				gc := a.buildChatGroundingContext(ctx, msgs, projectIDsFromRegistry(req.Projects), activeProject)
-				signals := a.hallucinationDetector.Scan(text, gc)
-				a.hallucinationMetrics.ObserveSignals(activeProject, signals)
-				audit.recordHallucinationSignals(signals)
-				blocking := retainBlockingSignals(signals)
-				if len(blocking) > 0 {
-					a.logger.Warn().
-						Int64("chat_id", req.ChatID).
-						Int("signals", len(signals)).
-						Int("blocking", len(blocking)).
-						Bool("retry_used", hallucinationRetried).
-						Msg("dispatcher: hallucination detected in streaming reply")
-					if !hallucinationRetried {
-						hallucinationRetried = true
-						msgs = append(msgs, chat.Message{
-							Role:    "user",
-							Content: formatHallucinationRetryPrompt(blocking),
-						})
-						continue
-					}
-					text = formatUserWarningBanner(blocking) + text
-				}
+			// The continuation point (pipeline_points.go): the hallucination
+			// participant asks for one retry, then a banner; the loop owns the
+			// once-only state and the branch.
+			v := a.points().continuation.Run(ctx, ContinuationInput{
+				Text: text, Messages: msgs, ActiveProject: activeProject,
+				ProjectIDs: projectIDsFromRegistry(req.Projects), ChatID: req.ChatID,
+				RetryUsed: hallucinationRetried, Streaming: true,
+				RecordSignals: audit.recordHallucinationSignals,
+			})
+			switch {
+			case v.Retry != "":
+				hallucinationRetried = true
+				msgs = append(msgs, chat.Message{Role: "user", Content: v.Retry})
+				continue
+			case v.Banner != "":
+				text = v.Banner + text
+			case v.Refused:
+				text = v.Reason
 			}
 			return Result{
 				Text:          text,
@@ -470,54 +440,40 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 				emitStreamDelta(fmt.Sprintf("\n\n%s\n\n", toolStatusMarker(tc.Function.Name)))
 			}
 
-			// Intent judge: mirror of the Process path. The
-			// streaming path doesn't surface the verdict to the
-			// user (no banner mid-stream); telemetry-only here.
-			if a.intentJudge != nil {
-				var chatIDPtr *int64
-				if req.ChatID != 0 {
-					id := req.ChatID
-					chatIDPtr = &id
-				}
-				v := a.intentJudge.evaluate(ctx, activeProject, nil, nil, chatIDPtr,
-					tc.Function.Name, tc.Function.Arguments, nil, a.logger)
-				a.logger.Info().
-					Str("tool", tc.Function.Name).
-					Str("risk", string(v.Risk)).
-					Str("rec", string(v.Recommendation)).
-					Float64("confidence", v.Confidence).
-					Msg("intent judge: heuristic verdict")
+			// The pre-tool and post-tool points (pipeline_points.go). The
+			// intent judge runs before execution and never refuses today; the
+			// output guard wraps execution and rewrites what the model sees.
+			in := ToolCallInput{Tool: tc.Function.Name, Arguments: tc.Function.Arguments, ActiveProject: activeProject, ChatID: req.ChatID}
+			if v := a.points().preTool.Run(ctx, in); v.Refused {
+				a.logger.Warn().Str("tool", tc.Function.Name).Str("participant", v.Participant).Msg("dispatcher: tool call refused before execution")
+				msgs = append(msgs, chat.Message{Role: "tool", Content: v.Reason, ToolCallID: tc.ID, Name: tc.Function.Name})
+				continue
 			}
-
-			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
+			out, err := a.points().postTool.Run(ctx, in, func(ctx context.Context, in ToolCallInput) (ToolOutcome, error) {
+				tr := a.toolExecutor.Execute(ctx, tc, in.ActiveProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
+				return ToolOutcome{Result: tr, Content: tr.Content}, nil
+			})
+			if err != nil {
+				// A post-tool participant refused the call (none does today).
+				msgs = append(msgs, chat.Message{Role: "tool", Content: err.Error(), ToolCallID: tc.ID, Name: tc.Function.Name})
+				continue
+			}
+			tr := out.Result
 			audit.recordToolCall(tc.Function.Name, tc.Function.Arguments, tr.Content, "")
 
 			if tr.ProjectSwitch != nil {
 				activeProject = tr.ProjectSwitch.ProjectID
+				// When switching projects, always use the generic dispatcher
+				// prompt — the lead persona is tied to the original project.
 				systemPrompt = BuildSystemPrompt(activeProject, req.Projects)
 			}
-
-			// Output guard: mirror of the non-streaming path. HIGH
-			// findings get redacted in place (when configured);
-			// lower severities ride back on Result.GuardWarnings.
-			content := tr.Content
-			if a.outputGuard != nil {
-				var w GuardWarning
-				content, w = a.outputGuard.applyOutputGuard(tc.Function.Name, tr.Content, tr.Provenance, a.metrics)
-				if w.MaxSeverity != "" {
-					a.logger.Warn().
-						Str("tool", w.Tool).
-						Str("severity", string(w.MaxSeverity)).
-						Strs("kinds", w.Kinds).
-						Bool("redacted", w.Redacted).
-						Msg("output guard: findings on tool result")
-					guardWarnings = append(guardWarnings, w)
-				}
+			if out.Warning != nil {
+				guardWarnings = append(guardWarnings, *out.Warning)
 			}
 
 			msgs = append(msgs, chat.Message{
 				Role:       "tool",
-				Content:    content,
+				Content:    out.Content,
 				ToolCallID: tc.ID,
 				Name:       tc.Function.Name,
 			})

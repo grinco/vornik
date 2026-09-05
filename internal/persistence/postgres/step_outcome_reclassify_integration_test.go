@@ -241,3 +241,96 @@ func migrationDownSQL(t *testing.T, version int) string {
 	t.Fatalf("migration %d not found", version)
 	return ""
 }
+
+// TestMigration173_DownRestoresOnlyWhatUpChanged — regression for the
+// 2026-09-03 four-week audit's P2 on migration 173.
+//
+// 173's Down was unbounded:
+//
+//	UPDATE execution_step_outcomes SET error_class = 'unclassified'
+//	 WHERE error_class = 'model_unhealthy';
+//
+// Its comment argued "every row this touched held that value" — true only at the
+// instant Up ran. 173 ships alongside the LIVE classifier (4d951edb), which
+// writes 'model_unhealthy' on new rows from the moment of deploy, so a later
+// Rollback reclassified every legitimately-classified row back to
+// 'unclassified' and silently discarded real evidence of genuine circuit-open
+// events. glm-5.2 was open 2026-08-28 to 08-31, so this had live rows to destroy.
+//
+// 170's Down — hardened in the same file just before 173 was added — already
+// established the discipline; 173 simply never received it, and had no test.
+//
+// Two rows, and the SECOND is the whole point: one historical row Up would have
+// touched, and one written by the live classifier after the migration ran.
+//
+// KNOWN LIMIT, deliberately not asserted here: the bound is applied_at of the
+// migrations row, so Up -> live traffic -> Up -> Down would over-revert the rows
+// written between the two Ups (the second applied_at postdates them). The design
+// (2026-09-02-model-unhealthy-classification-design.md, 173 amendment) records
+// this and the operator rule that follows — do not re-run Up before a Down.
+// This test verifies the common case only; a reader must not take it as proof
+// the bound is complete (companion review 2026-09-03, F1).
+func TestMigration173_DownRestoresOnlyWhatUpChanged(t *testing.T) {
+	db := newIntegrationDB(t)
+	ctx := context.Background()
+
+	stamp := time.Now().UnixNano()
+	historical := fmt.Sprintf("m173-hist-%d", stamp)
+	live := fmt.Sprintf("m173-live-%d", stamp)
+
+	// The historical row: recorded BEFORE the migration ran, carrying the
+	// container log Up matches on. This is the row Up converts.
+	if _, err := db.DB.ExecContext(ctx, `
+		INSERT INTO execution_step_outcomes
+			(id, project_id, task_id, execution_id, step_id, role, model,
+			 outcome, error_class, error_detail, recorded_at)
+		VALUES ($1,'p','t','e','s','worker','m','failed','unclassified',
+		        'agent reported FAILED status: MODEL_UNHEALTHY circuit open',
+		        COALESCE((SELECT applied_at FROM migrations WHERE version = 173), now())
+		          - interval '1 day')`, historical); err != nil {
+		t.Fatalf("seed historical: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.DB.Exec(`DELETE FROM execution_step_outcomes WHERE id = $1`, historical) })
+
+	// The live-classifier row: recorded AFTER the migration, already classified
+	// by the shipping classifier rather than by Up. Down must not touch it.
+	if _, err := db.DB.ExecContext(ctx, `
+		INSERT INTO execution_step_outcomes
+			(id, project_id, task_id, execution_id, step_id, role, model,
+			 outcome, error_class, error_detail, recorded_at)
+		VALUES ($1,'p','t','e','s','worker','m','failed','model_unhealthy',
+		        'agent reported FAILED status: MODEL_UNHEALTHY circuit open',
+		        COALESCE((SELECT applied_at FROM migrations WHERE version = 173), now())
+		          + interval '1 day')`, live); err != nil {
+		t.Fatalf("seed live: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.DB.Exec(`DELETE FROM execution_step_outcomes WHERE id = $1`, live) })
+
+	classOf := func(id string) string {
+		var c string
+		if err := db.DB.QueryRowContext(ctx,
+			`SELECT error_class FROM execution_step_outcomes WHERE id = $1`, id).Scan(&c); err != nil {
+			t.Fatalf("read back %s: %v", id, err)
+		}
+		return c
+	}
+
+	if _, err := db.DB.ExecContext(ctx, migrationUpSQL(t, 173)); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if got := classOf(historical); got != "model_unhealthy" {
+		t.Fatalf("after Up: historical row error_class = %q, want model_unhealthy", got)
+	}
+
+	if _, err := db.DB.ExecContext(ctx, migrationDownSQL(t, 173)); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if got := classOf(historical); got != "unclassified" {
+		t.Errorf("after Down: historical row error_class = %q, want unclassified — "+
+			"Down did not restore a row Up had changed", got)
+	}
+	if got := classOf(live); got != "model_unhealthy" {
+		t.Errorf("after Down: LIVE-classifier row error_class = %q, want model_unhealthy — "+
+			"an unbounded Down discarded a legitimate classification the migration never made", got)
+	}
+}

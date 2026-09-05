@@ -123,3 +123,27 @@ func ParseCommandFor(handle, body string) Command {
 		return CmdNone
 	}
 }
+
+// IsTrustedAssociation reports whether a commenter may spend the project's
+// review budget, from GitHub's own `author_association` on the comment.
+//
+// Only people with standing in the repository qualify. CONTRIBUTOR is
+// deliberately EXCLUDED: on GitHub it means "has had a pull request merged
+// here", which is a statement about the past, not permission to trigger model
+// spend at will. Anything unrecognised or absent is untrusted, so a payload
+// shape we do not know about fails closed rather than open.
+//
+// IT LIVES HERE, not in a provider package, because this project has two forge
+// ingresses and the rule must be the same one for both. It was written inside
+// internal/forge/github when the generic webhook path got its gate (9ecedb2c),
+// which is exactly why the GitHub App channel — dispatching the identical
+// command grammar — shipped with no author gate at all until the 2026-09-03
+// audit. A rule that only one ingress can reach is not a rule.
+func IsTrustedAssociation(assoc string) bool {
+	switch strings.ToUpper(strings.TrimSpace(assoc)) {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
+}

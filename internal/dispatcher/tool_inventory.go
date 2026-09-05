@@ -40,12 +40,44 @@ func (a *Agent) InventoryTools() []ToolInfo {
 	// Agent. nil-safe: tests that build Agent directly without
 	// going through NewAgent will see te==nil and every wired-repo
 	// check returns false.
-	te := a.toolExecutor
+	gating := a.inventoryBacking()
 
-	gating := map[string]struct {
-		backingService string
-		available      bool
-	}{
+	tools := RegisteredDispatcherTools()
+	out := make([]ToolInfo, 0, len(tools))
+	for _, t := range tools {
+		info := ToolInfo{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+		}
+		if g, ok := gating[t.Function.Name]; ok {
+			info.BackingService = g.backingService
+			info.Available = g.available
+		} else {
+			// Unreachable when TestInventoryTools_BackingIsDeclaredForExactlyTheRegisteredTools
+			// passes; kept so a build that skipped tests still renders the gap
+			// as unavailable rather than as a crash.
+			info.Available = false
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+// toolBacking is one tool's dependency declaration: the service label the
+// admin UI shows, and whether that service is wired on this Agent.
+type toolBacking struct {
+	backingService string
+	available      bool
+}
+
+// inventoryBacking is the ONE declaration of what each dispatcher tool needs.
+// Its key set is held equal to DispatcherTools() in both directions by
+// TestInventoryTools_BackingIsDeclaredForExactlyTheRegisteredTools, so a tool
+// is never registered without saying what it depends on, and no entry
+// outlives its tool.
+func (a *Agent) inventoryBacking() map[string]toolBacking {
+	te := a.toolExecutor
+	return map[string]toolBacking{
 		// Repo-backed: real deployment always supplies these (or
 		// the daemon would crash on first task lookup). We still
 		// report the wiring for completeness so an operator sees
@@ -61,7 +93,11 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		"list_artifacts":  {"ArtifactRepository", te != nil && te.artifactRepo != nil},
 		"send_artifact":   {"ArtifactRepository", te != nil && te.artifactRepo != nil},
 		"render_document": {"", true},
-		"read_artifact":   {"ArtifactRepository", te != nil && te.artifactRepo != nil},
+		// report_problem needs the problem-report seam; without it the tool
+		// answers that reporting is not configured. Declared 2026-09-05, when
+		// the two-way inventory test first named it as missing.
+		"report_problem": {"ProblemReports", te != nil && te.problemReports != nil},
+		"read_artifact":  {"ArtifactRepository", te != nil && te.artifactRepo != nil},
 
 		// Option-gated: nil reflects missing wiring. These are
 		// the ones admin ops actually care about — every gap
@@ -78,11 +114,17 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		// ProviderLister capability (design §5.5), so an operator
 		// sees the true "discovery available" state rather than a
 		// tool that always answers "not available on this daemon."
-		"list_apis":      {"APIClient", te != nil && te.apiClient != nil && implementsProviderLister(te.apiClient)},
-		"memory_search":  {"MemorySearcher", a.memory != nil},
-		"memory_correct": {"MemoryCorrector", a.memoryCorrector != nil},
-		"memory_forget":  {"MemoryCorrector", a.memoryCorrector != nil},
-		"set_reminder":   {"ReminderRepository", te != nil && te.reminderRepo != nil},
+		"list_apis":     {"APIClient", te != nil && te.apiClient != nil && implementsProviderLister(te.apiClient)},
+		"memory_search": {"MemorySearcher", a.memory != nil},
+		"remember":      {"MemoryWrite", te != nil && te.memoryWrite != nil},
+		// get_channel_thread reads the lead's own channel thread through the
+		// channelThreads seam. It was registered without a backing entry
+		// until 2026-09-05 and so rendered as unavailable in the admin
+		// inventory whatever was wired — the gap the two-way test now names.
+		getChannelThreadName: {"ChannelThreads", te != nil && te.channelThreads != nil},
+		"memory_correct":     {"MemoryCorrector", a.memoryCorrector != nil},
+		"memory_forget":      {"MemoryCorrector", a.memoryCorrector != nil},
+		"set_reminder":       {"ReminderRepository", te != nil && te.reminderRepo != nil},
 		"cancel_reminder": {
 			"ReminderRepository",
 			te != nil && te.reminderRepo != nil,
@@ -113,24 +155,4 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		"switch_project": {"", true},
 		"tool_search":    {"", true},
 	}
-
-	tools := DispatcherTools()
-	out := make([]ToolInfo, 0, len(tools))
-	for _, t := range tools {
-		info := ToolInfo{
-			Name:        t.Function.Name,
-			Description: t.Function.Description,
-		}
-		if g, ok := gating[t.Function.Name]; ok {
-			info.BackingService = g.backingService
-			info.Available = g.available
-		} else {
-			// Unknown tool — register a row with Available=false
-			// so the UI surfaces the gap (means a tool was added
-			// in DispatcherTools but not declared here).
-			info.Available = false
-		}
-		out = append(out, info)
-	}
-	return out
 }

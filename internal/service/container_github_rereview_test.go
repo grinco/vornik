@@ -142,7 +142,7 @@ func TestGitHubConfig_ReReviewKnobs_ReachTheInstallation(t *testing.T) {
 	}
 	t.Setenv("GH_SECRET_RR_TEST", "shhh")
 
-	cfg, err := resolveGitHubAppConfig(p)
+	cfg, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: p})
 	if err != nil {
 		t.Fatalf("resolveGitHubAppConfig: %v", err)
 	}

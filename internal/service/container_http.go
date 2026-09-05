@@ -258,6 +258,10 @@ func (c *Container) initHTTPServer() error {
 		api.WithRateLimiter(c.rateLimiter),
 		api.WithTaskCreator(taskCreator),
 		api.WithConfig(c.Config),
+		api.WithConfigSnapshot(&c.configSnapshot),
+		api.WithStepPromptRepository(c.repos.StepPrompts),
+		api.WithLLMExchangeRepository(c.repos.LLMExchanges),
+		api.WithExchangeRedactor(c.exchangeRedactor()),
 		// Art 50(1) gate for gateway providers configured as publication
 		// surfaces (G6 finding B). Built in initDatabase, which runs before
 		// initHTTPServer; the gate refuses publication writes if it is ever nil.
@@ -1542,6 +1546,7 @@ func (c *Container) initHTTPServer() error {
 		ui.WithAPIKeyRepository(c.repos.APIKeys),
 		ui.WithLLMUsageRepository(c.repos.LLMUsage),
 		ui.WithStepOutcomeRepository(c.repos.StepOutcomes),
+		ui.WithLLMExchangeRepository(c.repos.LLMExchanges),
 		// Narrated Execution story panel (task 2.2) — read-only against
 		// the 2.1 narrator's execution_narration store.
 		ui.WithExecutionNarrationRepository(c.repos.ExecutionNarration),
@@ -1751,6 +1756,7 @@ func (c *Container) initHTTPServer() error {
 	uiOpts = append(uiOpts, ui.WithRetentionDefaults(registry.ProjectRetention{
 		TaskLLMUsageDays: c.Config.Retention.TaskLLMUsageDays,
 		ToolAuditDays:    c.Config.Retention.ToolAuditDays,
+		ChatAuditDays:    c.Config.Retention.ChatAuditDays,
 		TasksDays:        c.Config.Retention.TasksDays,
 		ExecutionsDays:   c.Config.Retention.ExecutionsDays,
 		ArtifactsDays:    c.Config.Retention.ArtifactsDays,

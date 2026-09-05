@@ -102,6 +102,11 @@ type ExecutorInterface interface {
 	// surface so the operator doesn't have to wait for a daemon
 	// restart's Recover() loop to pick the rewound execution up.
 	ResumePaused(executionID string) error
+	// RetryFromStep rewinds a terminal execution to a completed step or its
+	// current step and relaunches it. The executor is the ONLY writer of the
+	// rewound state; the UI's retry-from-step action must call this rather
+	// than assemble a snapshot itself (2026-09-04).
+	RetryFromStep(ctx context.Context, executionID, stepID string) error
 	// NotifyChildTerminal drives the parent-unblock sweep when a
 	// child reaches a terminal status outside the executor's own
 	// flow (e.g. the UI close path setting CLOSED on an
@@ -213,8 +218,12 @@ type Server struct {
 	assistantSpend llmspend.Recorder
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
-	apiKeyRepo       persistence.APIKeyRepository
-	outcomeRepo      persistence.ExecutionStepOutcomeRepository
+	apiKeyRepo  persistence.APIKeyRepository
+	outcomeRepo persistence.ExecutionStepOutcomeRepository
+	// llmExchangeRepo answers "did this execution record its model
+	// exchanges?" so the execution page can offer the link only when there
+	// is something behind it (llm-exchange record/replay design §7).
+	llmExchangeRepo  persistence.LLMExchangeRepository
 	judgeVerdictRepo persistence.TaskJudgeVerdictRepository
 	// narrationRepo backs the Narrated Execution "story" panel on the
 	// live task page and the task-detail page (task 2.2, narrated-
@@ -1434,6 +1443,14 @@ func WithKnowledgeGraphReader(r KnowledgeGraphReader) ServerOption {
 func WithStepOutcomeRepository(repo persistence.ExecutionStepOutcomeRepository) ServerOption {
 	return func(s *Server) {
 		s.outcomeRepo = repo
+	}
+}
+
+// WithLLMExchangeRepository wires the recorded-exchange store for the
+// execution page's per-step "exchanges" link.
+func WithLLMExchangeRepository(repo persistence.LLMExchangeRepository) ServerOption {
+	return func(s *Server) {
+		s.llmExchangeRepo = repo
 	}
 }
 

@@ -144,6 +144,7 @@ func runRetention(cmd *cobra.Command, args []string) error {
 	defaults := retention.Policy{
 		TaskLLMUsageDays:          cfg.Retention.TaskLLMUsageDays,
 		ToolAuditDays:             cfg.Retention.ToolAuditDays,
+		ChatAuditDays:             cfg.Retention.ChatAuditDays,
 		TasksDays:                 cfg.Retention.TasksDays,
 		ExecutionsDays:            cfg.Retention.ExecutionsDays,
 		ArtifactsDays:             cfg.Retention.ArtifactsDays,
@@ -192,13 +193,29 @@ func runRetention(cmd *cobra.Command, args []string) error {
 		MemoryIngestAudit     int    `json:"memory_ingest_audit"`
 		MemoryPolicyEvalAllow int    `json:"memory_policy_eval_allow"`
 		MemoryPolicyEvalBlock int    `json:"memory_policy_eval_block"`
-		Error                 string `json:"error,omitempty"`
+		// ChatAuditLog is genuinely per project (the prune is project-scoped).
+		// step_prompts and chat_system_prompts are NOT — see globalCounts.
+		ChatAuditLog int    `json:"chat_audit_log"`
+		Error        string `json:"error,omitempty"`
 	}
+	// The content-addressed prompt stores are pruned BY REFERENCE, not by
+	// project: a body is shared across projects when its bytes are, so the
+	// sweeper's count for them is a property of the whole database that each
+	// per-project pass reports again. Rendering it in the per-project table
+	// made a column an operator would sum — 6 unreferenced bodies read as 48
+	// across eight projects. Reported once, below the table, instead.
+	//
+	// PREVIEW takes the max and APPLY the sum, and the difference is real: in
+	// preview every pass measures the same untouched set, so they are all the
+	// same number; under --apply the first pass deletes them and the rest
+	// legitimately find nothing, so the sum is what was actually removed.
+	var globalStepPrompts, globalChatPrompts, globalLLMExchanges int
 	rows := make([]projectCounts, 0, len(projects))
 	for _, p := range projects {
 		policy := retention.Resolve(p.ID, retention.Policy{
 			TaskLLMUsageDays:          p.Retention.TaskLLMUsageDays,
 			ToolAuditDays:             p.Retention.ToolAuditDays,
+			ChatAuditDays:             p.Retention.ChatAuditDays,
 			TasksDays:                 p.Retention.TasksDays,
 			ExecutionsDays:            p.Retention.ExecutionsDays,
 			ArtifactsDays:             p.Retention.ArtifactsDays,
@@ -231,7 +248,11 @@ func runRetention(cmd *cobra.Command, args []string) error {
 			MemoryIngestAudit:     counts.MemoryIngestAudit,
 			MemoryPolicyEvalAllow: counts.MemoryPolicyEvalAllow,
 			MemoryPolicyEvalBlock: counts.MemoryPolicyEvalBlock,
+			ChatAuditLog:          counts.ChatAuditLog,
 		}
+		globalStepPrompts = accumulateGlobal(globalStepPrompts, counts.StepPrompts, retentionApply)
+		globalChatPrompts = accumulateGlobal(globalChatPrompts, counts.ChatSystemPrompts, retentionApply)
+		globalLLMExchanges = accumulateGlobal(globalLLMExchanges, counts.LLMExchanges, retentionApply)
 		if sErr != nil {
 			row.Error = sErr.Error()
 			if !retentionJSON {
@@ -246,8 +267,17 @@ func runRetention(cmd *cobra.Command, args []string) error {
 		// in-band so wrapper scripts don't have to multiplex stderr.
 		out := struct {
 			Applied  bool            `json:"applied"`
+			Global   globalCounts    `json:"global"`
 			Projects []projectCounts `json:"projects"`
-		}{Applied: retentionApply, Projects: rows}
+		}{
+			Applied: retentionApply,
+			Global: globalCounts{
+				StepPrompts:       globalStepPrompts,
+				ChatSystemPrompts: globalChatPrompts,
+				LLMExchanges:      globalLLMExchanges,
+			},
+			Projects: rows,
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
@@ -260,17 +290,52 @@ func runRetention(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "project\tllm_usage\taudit\ttasks\texecutions\tartifacts\tfiles\ttask_msgs\tmem_chunks\tingest_audit\tfw_eval_allow\tfw_eval_block"); err != nil {
+	if _, err := fmt.Fprintln(tw, "project\tllm_usage\taudit\ttasks\texecutions\tartifacts\tfiles\ttask_msgs\tmem_chunks\tingest_audit\tfw_eval_allow\tfw_eval_block\tchat_audit"); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
 	for _, row := range rows {
-		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
 			row.Project, row.LLMUsage, row.ToolAudit, row.Tasks,
 			row.Executions, row.Artifacts, row.ArtifactFiles,
 			row.TaskMessages, row.MemoryChunks, row.MemoryIngestAudit,
-			row.MemoryPolicyEvalAllow, row.MemoryPolicyEvalBlock); err != nil {
+			row.MemoryPolicyEvalAllow, row.MemoryPolicyEvalBlock,
+			row.ChatAuditLog); err != nil {
 			return fmt.Errorf("write row: %w", err)
 		}
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	// Printed once, and said to be global, because it is: these bodies are
+	// shared across projects and pruned by reference.
+	_, _ = fmt.Fprintf(os.Stdout,
+		"\ncontent-addressed prompt bodies nothing references (GLOBAL, not per project):\n"+
+			"  step_prompts %d  •  chat_system_prompts %d  •  llm_exchanges (execution gone) %d\n",
+		globalStepPrompts, globalChatPrompts, globalLLMExchanges)
+	return nil
+}
+
+// accumulateGlobal folds one project pass's count of a GLOBAL prune into the
+// running total, and the two modes genuinely differ:
+//
+//   - preview: every pass measures the same untouched set, so they all report
+//     the same number and the answer is that number, not its multiple;
+//   - apply: the first pass deletes the set and later passes legitimately find
+//     nothing, so the sum is what was actually removed.
+//
+// Summing in preview is the defect this replaces: six unreferenced prompt
+// bodies rendered as forty-eight across eight projects.
+func accumulateGlobal(running, pass int, applied bool) int {
+	if applied {
+		return running + pass
+	}
+	return max(running, pass)
+}
+
+// globalCounts are the sweeper results that belong to the database rather than
+// to any one project.
+type globalCounts struct {
+	StepPrompts       int `json:"step_prompts"`
+	ChatSystemPrompts int `json:"chat_system_prompts"`
+	LLMExchanges      int `json:"llm_exchanges"`
 }

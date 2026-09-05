@@ -105,7 +105,7 @@ func buildGitHubChannelWithTaskCreator(
 	// path is the existing container_github_test.go suite.
 	if len(enabled) == 1 {
 		picked := enabled[0]
-		cfg, err := resolveGitHubAppConfig(picked.GitHubApp)
+		cfg, err := resolveGitHubAppConfig(picked)
 		if err != nil {
 			return nil, []*registry.Project{picked}, fmt.Errorf("project %q github_app: %w", picked.ID, err)
 		}
@@ -128,7 +128,7 @@ func buildGitHubChannelWithTaskCreator(
 	// project's values win and the rest are checked for
 	// consistency. Mismatch aborts boot.
 	first := enabled[0]
-	baseCfg, err := resolveGitHubAppConfig(first.GitHubApp)
+	baseCfg, err := resolveGitHubAppConfig(first)
 	if err != nil {
 		return nil, enabled, fmt.Errorf("project %q github_app: %w", first.ID, err)
 	}
@@ -136,7 +136,7 @@ func buildGitHubChannelWithTaskCreator(
 	installs = append(installs, installationConfigFromConfigWithTaskCreator(first.ID, baseCfg, taskCreatorFor, first))
 
 	for _, p := range enabled[1:] {
-		cfg, err := resolveGitHubAppConfig(p.GitHubApp)
+		cfg, err := resolveGitHubAppConfig(p)
 		if err != nil {
 			return nil, enabled, fmt.Errorf("project %q github_app: %w", p.ID, err)
 		}
@@ -200,6 +200,7 @@ func installationConfigFromConfig(projectID string, cfg github.Config) github.In
 		TaskLabels:      cfg.TaskLabels,
 		PRReviewLabels:  cfg.PRReviewLabels,
 		SenderAllowlist: cfg.SenderAllowlist,
+		MentionHandle:   cfg.MentionHandle,
 
 		AutoReviewOnPush: cfg.AutoReviewOnPush,
 		ReviewDraftPRs:   cfg.ReviewDraftPRs,
@@ -218,12 +219,13 @@ func projectIDs(ps []*registry.Project) []string {
 	return out
 }
 
-// resolveGitHubAppConfig translates a ProjectGitHubApp YAML block
+// resolveGitHubAppConfig translates a project's github_app YAML block
 // into the github.Config the channel constructor consumes:
 // secrets are read from env vars (mirrors ProjectWebhookSource.SecretEnv),
 // the private key is loaded from disk and parsed, and string
 // allowlists pass through verbatim.
-func resolveGitHubAppConfig(p registry.ProjectGitHubApp) (github.Config, error) {
+func resolveGitHubAppConfig(project *registry.Project) (github.Config, error) {
+	p := project.GitHubApp
 	secret := os.Getenv(p.WebhookSecretEnv)
 	if strings.TrimSpace(secret) == "" {
 		return github.Config{}, fmt.Errorf("webhook_secret_env %q is unset or empty", p.WebhookSecretEnv)
@@ -238,6 +240,11 @@ func resolveGitHubAppConfig(p registry.ProjectGitHubApp) (github.Config, error) 
 		TaskLabels:      p.TaskLabels,
 		PRReviewLabels:  p.PRReviewLabels,
 		SenderAllowlist: p.SenderAllowlist,
+		// From the project's `forge.mention_handle`, NOT a github_app key: the
+		// handle is one setting for both forge ingresses, and giving this one
+		// its own key would let a deployment answer commands under two
+		// different names.
+		MentionHandle: project.MentionHandle(),
 
 		AutoReviewOnPush: p.AutoReviewOnPush,
 		ReviewDraftPRs:   p.ReviewDraftPRs,

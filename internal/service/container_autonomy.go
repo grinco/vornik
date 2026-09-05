@@ -232,6 +232,7 @@ func (c *Container) initRetention() {
 	defaults := retention.Policy{
 		TaskLLMUsageDays:          cfg.TaskLLMUsageDays,
 		ToolAuditDays:             cfg.ToolAuditDays,
+		ChatAuditDays:             cfg.ChatAuditDays,
 		TasksDays:                 cfg.TasksDays,
 		ExecutionsDays:            cfg.ExecutionsDays,
 		ArtifactsDays:             cfg.ArtifactsDays,
@@ -240,6 +241,7 @@ func (c *Container) initRetention() {
 		MemoryIngestAuditDays:     cfg.MemoryIngestAuditDays,
 		MemoryPolicyEvalAllowDays: cfg.MemoryPolicyEvalAllowDays,
 		MemoryPolicyEvalBlockDays: cfg.MemoryPolicyEvalBlockDays,
+		MemoryEvictionAuditDays:   cfg.MemoryEvictionAuditDays,
 		ArtifactsRoot:             c.Config.Storage.ArtifactsPath,
 	}
 
@@ -316,6 +318,7 @@ func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Swe
 		policy := retention.Resolve(p.ID, retention.Policy{
 			TaskLLMUsageDays:          p.Retention.TaskLLMUsageDays,
 			ToolAuditDays:             p.Retention.ToolAuditDays,
+			ChatAuditDays:             p.Retention.ChatAuditDays,
 			TasksDays:                 p.Retention.TasksDays,
 			ExecutionsDays:            p.Retention.ExecutionsDays,
 			ArtifactsDays:             p.Retention.ArtifactsDays,
@@ -324,6 +327,7 @@ func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Swe
 			MemoryIngestAuditDays:     p.Retention.MemoryIngestAuditDays,
 			MemoryPolicyEvalAllowDays: p.Retention.MemoryPolicyEvalAllowDays,
 			MemoryPolicyEvalBlockDays: p.Retention.MemoryPolicyEvalBlockDays,
+			MemoryEvictionAuditDays:   p.Retention.MemoryEvictionAuditDays,
 		}, defaults)
 
 		counts, err := sweeper.Sweep(ctx, policy)

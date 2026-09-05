@@ -1,0 +1,19 @@
+{
+  "function": {
+    "description": "Read the full saved body for a prior compacted tool result by tool_call_id. Use only when the retained head/tail preview is insufficient.",
+    "name": "tool_result_read",
+    "parameters": {
+      "properties": {
+        "tool_call_id": {
+          "description": "The tool_call_id shown in the compacted tool result placeholder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

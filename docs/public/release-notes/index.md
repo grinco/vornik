@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: e814b233895a0968e92fb45aa20a5d6306d577e9640c3a1d40466ff15f213285
+      sha256: 343c03eae22720d7e9e299bdc3b20a5bb9e8f06282216c83c993b510e9310f17
 ---
 # Release Notes
 
@@ -14,6 +14,65 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.9.2
+
+**The agent's file and git tools moved from bash into a small Go helper inside
+the agent image.** Behaviour was recorded before anything moved and the port was
+checked against that recording, so what a tool returns is unchanged for valid
+UTF-8 content. You need the rebuilt agent image for this; the updater builds it.
+
+**Four tool-boundary escapes found by a code audit are closed.** A dangling
+symlink let `file_write` create a file outside the workspace, a planted
+temporary-file symlink let `file_edit` overwrite one, recursive `grep` could
+read one through a leaf symlink, and a git revision beginning with `-` was taken
+as an option. All four are fixed, each with the reproduction as a test.
+Exploiting any of them needed a role granted the tool plus a crafted argument or
+a planted link; none is a container escape. Alongside: reads no longer allocate
+the whole file before truncating, non-ASCII glob patterns match, `grep`'s
+`head_limit` must be at least 1, and `read_many_files` counts characters again
+and never cuts a multibyte character in half.
+
+**If `vornik-update.sh` has been failing since late August, this fixes it.** The
+updater could not build the agent image (`image build failed for
+ghcr.io/grinco/vornik-agent:latest`) because of how it read the image list;
+nothing was half-applied, but nothing updated either. Rerun it. It now also
+recreates the long-running sidecar containers (the scraper, and any other
+compose- or unit-run service built from a manifest image) when their image was
+rebuilt — previously they kept running the old image after every update, and
+nothing reported it. `--no-recreate-sidecars` opts out. The public agent image also gets
+a version tag on GHCR from this release on (`ghcr.io/grinco/vornik-agent:2026.9.2`);
+earlier releases only ever published `:latest`.
+
+**You can read what a step was told and what it handed back.**
+`vornikctl execution prompt <exec> <step>` shows the system prompt, user content
+and tools the step's model saw at its first request; `execution input` and
+`execution result` show the `task.json` the daemon wrote for the container and
+the `result.json` it wrote back. All three are stored after secret redaction and
+pruned with the step outcome that references them. A project can also opt in to
+recording every model exchange of its steps (`recording: {llm_exchanges: true}`,
+off by default because it costs storage) and export them with
+`vornikctl execution exchanges <exec> <step> --export` — the recording a replay
+test consumes.
+
+**`vornikctl config show --provenance`** says where every resolved value came
+from — file, environment, default or reload — and `--trees` indexes the registry
+the daemon is actually running.
+
+**Also in this release:** the Community `vornikctl support-report` collects the
+bundle locally and states the edition it really is; `vornikctl doctor` runs every
+check on SQLite; four SQLite-only persistence defects found by new shared
+backend tests are fixed; a model fallback gets one attempt and a slow model can
+trip its own breaker; pull-request review commands are gated on the author's
+standing in the repository, and a push during a review is no longer lost;
+`grpc` 1.83.1 closes a HIGH advisory.
+
+**Upgrade notes.** Migrations 174–178 apply on start, all additive. Rebuild the
+agent image (the updater does). The updater now recreates sidecar containers
+before restarting the daemon; a tool call in flight against one fails at that
+moment, inside the same window the restart already interrupts.
 
 ---
 

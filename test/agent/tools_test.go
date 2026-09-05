@@ -5,8 +5,6 @@
 package agent_test
 
 import (
-	"bytes"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -19,12 +17,5 @@ func TestAgentBuiltinTools(t *testing.T) {
 	}
 	script := filepath.Join(filepath.Dir(thisFile), "tools_test.sh")
 
-	cmd := exec.Command("bash", script)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("tools_test.sh failed: %v\n---\n%s", err, out.String())
-	}
-	t.Logf("tools_test.sh output:\n%s", out.String())
+	runShellTest(t, script)
 }

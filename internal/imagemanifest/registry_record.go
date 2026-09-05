@@ -3,6 +3,7 @@ package imagemanifest
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -92,6 +93,16 @@ func BuildRegistryRecord(idx IndexReader, images []Image, sourceCommit string) (
 			return nil, fmt.Errorf("%s: the published index lists no platforms "+
 				"(only attestation manifests?) — nothing here can be verified", img.Tag)
 		}
+		if missing := missingReleaseArches(platforms); len(missing) > 0 {
+			return nil, fmt.Errorf("%s: the published index covers %v but the release "+
+				"packages %v — missing %v. A record covering half the packages is worse "+
+				"than none: on a missing architecture the freshness check falls through to "+
+				"the commit comparison, which for a registry image can never match (the "+
+				"image carries a CE revision label, the record an EE commit), so every host "+
+				"on that architecture warns forever and cannot tell it from a real "+
+				"provenance failure. Republish the image for all release architectures",
+				img.Tag, sortedKeys(platforms), ReleaseArchitectures, missing)
+		}
 		entry.Digests = platforms
 		rec.Images = append(rec.Images, entry)
 	}
@@ -126,6 +137,38 @@ func (s SkopeoIndexReader) PlatformDigests(tag string) (map[string]string, error
 		return nil, err
 	}
 	return platformDigestsFromIndex(out)
+}
+
+// ReleaseArchitectures are the architectures this release packages as
+// first-class, and therefore the ones a registry-pinned image's index MUST
+// cover. It mirrors the `goarch:` matrix in .goreleaser.enterprise.yaml;
+// TestReleaseArchitecturesMatchGoreleaser fails if the two drift.
+//
+// The FULL_ARCH long tail (386, arm, ppc64le, s390x, riscv64, appended by
+// scripts/package-enterprise.sh) is deliberately NOT here. It is an opt-in
+// local build, not what the release publishes, and requiring it would fail
+// every ordinary release. An index that happens to carry an extra architecture
+// still has it RECORDED — recorded, never required.
+var ReleaseArchitectures = []string{"amd64", "arm64"}
+
+// missingReleaseArches reports which release architectures the index omits.
+func missingReleaseArches(platforms map[string]string) []string {
+	var missing []string
+	for _, arch := range ReleaseArchitectures {
+		if _, ok := platforms[arch]; !ok {
+			missing = append(missing, arch)
+		}
+	}
+	return missing
+}
+
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // platformDigestsFromIndex parses an OCI image index (or a Docker manifest

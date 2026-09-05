@@ -1,0 +1,45 @@
+{
+  "function": {
+    "description": "Search file contents for a regex pattern. Faster and more token-efficient than run_shell 'grep -r'. Default output is files_with_matches; switch to content mode only when you need line numbers and the matching lines themselves. Results are capped at head_limit lines (default 200) — if a search returns 'truncated' or you want narrower results, supply a more specific pattern, scope via path/glob, or raise head_limit.",
+    "name": "grep",
+    "parameters": {
+      "properties": {
+        "glob": {
+          "description": "Filename glob filter (e.g. '*.go', '**/*.py'). Default: all files.",
+          "type": "string"
+        },
+        "head_limit": {
+          "description": "Max result lines (at least 1). Default: 200.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ignore_case": {
+          "description": "Case-insensitive match.",
+          "type": "boolean"
+        },
+        "output_mode": {
+          "description": "files_with_matches (default): paths only. content: matching lines with line numbers. count: per-file match counts.",
+          "enum": [
+            "files_with_matches",
+            "content",
+            "count"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory to search under. Default: workspace root.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Regex pattern (POSIX extended).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

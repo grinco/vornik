@@ -157,8 +157,24 @@ type Config struct {
 	// all logins (dev-mode pass-through, matching Telegram's
 	// IsAllowed semantics).
 	//
+	// NOT AN AUTHORIZATION GATE FOR COMMANDS. Empty means allow-all, which is
+	// the permitted default, so this list cannot be what stands between a
+	// stranger and the review budget. Commands are gated on the commenter's
+	// author_association (see TaskCreationEvent.AuthorAssociation).
+	//
 	// Single-installation mode only.
 	SenderAllowlist []string
+
+	// MentionHandle is the bot handle commands and mentions are addressed to,
+	// WITHOUT the leading @. Empty falls back to forgereview.DefaultHandle,
+	// matching the generic ingress's provider (internal/forge/github).
+	//
+	// Deployment-specific: every CE customer installs their own GitHub App
+	// under their own name, whose slug a hardcoded handle would never match.
+	// This ingress hardcoded forgereview.DefaultHandle until the 2026-09-03
+	// audit, so a renamed bot silently matched nothing here while working on
+	// the generic path.
+	MentionHandle string
 
 	// Logger is the channel's zerolog instance. Zero-value is fine
 	// but produces no log output.
@@ -252,8 +268,14 @@ type InstallationConfig struct {
 
 	// SenderAllowlist lists GitHub login names allowed to trigger
 	// the @vornik reply path for this installation. Empty allows
-	// every login (dev-mode pass-through).
+	// every login (dev-mode pass-through) — see Config.SenderAllowlist for
+	// why that makes it unusable as a command-authorization gate.
 	SenderAllowlist []string
+
+	// MentionHandle is this installation's bot handle, WITHOUT the leading @.
+	// Empty falls back to forgereview.DefaultHandle. Per-installation because
+	// one daemon can serve several Apps, each with its own slug.
+	MentionHandle string
 
 	// TaskCreator is the per-installation TaskCreator. Nil disables
 	// the task-creation paths for this installation; the channel
@@ -331,6 +353,16 @@ type TaskCreationEvent struct {
 	// Set by the explicit "full review" command; consumed by phase 4.
 	FullReview bool
 
+	// AuthorAssociation is the commenter's standing in the repository, verbatim
+	// from GitHub's `author_association`. Carried so the task creator can set
+	// ForgeJob.AuthorIsTrusted and the shared coordinator can refuse a command
+	// from a stranger — a review is real model spend, so an ungated command on
+	// a public repository is a denial-of-wallet primitive.
+	//
+	// Empty for every non-comment trigger, which is correct: a push carries no
+	// author standing, and only OnDemand events are gated on this.
+	AuthorAssociation string
+
 	// HeadSHA is the pull request's head commit at the moment this delivery
 	// was produced. It is what a review COVERS, so coalescing records it as
 	// the newest observed head for the PR, and phase 4 uses it as the upper
@@ -399,6 +431,10 @@ type installation struct {
 	taskLabels   map[string]struct{}
 	prLabels     map[string]struct{}
 	senders      map[string]struct{}
+
+	// mentionHandle is the resolved bot handle for this installation, already
+	// defaulted — never empty, so no call site has to remember the fallback.
+	mentionHandle string
 
 	repoAllowlistRaw []string
 	taskLabelsRaw    []string
@@ -502,6 +538,7 @@ func resolveInstallations(cfg Config) ([]*installation, error) {
 			TaskLabels:      cfg.TaskLabels,
 			PRReviewLabels:  cfg.PRReviewLabels,
 			SenderAllowlist: cfg.SenderAllowlist,
+			MentionHandle:   cfg.MentionHandle,
 			TaskCreator:     cfg.TaskCreator,
 			// Single-installation mode mirrors the per-installation
 			// knobs, so the two modes cannot drift in what they gate.
@@ -547,10 +584,22 @@ func buildInstallation(ic InstallationConfig) *installation {
 		prLabelsRaw:      append([]string(nil), ic.PRReviewLabels...),
 		sendersRaw:       append([]string(nil), ic.SenderAllowlist...),
 		taskCreator:      ic.TaskCreator,
+		mentionHandle:    resolveMentionHandle(ic.MentionHandle),
 		// nil == unset == ON. See InstallationConfig.AutoReviewOnPush.
 		autoReviewOnPush: ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush,
 		reviewDraftPRs:   ic.ReviewDraftPRs,
 	}
+}
+
+// resolveMentionHandle applies the same unset→default rule the generic
+// ingress's provider applies (internal/forge/github Provider.mentionHandle),
+// so a deployment that configures nothing behaves identically on both paths
+// and one that configures a handle has it honoured on both.
+func resolveMentionHandle(configured string) string {
+	if h := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(configured), "@")); h != "" {
+		return h
+	}
+	return forgereview.DefaultHandle
 }
 
 // indexInstallations builds the installation_id → *installation
@@ -1025,6 +1074,13 @@ type eventPayload struct {
 			// a command could trigger itself (design §7.1).
 			Type string `json:"type"`
 		} `json:"user"`
+		// AuthorAssociation is GitHub's own statement of how this commenter
+		// stands to the repository — OWNER / MEMBER / COLLABORATOR /
+		// CONTRIBUTOR / NONE. It is the author-trust gate for commands
+		// (design §7.1); this ingress carried no such field at all until the
+		// 2026-09-03 audit, so the coordinator had nothing to check and every
+		// commenter was implicitly trusted.
+		AuthorAssociation string `json:"author_association"`
 	} `json:"comment,omitempty"`
 
 	// PullRequest is populated on `pull_request` events.
@@ -1120,7 +1176,7 @@ func (c *Channel) handleIssueComment(ctx context.Context, event, delivery string
 	if p.Issue == nil || p.Comment == nil {
 		return
 	}
-	if !mentionsVornik(p.Comment.Body) {
+	if !mentionsHandle(p.Comment.Body, inst.mentionHandle) {
 		return // quiet discard; not all comments are for us
 	}
 	// LOOP GUARD, BEFORE ANYTHING ELSE (design §7.1). The review this system
@@ -1321,13 +1377,6 @@ func (c *Channel) buildCommentChannelMessage(p eventPayload, delivery string) co
 	}
 }
 
-// mentionsVornik returns true when the body contains `@vornik`
-// case-insensitively. Word-boundary aware so `@vornik-deploy`
-// doesn't trigger.
-func mentionsVornik(body string) bool {
-	return mentionsHandle(body, forgereview.DefaultHandle)
-}
-
 // mentionsHandle reports whether body @-mentions handle as a whole word.
 //
 // The handle is a parameter because it is deployment-specific: a CE customer
@@ -1416,7 +1465,7 @@ type ReviewController interface {
 // public repository a command is real model spend and the review it starts
 // cannot be recalled once posted.
 func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery string, p eventPayload, inst *installation) bool {
-	cmd := forgereview.ParseCommandFor(forgereview.DefaultHandle, p.Comment.Body)
+	cmd := forgereview.ParseCommandFor(inst.mentionHandle, p.Comment.Body)
 	if cmd == forgereview.CmdNone {
 		return false
 	}
@@ -1429,6 +1478,26 @@ func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery strin
 		Str("sender", p.Comment.User.Login).
 		Str("command", cmd.String()).
 		Logger()
+
+	// AUTHOR TRUST, before any command acts. The doc comment above says the
+	// sender allowlist has already been applied — true, but that list is
+	// documented and coded as "empty allows all logins", so on a public
+	// repository with the permitted default it authorizes nothing. A review is
+	// real model spend and pause silences automatic review of a PR; both were
+	// reachable by any account that could type a comment until the 2026-09-03
+	// audit.
+	//
+	// The refusal is HERE as well as in the shared coordinator (which is the
+	// floor under both ingresses) because pause/resume never reach the
+	// coordinator at all — they are state writes, not task creations — and
+	// because refusing before Create means no task row is written for a
+	// request that was never allowed.
+	if !forgereview.IsTrustedAssociation(p.Comment.AuthorAssociation) {
+		log.Warn().
+			Str("author_association", p.Comment.AuthorAssociation).
+			Msg("github-app: command from an author without repository standing; refusing")
+		return true
+	}
 
 	switch cmd {
 	case forgereview.CmdPause, forgereview.CmdResume:
@@ -1457,11 +1526,12 @@ func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery strin
 		Repo:        p.Repository.FullName,
 		Number:      p.Issue.Number,
 		// A human asked; never coalesce it away.
-		OnDemand:       true,
-		FullReview:     cmd == forgereview.CmdFullReview,
-		DefaultBranch:  p.Repository.DefaultBranch,
-		InstallationID: p.Installation.ID,
-		IdempotencyKey: "github-app:" + delivery,
+		OnDemand:          true,
+		FullReview:        cmd == forgereview.CmdFullReview,
+		AuthorAssociation: p.Comment.AuthorAssociation,
+		DefaultBranch:     p.Repository.DefaultBranch,
+		InstallationID:    p.Installation.ID,
+		IdempotencyKey:    "github-app:" + delivery,
 	}
 	if err := inst.taskCreator.Create(ctx, ev); err != nil {
 		log.Warn().Err(err).Msg("github-app: review command task creation failed")

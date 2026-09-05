@@ -332,6 +332,12 @@ func WithProviders(set ProviderSet) ContainerOption {
 	return func(c *Container) { c.providers = set }
 }
 
+// WithBootProvenance attaches the provenance the boot-time loader recorded, so
+// the first `config show --provenance` answers without a second load.
+func WithBootProvenance(p *config.Provenance) ContainerOption {
+	return func(c *Container) { c.bootProvenance = p }
+}
+
 // WithEdition stamps the build edition during construction.
 //
 // Use this rather than calling SetEdition after NewContainer returns:

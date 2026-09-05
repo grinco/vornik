@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "Search the deferred MCP tool catalogue and expose matching tools for the next turn. Use this when you need an MCP/integration tool that is not currently visible.",
+    "name": "tool_search",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Maximum matches to expose. Default 8.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Natural language description or exact MCP tool name to search for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

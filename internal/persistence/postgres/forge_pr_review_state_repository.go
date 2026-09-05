@@ -132,19 +132,42 @@ func (r *ForgePRReviewStateRepository) SetPaused(ctx context.Context, projectID,
 }
 
 // BeginClosing releases the claim and records the head this review fetched, in
-// one statement so the pair cannot be separated.
-func (r *ForgePRReviewStateRepository) BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA string) error {
-	_, err := r.db.ExecContext(ctx,
+// one statement so the pair cannot be separated — and only while the row's
+// pending head is still the one the caller read (see the interface godoc: this
+// compare-and-set is what restores §5.2's atomicity across the caller's forge
+// round-trip).
+//
+// The DO UPDATE carries the predicate rather than a preceding SELECT: a read
+// then a write would leave exactly the window this closes.
+func (r *ForgePRReviewStateRepository) BeginClosing(ctx context.Context, projectID, repo string, number int, reviewingHeadSHA, expectedPendingHeadSHA string) (persistence.ClosingOutcome, error) {
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO forge_pr_review_state
-		        (project_id, repo, number, task_id, reviewing_head_sha, updated_at)
-		 VALUES ($1, $2, $3, '', $4, now())
+		        (project_id, repo, number, task_id, pending_head_sha, reviewing_head_sha, updated_at)
+		 VALUES ($1, $2, $3, '', $5, $4, now())
 		 ON CONFLICT (project_id, repo, number) DO UPDATE
 		    SET task_id            = '',
 		        reviewing_head_sha = EXCLUDED.reviewing_head_sha,
-		        updated_at         = now()`,
-		projectID, repo, number, reviewingHeadSHA)
+		        updated_at         = now()
+		  WHERE COALESCE(forge_pr_review_state.pending_head_sha, '') = $5`,
+		projectID, repo, number, reviewingHeadSHA, expectedPendingHeadSHA)
 	if err != nil {
-		return fmt.Errorf("postgres: forge_pr_review_state begin closing: %w", err)
+		return persistence.ClosingOutcome{}, fmt.Errorf("postgres: forge_pr_review_state begin closing: %w", err)
 	}
-	return nil
+	if n, aerr := res.RowsAffected(); aerr == nil && n > 0 {
+		return persistence.ClosingOutcome{Applied: true}, nil
+	}
+	// Not applied: a push landed during the caller's fetch. Report the head it
+	// moved to so the caller can fetch that instead of committing to a stale
+	// one. A row that vanished under us reads as an empty pending head, which
+	// sends the caller back through Get on its next attempt — the safe way
+	// round.
+	cur, gerr := r.Get(ctx, projectID, repo, number)
+	if gerr != nil {
+		return persistence.ClosingOutcome{}, fmt.Errorf("postgres: forge_pr_review_state begin closing: read superseding head: %w", gerr)
+	}
+	out := persistence.ClosingOutcome{}
+	if cur != nil {
+		out.PendingHeadSHA = cur.PendingHeadSHA
+	}
+	return out, nil
 }

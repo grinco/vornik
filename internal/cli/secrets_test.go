@@ -32,3 +32,29 @@ func TestParsePositiveInt(t *testing.T) {
 		t.Error("non-numeric should error")
 	}
 }
+
+// TestAccumulateGlobal — the retention report's two global prunes
+// (step_prompts, chat_system_prompts) are pruned BY REFERENCE across the whole
+// database, so every per-project pass reports the same set. Summing them in
+// preview turned six unreferenced prompt bodies into forty-eight across eight
+// projects — caught by running `vornikctl retention` against the live
+// deployment on 2026-09-04, hours after the column shipped.
+func TestAccumulateGlobal(t *testing.T) {
+	// Preview: eight passes, each measuring the same six bodies.
+	got := 0
+	for i := 0; i < 8; i++ {
+		got = accumulateGlobal(got, 6, false)
+	}
+	if got != 6 {
+		t.Errorf("preview over 8 projects = %d, want 6 (the same set measured 8 times)", got)
+	}
+
+	// Apply: the first pass removes them, the rest find nothing.
+	got = accumulateGlobal(0, 6, true)
+	for i := 0; i < 7; i++ {
+		got = accumulateGlobal(got, 0, true)
+	}
+	if got != 6 {
+		t.Errorf("apply over 8 projects = %d, want 6 (what was actually removed)", got)
+	}
+}

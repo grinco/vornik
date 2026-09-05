@@ -387,6 +387,14 @@ func forgeJobFromEvent(ev github.TaskCreationEvent) *forge.ForgeJob {
 		// explicit command asking to ignore that baseline.
 		HeadSHA:    ev.HeadSHA,
 		FullReview: ev.FullReview,
+		// AUTHORIZATION INPUTS for an explicitly requested review. The
+		// coordinator refuses an OnDemand job whose author has no standing in
+		// the repository, and it can only do that if the job carries both
+		// facts. This function set NEITHER until the 2026-09-03 audit, so
+		// every command arriving through the GitHub App channel presented
+		// itself as an untrusted-but-ungated request and was reviewed anyway.
+		OnDemand:        ev.OnDemand,
+		AuthorIsTrusted: forgereview.IsTrustedAssociation(ev.AuthorAssociation),
 	}
 }
 

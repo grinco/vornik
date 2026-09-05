@@ -245,6 +245,23 @@ type ReleaseOptions struct {
 	ErrorClass string
 }
 
+// The execution error_code an orphan sweep stamps. Constants rather than the
+// inline strings they were, because they are the marker an AUDIT reads to tell
+// sweep-finalized orphans from the per-task cascade and from genuine
+// cancellations — and the 2026-09-04 migration that reclassified their step
+// outcomes to `orphaned` is exactly such an audit (review-20260904-f276,
+// suggestion 3). A rename now trips over this comment.
+//
+// https://docs.vornik.io
+const (
+	// ExecErrCodeSupersededByTerminalTask — SupersedeNonTerminalForTask.
+	ExecErrCodeSupersededByTerminalTask = "superseded_by_terminal_task"
+	// ExecErrCodeSupersededByNewRun — SupersedeStaleForTaskStart.
+	ExecErrCodeSupersededByNewRun = "superseded_by_new_run"
+	// ExecErrCodeSupersededOrphanPaused — SupersedeOrphanPausedExecutions.
+	ExecErrCodeSupersededOrphanPaused = "superseded_orphan_paused"
+)
+
 // ExecutionRepository defines the interface for execution persistence operations.
 // ExecFailedRate is one project's failed vs total terminal-execution counts
 // over a window (control-plane Tune detector).
@@ -377,7 +394,37 @@ type ExecutionRepository interface {
 	GetByTaskIDs(ctx context.Context, taskIDs []string) (map[string]*Execution, error)
 
 	// Update modifies an existing execution.
+	//
+	// It writes the WHOLE row from the struct you hand it, including
+	// status and state_snapshot. Only call it with a struct you know is
+	// fresh: a stale one silently reinstates the status and checkpoint it
+	// was loaded with. That is not hypothetical — the executor used it to
+	// persist a single resolved workflow id and thereby erased concurrent
+	// pauses (pause-write-ownership design §3.2). Prefer a narrow writer
+	// (UpdateWorkflowID, UpdateStatus, SaveStateSnapshot) whenever you
+	// mean to change one field.
 	Update(ctx context.Context, execution *Execution) error
+
+	// UpdateWorkflowID persists the resolved workflow id and nothing else.
+	// The executor's dispatch path knows the authoritative workflow only
+	// after resolving the project config, and the row it created may carry
+	// a placeholder; this writes that one column without touching status or
+	// state_snapshot. See Update's warning for why the narrow form exists.
+	UpdateWorkflowID(ctx context.Context, id, workflowID string) error
+
+	// TransitionStatusConditional is the compare-and-set analog of
+	// UpdateStatus: it applies `to` only if the row's current status is one
+	// of `from`, and reports whether it did. The leaseless sibling of
+	// TaskRepository.TransitionConditional, and the same reason for
+	// existing — a status write that first READS to decide is a race
+	// wearing a check.
+	//
+	// The pause path is the caller: it must not reopen an execution that
+	// reached a terminal state (or was cancelled, or is already paused for
+	// a different reason) while the pause was being decided. An empty
+	// `from` is rejected rather than treated as "any status", so an
+	// unconditional overwrite cannot be spelled by accident.
+	TransitionStatusConditional(ctx context.Context, id string, from []ExecutionStatus, to ExecutionStatus) (bool, error)
 
 	// List retrieves executions based on filter criteria.
 	List(ctx context.Context, filter ExecutionFilter) ([]*Execution, error)

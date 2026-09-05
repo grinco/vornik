@@ -332,6 +332,7 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 	for key, days := range map[string]int{
 		"task_llm_usage_days":      cfg.Retention.TaskLLMUsageDays,
 		"tool_audit_days":          cfg.Retention.ToolAuditDays,
+		"chat_audit_days":          cfg.Retention.ChatAuditDays,
 		"tasks_days":               cfg.Retention.TasksDays,
 		"executions_days":          cfg.Retention.ExecutionsDays,
 		"artifacts_days":           cfg.Retention.ArtifactsDays,
@@ -477,6 +478,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
+	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
@@ -555,6 +557,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
+	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
@@ -586,15 +589,19 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 
 // checkStaleLeases finds tasks stuck in LEASED status with expired leases.
 func (h *DoctorHandlers) checkStaleLeases(ctx context.Context, fix bool) DoctorCheck {
+	// The clock comes from Go, not from the database: NOW() is Postgres-only
+	// and made this check report a driver error on every run of every SQLite
+	// deployment (doctor design, Extension 2026-09-04 E2). A bound parameter
+	// is portable, and it is also the form the rest of this file already uses.
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT id, project_id, lease_expires_at
 		FROM tasks
 		WHERE status IN ('LEASED', 'RUNNING')
 		  AND lease_expires_at IS NOT NULL
-		  AND lease_expires_at < NOW()
+		  AND lease_expires_at < $1
 		ORDER BY lease_expires_at ASC
 		LIMIT 100
-	`)
+	`, time.Now().UTC())
 	if err != nil {
 		return DoctorCheck{Name: "stale_leases", Status: "ERROR", Message: fmt.Sprintf("query failed: %v", err)}
 	}
@@ -640,9 +647,9 @@ func (h *DoctorHandlers) checkStaleLeases(ctx context.Context, fix bool) DoctorC
 				UPDATE tasks
 				SET status = 'QUEUED',
 				    lease_id = NULL, leased_at = NULL, leased_by = NULL, lease_expires_at = NULL,
-				    updated_at = NOW()
+				    updated_at = $2
 				WHERE id = $1 AND status IN ('LEASED', 'RUNNING')
-			`, t.id)
+			`, t.id, time.Now().UTC())
 			if err == nil {
 				check.Fixed++
 			}
@@ -725,14 +732,16 @@ func (h *DoctorHandlers) checkOrphanedWatchers(ctx context.Context, fix bool) Do
 // checkStuckExecutions finds executions in RUNNING/PENDING that have no
 // recent activity (older than 1 hour without a state snapshot update).
 func (h *DoctorHandlers) checkStuckExecutions(ctx context.Context, fix bool) DoctorCheck {
+	// The one-hour horizon is computed in Go: `NOW() - INTERVAL '1 hour'` is
+	// Postgres-only (design E2).
 	rows, err := h.db.QueryContext(ctx, `
 		SELECT e.id, e.task_id, e.project_id, e.status, e.created_at
 		FROM executions e
 		WHERE e.status IN ('RUNNING', 'PENDING')
-		  AND e.created_at < NOW() - INTERVAL '1 hour'
+		  AND e.created_at < $1
 		ORDER BY e.created_at ASC
 		LIMIT 100
-	`)
+	`, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		return DoctorCheck{Name: "stuck_executions", Status: "ERROR", Message: fmt.Sprintf("query failed: %v", err)}
 	}
@@ -787,9 +796,9 @@ func (h *DoctorHandlers) checkStuckExecutions(ctx context.Context, fix bool) Doc
 	if fix {
 		for _, s := range stuckExecs {
 			_, err := h.db.ExecContext(ctx, `
-				UPDATE executions SET status = 'FAILED', error_message = 'marked failed by vornikctl doctor', updated_at = NOW()
+				UPDATE executions SET status = 'FAILED', error_message = 'marked failed by vornikctl doctor', updated_at = $2
 				WHERE id = $1 AND status IN ('RUNNING', 'PENDING')
-			`, s.id)
+			`, s.id, time.Now().UTC())
 			if err == nil {
 				check.Fixed++
 			}
@@ -828,10 +837,10 @@ func (h *DoctorHandlers) checkTaskStateAudit(ctx context.Context, fix bool) Doct
 	if fix {
 		res, err := h.db.ExecContext(ctx, `
 			UPDATE tasks
-			SET lease_id = NULL, leased_at = NULL, leased_by = NULL, lease_expires_at = NULL, updated_at = NOW()
+			SET lease_id = NULL, leased_at = NULL, leased_by = NULL, lease_expires_at = NULL, updated_at = $1
 			WHERE status IN ('COMPLETED', 'FAILED', 'CANCELLED')
 			  AND lease_id IS NOT NULL
-		`)
+		`, time.Now().UTC())
 		if err == nil {
 			if n, _ := res.RowsAffected(); n > 0 {
 				check.Fixed = int(n)
@@ -1338,12 +1347,40 @@ func (h *DoctorHandlers) checkPricingCoverage() DoctorCheck {
 		add(model, surface)
 	}
 
+	// Priced ids indexed by their NORMALISED form, so a miss that is only a
+	// spelling difference can be named as one. Built once, not per miss.
+	pricedByNormal := map[string]string{}
+	for _, id := range table.IDs() {
+		if n := normaliseModelID(id); n != "" {
+			// table.IDs() is sorted, so a collision resolves deterministically
+			// to the first — the report is advisory, and a stable answer beats
+			// an arbitrary one.
+			if _, seen := pricedByNormal[n]; !seen {
+				pricedByNormal[n] = id
+			}
+		}
+	}
+
 	var missing []string
 	for model, surfaces := range refs {
 		if _, known := table.Lookup(model); known {
 			continue
 		}
 		sort.Strings(surfaces)
+		// A SPELLING VARIANT IS A DIFFERENT FINDING WITH A DIFFERENT REMEDY.
+		// Lookup is exact-match, so `DeepSeek-V4-Flash-0731` misses the priced
+		// `deepseek-v4-flash:0731` and bills at the fabricated default — the
+		// live 2026-08-23 case, ~15x input / ~17x output overstatement for
+		// weeks. Telling the operator to "add it to pricing.yaml" is the WRONG
+		// repair: it creates a second entry for one model and the two spellings
+		// then drift. The fix is to align the id, so the finding says that.
+		if priced, ok := pricedByNormal[normaliseModelID(model)]; ok {
+			missing = append(missing, fmt.Sprintf(
+				"%s — referenced by %s; NOT priced, but %q is: same id under a different spelling. "+
+					"Align the id rather than adding a second pricing entry, or the two spellings drift apart",
+				model, strings.Join(surfaces, ", "), priced))
+			continue
+		}
 		missing = append(missing, fmt.Sprintf("%s — referenced by %s; bills at the default rate, which is fabricated",
 			model, strings.Join(surfaces, ", ")))
 	}
@@ -1366,6 +1403,29 @@ func (h *DoctorHandlers) checkPricingCoverage() DoctorCheck {
 			len(missing), len(refs), scope),
 		Items: missing,
 	}
+}
+
+// normaliseModelID folds a model id to the form used ONLY to spot
+// spelling variants of an already-priced id. It is never used for pricing
+// lookup: billing stays exact-match, because guessing which entry an unknown id
+// meant is how a wrong rate becomes invisible.
+//
+// Case and separators are folded because that is the observed failure —
+// `DeepSeek-V4-Flash-0731` against the priced `deepseek-v4-flash:0731` differs
+// in both. Folding aggressively is safe HERE and nowhere else: the only
+// consequence is which advisory sentence the operator reads, and the id is
+// reported as unpriced either way.
+func normaliseModelID(id string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(id)) {
+		switch r {
+		case '-', '_', ':', '.', '/', ' ':
+			// separator noise, not identity
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // checkAutonomyBudgetGuard warns on projects with autonomy enabled but
@@ -1483,8 +1543,11 @@ func (h *DoctorHandlers) checkOrphanWorktrees(fix bool) DoctorCheck {
 	}
 	findings, projectsChecked, err := scanOrphanWorktrees(h.workspacesRoot, func(taskID string) (string, error) {
 		var status string
+		// No ::text cast: tasks.status is a Postgres enum, which database/sql
+		// scans into a string with or without the coercion, and the cast is a
+		// syntax error on SQLite (design E2).
 		err := h.db.QueryRowContext(context.Background(),
-			`SELECT status::text FROM tasks WHERE id = $1`, taskID,
+			`SELECT status FROM tasks WHERE id = $1`, taskID,
 		).Scan(&status)
 		return status, err
 	})

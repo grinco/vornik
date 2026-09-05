@@ -33,6 +33,32 @@ func buildOfflineDoctorReport(ctx context.Context) (doctorReport, string) {
 		Summary:   "offline",
 	}
 	cfg, cfgPath := offlineCheckConfig(&report)
+	return finishOfflineDoctorReport(ctx, cfg, cfgPath, report)
+}
+
+// BuildOfflineDoctorReportFrom runs the same static checks against a config the
+// caller has ALREADY loaded.
+//
+// It exists because config.Load() registers process-global flags (`--config`,
+// `--version`) on every call, so a second call in one process panics with
+// "flag redefined". The support bundle's local driver loads the config to open
+// the database and then runs this doctor for doctor.json — two loads in one
+// command, which would have crashed the CLI rather than produced a bundle.
+func buildOfflineDoctorReportFrom(ctx context.Context, cfg *config.Config, cfgPath string) (doctorReport, string) {
+	report := doctorReport{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Summary:   "offline",
+	}
+	report.Checks = append(report.Checks, doctorCheck{
+		Name: "config", Status: "ok", Message: "parsed OK",
+	})
+	return finishOfflineDoctorReport(ctx, cfg, cfgPath, report)
+}
+
+// finishOfflineDoctorReport runs the checks that follow the config check and
+// summarizes. Shared so the two entry points cannot drift into diagnosing
+// different things.
+func finishOfflineDoctorReport(ctx context.Context, cfg *config.Config, cfgPath string, report doctorReport) (doctorReport, string) {
 	if cfg != nil {
 		offlineCheckDatabase(ctx, cfg, &report)
 	}

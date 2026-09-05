@@ -230,6 +230,35 @@ const infraRetryMaxAttempts = 6
 // sequential glm-5 calls) is the canary.
 const infraRetryTimeoutAttempts = 2
 
+// fallbackInfraRetryMaxAttempts is the infra-retry budget for the MODEL
+// FALLBACK hop: one attempt, which is the attempt itself.
+//
+// The fallback used to inherit the primary's full ladder, because it re-ran the
+// step through the same wrapper. The 2026-07-11 circuit-breaker design says
+// otherwise and states it as arithmetic — "~5 container starts (vs ~12 today:
+// 6 primary ladder + 6 fallback ladder)" — and twelve is what happened.
+//
+// Measured 2026-09-04 over thirty days across ingest / adaptive / research /
+// plan-and-write: ZERO recoveries on any `*_model_fallback_infra_retryN` rung in
+// ~66 attempts, about 1.5 hours of wall clock. The asymmetry is not luck: an
+// infra retry re-runs an IDENTICAL call, and by the time the fallback runs the
+// step has already absorbed a full primary ladder's worth of waiting, so a
+// transient that was going to clear has had its chance. The fallback's SHAPE
+// retry changes the prompt, is therefore a different call, and does recover
+// (ok=7 and ok=2 on two of those workflows) — it is untouched.
+//
+// The assumption underneath it: transients clear with ELAPSED TIME. A
+// quota-based limit that resets at a fixed wall-clock boundary is not helped by
+// the primary ladder's wait, and for that shape the fallback's extra attempts
+// could genuinely matter. The observed 0-in-66 says that population is empty or
+// very small here (review-20260904-866d, suggestion 1).
+//
+// Raising this is a one-line decision; re-measure the rungs first, and see
+// vornik_executor_fallback_infra_attempts_suppressed_total for whether the
+// population above has stopped being empty.
+// https://docs.vornik.io §2.1
+const fallbackInfraRetryMaxAttempts = 1
+
 // infraRetryBaseDelay is the first sleep before the infra retry's
 // second attempt. Subsequent retries double the wait — exponential
 // backoff bounded by infraRetryMaxDelay so we don't schedule an
@@ -300,7 +329,7 @@ func (e *Executor) executeAgentStepWithFallback(
 	opts *agentInputOpts,
 	roleConfig *registry.SwarmRole,
 ) (string, []byte, error) {
-	cid, result, err := e.executeAgentStepWithShapeRetry(ctx, task, execution, plan, stepID, step, timeout, opts)
+	cid, result, err := e.executeAgentStepWithShapeRetry(ctx, task, execution, plan, stepID, step, timeout, opts, false)
 	if err == nil {
 		return cid, result, nil
 	}
@@ -370,7 +399,10 @@ func (e *Executor) executeAgentStepWithFallback(
 			Msg("model fallback: widened the step budget for the secondary model")
 	}
 
-	cid2, result2, err2 := e.executeAgentStepWithShapeRetry(ctx, task, execution, &fallbackPlan, fallbackStepID, step, fallbackTimeout, opts)
+	// fallbackHop: the secondary gets ONE infra attempt, not the primary's
+	// ladder a second time (fallbackInfraRetryMaxAttempts). Its shape retry is
+	// unchanged.
+	cid2, result2, err2 := e.executeAgentStepWithShapeRetry(ctx, task, execution, &fallbackPlan, fallbackStepID, step, fallbackTimeout, opts, true)
 	if err2 == nil {
 		// executeAgentStep records harvested output artifacts on the plan so
 		// workflow.go can stage them for the next step. The fallback attempt
@@ -524,8 +556,9 @@ func (e *Executor) executeAgentStepWithShapeRetry(
 	step registry.WorkflowStep,
 	timeout time.Duration,
 	opts *agentInputOpts,
+	fallbackHop bool,
 ) (string, []byte, error) {
-	cid, result, err := e.executeAgentStepWithInfraRetry(ctx, task, execution, plan, stepID, step, timeout, opts)
+	cid, result, err := e.executeAgentStepWithInfraRetry(ctx, task, execution, plan, stepID, step, timeout, opts, fallbackHop)
 	if err == nil {
 		return cid, result, nil
 	}
@@ -613,7 +646,7 @@ func (e *Executor) executeAgentStepWithShapeRetry(
 		Str("error", truncateForPrompt(err.Error(), 200)).
 		Msg("shape retry: re-running step with corrective prompt")
 
-	cid2, result2, err2 := e.executeAgentStepWithInfraRetry(ctx, task, execution, plan, retryStepID, step, timeout, &retryOpts)
+	cid2, result2, err2 := e.executeAgentStepWithInfraRetry(ctx, task, execution, plan, retryStepID, step, timeout, &retryOpts, fallbackHop)
 	if err2 == nil {
 		// Shape retry recovered — count it as salvaged so the
 		// per-model recovered/total ratio reflects which models
@@ -687,10 +720,20 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 	step registry.WorkflowStep,
 	timeout time.Duration,
 	opts *agentInputOpts,
+	fallbackHop bool,
 ) (string, []byte, error) {
 	// Per-step ladder settings with defaults applied. A step with no `retry:`
 	// block resolves to exactly the constants this loop used to read directly.
 	cfg := resolveStepRetry(step)
+	// The model-fallback hop gets its own, smaller budget — see
+	// fallbackInfraRetryMaxAttempts. It caps rather than replaces, so a step
+	// that configured a SHORTER ladder keeps it.
+	if fallbackHop && cfg.MaxAttempts > fallbackInfraRetryMaxAttempts {
+		if e.metrics != nil {
+			e.metrics.RecordFallbackInfraAttemptsSuppressed(step.Role, cfg.MaxAttempts-fallbackInfraRetryMaxAttempts)
+		}
+		cfg.MaxAttempts = fallbackInfraRetryMaxAttempts
+	}
 	delay := cfg.BaseDelay
 	var lastCID string
 	var lastResult []byte

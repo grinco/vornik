@@ -165,6 +165,7 @@ type ProjectConfigFormData struct {
 	// Empty / zero inherits the daemon default.
 	RetentionTaskLLMUsageDays int
 	RetentionToolAuditDays    int
+	RetentionChatAuditDays    int
 	RetentionTasksDays        int
 	RetentionExecutionsDays   int
 	RetentionArtifactsDays    int
@@ -541,6 +542,7 @@ func populateFormFromProject(data *ProjectConfigFormData, proj *registry.Project
 	data.RateLimitTasksPerHour = proj.RateLimit.TasksPerHour
 	data.RetentionTaskLLMUsageDays = proj.Retention.TaskLLMUsageDays
 	data.RetentionToolAuditDays = proj.Retention.ToolAuditDays
+	data.RetentionChatAuditDays = proj.Retention.ChatAuditDays
 	data.RetentionTasksDays = proj.Retention.TasksDays
 	data.RetentionExecutionsDays = proj.Retention.ExecutionsDays
 	data.RetentionArtifactsDays = proj.Retention.ArtifactsDays
@@ -659,6 +661,7 @@ func overlayFormValuesOntoData(data *ProjectConfigFormData, r *http.Request) {
 	data.RateLimitTasksPerHour = parseFormInt(r.FormValue("rateLimit_tasksPerHour"))
 	data.RetentionTaskLLMUsageDays = parseFormInt(r.FormValue("retention_taskLLMUsageDays"))
 	data.RetentionToolAuditDays = parseFormInt(r.FormValue("retention_toolAuditDays"))
+	data.RetentionChatAuditDays = parseFormInt(r.FormValue("retention_chatAuditDays"))
 	data.RetentionTasksDays = parseFormInt(r.FormValue("retention_tasksDays"))
 	data.RetentionExecutionsDays = parseFormInt(r.FormValue("retention_executionsDays"))
 	data.RetentionArtifactsDays = parseFormInt(r.FormValue("retention_artifactsDays"))
@@ -743,6 +746,7 @@ func buildFormPatches(data *ProjectConfigFormData) []yamlPatch {
 		{Path: []string{"rate_limit", "tasks_per_hour"}, Value: data.RateLimitTasksPerHour, RemoveIfEmpty: true},
 		{Path: []string{"retention", "task_llm_usage_days"}, Value: data.RetentionTaskLLMUsageDays, RemoveIfEmpty: true},
 		{Path: []string{"retention", "tool_audit_days"}, Value: data.RetentionToolAuditDays, RemoveIfEmpty: true},
+		{Path: []string{"retention", "chat_audit_days"}, Value: data.RetentionChatAuditDays, RemoveIfEmpty: true},
 		{Path: []string{"retention", "tasks_days"}, Value: data.RetentionTasksDays, RemoveIfEmpty: true},
 		{Path: []string{"retention", "executions_days"}, Value: data.RetentionExecutionsDays, RemoveIfEmpty: true},
 		{Path: []string{"retention", "artifacts_days"}, Value: data.RetentionArtifactsDays, RemoveIfEmpty: true},
@@ -867,6 +871,7 @@ func validateProjectConfigFormNumbers(r *http.Request) error {
 		"rateLimit_tasksPerHour",
 		"retention_taskLLMUsageDays",
 		"retention_toolAuditDays",
+		"retention_chatAuditDays",
 		"retention_tasksDays",
 		"retention_executionsDays",
 		"retention_artifactsDays",

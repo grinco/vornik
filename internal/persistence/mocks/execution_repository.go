@@ -3,6 +3,7 @@ package mocks
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -169,6 +170,21 @@ func (m *MockExecutionRepository) Count(ctx context.Context, filter persistence.
 }
 
 // UpdateStatus implements ExecutionRepository.
+// UpdateWorkflowID records nothing; this mock has no row to narrow a write on.
+func (m *MockExecutionRepository) UpdateWorkflowID(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// TransitionStatusConditional reports a successful transition for any non-empty
+// `from` set. Tests that need real compare-and-set semantics use the executor's
+// MockExecRepo, which tracks status.
+func (m *MockExecutionRepository) TransitionStatusConditional(_ context.Context, _ string, from []persistence.ExecutionStatus, _ persistence.ExecutionStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, fmt.Errorf("mock execution repository: empty from set")
+	}
+	return true, nil
+}
+
 func (m *MockExecutionRepository) UpdateStatus(ctx context.Context, id string, status persistence.ExecutionStatus) error {
 	m.CallCount.UpdateStatus++
 	m.LastCall.ID = id

@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/memoryscope"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/stepid"
 	"vornik.io/vornik/internal/stepoutcome"
 )
 
@@ -992,6 +993,17 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				lastResultMessage = systemResultMessage(sysResult.Result)
 			} else {
 				state.LastResult = []byte(`{}`)
+				// AND clear the carried message. Setting LastResult without
+				// resetting this left the PREVIOUS step's text in place, so an
+				// agent following a system step that succeeded with an EMPTY
+				// result was handed whatever came before it — on the
+				// interesting path the error of the step whose on_fail routed
+				// here, presented as its predecessor's output. The agent-step
+				// success path resets unconditionally (:476), which is what
+				// makes this an asymmetry rather than a choice. Residual half
+				// of the asymmetry 9db8b7bb fixed; found by the 2026-09-03
+				// four-week audit.
+				lastResultMessage = ""
 			}
 			// A system handler can request an AWAITING_INPUT PARK instead of
 			// routing onward (forge.open_change_request when a push is rejected):
@@ -3162,7 +3174,7 @@ func producerRoleForExecution(execution *persistence.Execution, wf *registry.Wor
 		if wf == nil {
 			continue
 		}
-		base := stripRetryStepSuffix(stepID)
+		base := stepid.StripRetrySuffix(stepID)
 		if step, ok := wf.Steps[base]; ok && step.Role != "" {
 			return step.Role
 		}
@@ -3170,39 +3182,10 @@ func producerRoleForExecution(execution *persistence.Execution, wf *registry.Wor
 	return ""
 }
 
-// stripRetryStepSuffix removes the known retry-step suffixes the
-// executor appends to a base step ID when re-running with different
-// parameters. Keeps the canonical step ID so producerRoleForExecution
-// can look it up in the workflow definition (which doesn't list the
-// synthetic retry IDs). Suffixes covered:
-//
-//	_shape_retry     — retry.go's shape-violation retry
-//	_model_fallback  — retry.go's model-fallback retry
-//	_infra_retry<N>  — retry.go's transient-failure retry
-//	_refusal_retry   — plan_step.go's refusal retry
-//	_route_retry     — workflow.go's strict-adaptive corrective retry
-//
-// All known suffixes start with `_` and never re-occur in the base
-// step IDs we ship, so right-trimming the first matching suffix is
-// unambiguous.
-func stripRetryStepSuffix(stepID string) string {
-	for _, suffix := range []string{"_shape_retry", "_model_fallback", "_refusal_retry", "_route_retry"} {
-		if strings.HasSuffix(stepID, suffix) {
-			return strings.TrimSuffix(stepID, suffix)
-		}
-	}
-	// _infra_retry<N> has a variable trailing integer — strip by
-	// finding the prefix then dropping the rest.
-	if idx := strings.Index(stepID, "_infra_retry"); idx > 0 {
-		return stepID[:idx]
-	}
-	return stepID
-}
-
 // stepIDToRole extracts the role suffix from a `plan_<n>_<role>`
 // step ID. Returns "" when the ID doesn't match the convention.
 // Trailing variants (_shape_retry, _model_fallback, _infra_retry1)
-// are stripped so the role name is clean.
+// are the retry suffixes stepid names; the role token precedes them.
 func stepIDToRole(stepID string) string {
 	parts := strings.Split(stepID, "_")
 	if len(parts) < 3 {
@@ -3691,6 +3674,7 @@ func (e *Executor) cascadeOrphanExecutions(ctx context.Context, taskID string) {
 			Int64("orphans_swept", n).
 			Msg("cascade-orphan-executions: superseded non-terminal executions")
 	}
+	e.sweepTaskOrphanOutcomes(ctx, taskID, "cascade-orphan-executions")
 }
 
 // supersedeStaleExecutions finalizes the executions a task left behind before
@@ -3722,6 +3706,57 @@ func (e *Executor) supersedeStaleExecutions(ctx context.Context, taskID string) 
 			Str("task_id", taskID).
 			Int64("stale_swept", n).
 			Msg("supersede-stale-executions: finalized executions left behind by a previous run of this task")
+	}
+	e.sweepTaskOrphanOutcomes(ctx, taskID, "supersede-stale-executions")
+}
+
+// taskOrphanOutcomeSweeper is the optional per-task outcome sweep. Declared as
+// a narrow capability rather than added to persistence.ExecutionStepOutcomeRepository
+// so one caller's backstop does not force the method onto every double in the
+// tree — the same shape repotest's pendingOutcomeSweeper uses.
+type taskOrphanOutcomeSweeper interface {
+	SweepPendingForTaskOrphans(ctx context.Context, taskID string) (int64, error)
+}
+
+// sweepTaskOrphanOutcomes finalizes the step outcomes left pending under the
+// executions the caller just terminalised.
+//
+// Both supersede paths cancel a task's leftover executions at the executions
+// table and leave the rows beneath them at pending_validation, which counts as
+// neither ok nor a failure in every quality query. The watchdog backstop
+// eventually relabels them — median 13 minutes, measured 2026-09-04 — and until
+// 2026-09-04 it did so as `superseded`, the OPERATOR's word for retry-from-step,
+// which is how 809 of 835 such rows came to say something they did not mean.
+//
+// Recording it here is what makes the label honest: the path that knows the
+// reason writes the row. Best-effort, exactly like the sweeps it follows — the
+// backstop still catches anything this races past, which is a real window (a
+// step can commit its outcome row just after this runs).
+//
+// https://docs.vornik.io
+func (e *Executor) sweepTaskOrphanOutcomes(ctx context.Context, taskID, caller string) {
+	if taskID == "" || e.outcomeRepo == nil {
+		return
+	}
+	sweeper, ok := e.outcomeRepo.(taskOrphanOutcomeSweeper)
+	if !ok {
+		return
+	}
+	n, err := sweeper.SweepPendingForTaskOrphans(ctx, taskID)
+	if err != nil {
+		e.logger.Warn().
+			Err(err).
+			Str("task_id", taskID).
+			Str("caller", caller).
+			Msg("orphan-outcome-sweep: failed; the watchdog backstop will relabel these rows")
+		return
+	}
+	if n > 0 {
+		e.logger.Info().
+			Str("task_id", taskID).
+			Str("caller", caller).
+			Int64("outcomes_orphaned", n).
+			Msg("orphan-outcome-sweep: finalized step outcomes under superseded executions")
 	}
 }
 

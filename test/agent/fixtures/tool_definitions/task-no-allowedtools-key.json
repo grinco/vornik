@@ -1,0 +1,99 @@
+[
+  {
+    "function": {
+      "description": "Read the contents of a file. Paths are relative to /app/workspace/ (the working directory); the persistent project folder is at project/ (e.g. 'project/src/main.py'). Output is capped at 30KB per file — for larger files use grep to find specific lines, run_shell with `head -c 200000` for a bigger window (200KB), or read_many_files which has the same per-file cap but lets you pull a directory in one call.",
+      "name": "file_read",
+      "parameters": {
+        "properties": {
+          "path": {
+            "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Write content to a file. Creates parent directories as needed. Paths are relative to /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+      "name": "file_write",
+      "parameters": {
+        "properties": {
+          "content": {
+            "description": "File content to write",
+            "type": "string"
+          },
+          "path": {
+            "description": "Relative path from /app/workspace/. Use 'project/' prefix for the persistent shared project folder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Run a shell command in the workspace directory. Use for tasks like listing files, running builds, etc. stdout+stderr is capped at 200KB; if you need more, pipe through grep/awk/tail to filter at the source (e.g. `go tool cover -func=cov.out | grep ^github.com/myorg/mypkg/`). gcc + libc6-dev are installed so `go test -race` works.",
+      "name": "run_shell",
+      "parameters": {
+        "properties": {
+          "command": {
+            "description": "Shell command to execute",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Return the current date and time in a requested IANA timezone, with UTC included for verification. Use this whenever the task depends on today's date, current time, market hours, deadlines, or timezone conversion. Do not calculate timezone offsets yourself.",
+      "name": "current_time",
+      "parameters": {
+        "properties": {
+          "timezone": {
+            "description": "IANA timezone name such as 'UTC', 'Europe/Prague', 'America/New_York', or 'Asia/Tokyo'. Defaults to UTC.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Read the full saved body for a prior compacted tool result by tool_call_id. Use only when the retained head/tail preview is insufficient.",
+      "name": "tool_result_read",
+      "parameters": {
+        "properties": {
+          "tool_call_id": {
+            "description": "The tool_call_id shown in the compacted tool result placeholder.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  }
+]

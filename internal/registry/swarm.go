@@ -544,6 +544,13 @@ func (s *Swarm) Validate(filename string) error {
 
 // LoadSwarms loads all swarm YAML files from the specified directory
 func LoadSwarms(dir string) (map[string]*Swarm, error) {
+	return loadSwarms(dir, nil)
+}
+
+// loadSwarms is LoadSwarms recording each accepted file into the index
+// (nil-safe). A swarm that fails to parse or validate is fatal to the whole
+// load, as it always was, so there is nothing to record as rejected here.
+func loadSwarms(dir string, index *TreeIndex) (map[string]*Swarm, error) {
 	swarms := make(map[string]*Swarm)
 
 	swarmsDir := filepath.Join(dir, "swarms")
@@ -618,6 +625,7 @@ func LoadSwarms(dir string) (map[string]*Swarm, error) {
 		}
 
 		swarms[swarm.ID] = &swarm
+		index.source("swarm", swarm.ID, filepath.Join("swarms", name))
 	}
 
 	return swarms, nil

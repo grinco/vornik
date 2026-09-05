@@ -1,0 +1,19 @@
+{
+  "function": {
+    "description": "Fetch the full instructions of a learned skill listed in the LEARNED SKILLS index of your system prompt. Call this BEFORE doing work a listed skill covers, then follow the returned instructions.",
+    "name": "skill_fetch",
+    "parameters": {
+      "properties": {
+        "name": {
+          "description": "Exact skill name as shown in the LEARNED SKILLS index",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

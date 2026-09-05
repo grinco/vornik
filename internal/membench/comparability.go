@@ -83,7 +83,59 @@ type ComparabilityFields struct {
 	// SingleSystem marks a run with no external system, so the absence of
 	// external fields is by design rather than a verification gap.
 	SingleSystem bool `json:"single_system,omitempty"`
+
+	// CorpusRegime says whether this run scored against a store that was CLEARED
+	// first (cold) or one that already held content (warm).
+	//
+	// It is in the key because the axis decides scores, and because the key could
+	// not express it. Demonstrated 2026-08-27: bench-runs/reproduce-1..3 (warm,
+	// taken before 98037e34 made the clear real) and head-20260827-tr6-r1..3
+	// (cold) produced the SAME key e865104e9959. `aggregate` would merge them
+	// without complaint and `compare` would diff them clean — and results.md
+	// calls this axis decisive enough to CLOSE a published table over.
+	//
+	// It went unnoticed because on the six-item temporal subset warm and cold are
+	// identical once the reranker is out of the path. The absence of a difference
+	// on one easy subset is not evidence the axis does not matter: 98037e34
+	// measured the missing clear moving judged accuracy 0.692 -> 0.750 on 120
+	// items.
+	//
+	// OBSERVED, not declared — the same rule as ObservedRecallMethod and
+	// ObservedEmbedder, and for the same reason. The harness performs the clear
+	// and gets a row count back, so it knows; a run that cannot say marks the key
+	// PARTIAL rather than asserting either regime.
+	CorpusRegime CorpusRegime `json:"corpus_regime,omitempty"`
+
+	// DaemonRevision is the build of the system under test.
+	//
+	// Everything else here pins the EXPERIMENT — dataset, models, prompts,
+	// retrieval budget — and nothing pinned the CODE. Two runs of different
+	// releases with the same config produced an identical key and compared clean,
+	// which is why backfilling the track record on 2026-08-27 had to reconstruct
+	// attribution by matching finished_at against the git log.
+	//
+	// In the key, not merely on the manifest: a release change should REFUSE
+	// comparison rather than silently produce one, which is what ArmFields'
+	// binary_sha256 already does on the agent side. Read from the daemon (the
+	// companion whoami), never from a flag — same reasoning as the database name.
+	// Empty marks the key partial.
+	DaemonRevision string `json:"daemon_revision,omitempty"`
 }
+
+// CorpusRegime is the observed state of the store a run scored against.
+type CorpusRegime string
+
+// The regimes. Unknown is not a third kind of run — it is the absence of an
+// observation, and it marks the key partial rather than guessing.
+const (
+	CorpusRegimeUnknown CorpusRegime = ""
+	// CorpusRegimeCold means the store was cleared before this run started, so
+	// the corpus is exactly what this run ingested.
+	CorpusRegimeCold CorpusRegime = "cold"
+	// CorpusRegimeWarm means the store already held content, so the run scored
+	// against its own history as well as its haystack.
+	CorpusRegimeWarm CorpusRegime = "warm"
+)
 
 // fieldPairs returns the (name, value) list in a fixed order. One source of
 // truth for both hashing and diffing, so the two can never disagree about which
@@ -108,6 +160,8 @@ func (f ComparabilityFields) fieldPairs() [][2]string {
 		{"external_config_sha256", f.ExternalConfigSHA256},
 		{"tier2_only", strconv.FormatBool(f.Tier2Only)},
 		{"single_system", strconv.FormatBool(f.SingleSystem)},
+		{"corpus_regime", string(f.CorpusRegime)},
+		{"daemon_revision", f.DaemonRevision},
 	}
 }
 
@@ -182,6 +236,12 @@ func (f ComparabilityFields) Partial() bool {
 	// titan-versus-cohere comparison once matched clean. Admitted rather than
 	// assumed unchanged, on the same principle as an unreadable external config.
 	if f.ObservedEmbedder == "" || f.ObservedRecallMethod == "" {
+		return true
+	}
+	// A run that cannot say which corpus regime it used, or which build produced
+	// it, is not comparable to one that can — asserting either would be the
+	// guess this field exists to stop.
+	if f.CorpusRegime == CorpusRegimeUnknown || f.DaemonRevision == "" {
 		return true
 	}
 	if f.SingleSystem {

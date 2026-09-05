@@ -46,17 +46,18 @@ func (s *ctxRespectingChatAuditRepo) List(_ context.Context, _ persistence.ChatA
 	return nil, nil
 }
 
-func (s *ctxRespectingChatAuditRepo) SavePrompt(ctx context.Context, hash, body string) error {
+func (s *ctxRespectingChatAuditRepo) SavePrompt(ctx context.Context, body string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		s.mu.Lock()
 		s.promptCtxErr = err
 		s.mu.Unlock()
-		return err
+		return "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	hash := persistence.HashChatSystemPrompt(body)
 	s.prompts[hash] = body
-	return nil
+	return hash, nil
 }
 
 func (s *ctxRespectingChatAuditRepo) GetByID(_ context.Context, _ string) (*persistence.ChatAuditEntry, error) {

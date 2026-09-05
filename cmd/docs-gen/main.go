@@ -37,7 +37,7 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: docs-gen <cli|config|editions|all|stamp>")
+		fmt.Fprintln(os.Stderr, "usage: docs-gen <cli|config|editions|tools|all|stamp>")
 		os.Exit(2)
 	}
 	root, err := repoRoot()
@@ -55,10 +55,13 @@ func main() {
 		writePage(filepath.Join(root, configPage), genHeader+renderConfig(reflect.TypeOf(config.Config{})), deny)
 	case "editions":
 		writeEditions(root, deny)
+	case "tools":
+		writeToolRegistry(root)
 	case "all":
 		writePage(filepath.Join(root, cliPage), genHeader+renderCLI(cli.RootCmd(), loadCLIAllow(root)), deny)
 		writePage(filepath.Join(root, configPage), genHeader+renderConfig(reflect.TypeOf(config.Config{})), deny)
 		writeEditions(root, deny)
+		writeToolRegistry(root)
 	case "stamp":
 		stamp(root, os.Args[2:])
 	default:
@@ -341,7 +344,7 @@ func renderFlags(fs *pflag.FlagSet) string {
 // config reference generation
 // ---------------------------------------------------------------------------
 
-type docRow struct{ key, typ, doc string }
+type docRow struct{ key, typ, doc, env string }
 
 // renderConfig reflects over the config struct type and emits a Markdown table
 // of every field carrying a `doc:"..."` tag, grouped by top-level section.
@@ -350,7 +353,7 @@ func renderConfig(t reflect.Type) string {
 	rows := collectDocRows(t, "")
 	var b strings.Builder
 	b.WriteString("# Configuration reference\n\n")
-	b.WriteString("vornik reads its configuration from `config.yaml`. The keys below are the customer-facing settings, by dotted YAML path.\n\n")
+	b.WriteString("vornik reads its configuration from `config.yaml`. The keys below are the customer-facing settings, by dotted YAML path. Where an environment variable overrides a key it is listed; an override wins over the file, and `vornikctl config show --provenance` shows which one supplied each value on the running daemon.\n\n")
 
 	// Group by first path segment, preserving first-seen section order.
 	var order []string
@@ -367,74 +370,51 @@ func renderConfig(t reflect.Type) string {
 	}
 	for _, sec := range order {
 		b.WriteString("## " + sec + "\n\n")
-		b.WriteString("| Key | Type | Description |\n|---|---|---|\n")
+		b.WriteString("| Key | Type | Description | Environment override |\n|---|---|---|---|\n")
 		for _, r := range groups[sec] {
-			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.key, r.typ, escapePipes(r.doc))
+			env := "—"
+			if r.env != "" {
+				env = "`" + r.env + "`"
+			}
+			fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", r.key, r.typ, escapePipes(r.doc), env)
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func collectDocRows(t reflect.Type, prefix string) []docRow {
+// collectDocRows walks every yaml-tagged leaf through config.WalkLeaves — the
+// same enumeration the resolved-config dump uses, so a key cannot be
+// documented and undumpable or the reverse — and keeps the doc-tagged ones.
+func collectDocRows(t reflect.Type, _ string) []docRow {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t.Kind() != reflect.Struct {
-		return nil
-	}
 	var rows []docRow
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		name := strings.Split(f.Tag.Get("yaml"), ",")[0]
-		if name == "" || name == "-" {
-			continue
-		}
-		key := name
-		if prefix != "" {
-			key = prefix + "." + name
-		}
+	config.WalkLeaves(reflect.New(t).Elem(), func(key string, f reflect.StructField, _ reflect.Value) {
 		// Skip top-level sections deliberately hidden from the PUBLIC config
 		// reference. The trading feature is withheld from the published site
 		// (mkdocs exclude_docs drops its feature/guide pages); the generated
 		// config reference must not re-expose it via its keys. The keys still
 		// work — they're just not advertised on docs.vornik.io.
 		if publicDocExcludedSections[strings.SplitN(key, ".", 2)[0]] {
-			continue
+			return
+		}
+		doc := f.Tag.Get("doc")
+		if doc == "" {
+			return // deny-by-default — an untagged leaf is internal
 		}
 		ft := f.Type
 		if ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
-		// A doc tag makes the field a documented leaf, even if it is a struct.
-		if doc := f.Tag.Get("doc"); doc != "" {
-			rows = append(rows, docRow{key: key, typ: friendlyType(ft), doc: doc})
-			continue
-		}
-		// No doc tag: recurse into nested config sections; skip plain leaves
-		// (deny-by-default — an untagged scalar is internal).
-		if ft.Kind() == reflect.Struct && !isLeafStruct(ft) {
-			rows = append(rows, collectDocRows(ft, key)...)
-		}
-	}
+		rows = append(rows, docRow{key: key, typ: friendlyType(ft), doc: doc, env: config.EnvOverrideFor(key)})
+	})
 	return rows
 }
 
-// publicDocExcludedSections are top-level config sections kept OUT of the
-// generated PUBLIC config reference. The trading feature is hidden from the
-// published docs (see mkdocs.yml exclude_docs); its config keys would
-// otherwise leak the feature's existence onto docs.vornik.io.
 var publicDocExcludedSections = map[string]bool{
 	"trading": true,
-}
-
-// isLeafStruct treats stdlib value-structs (time.Time, etc.) as leaves so the
-// walker doesn't descend into their internals.
-func isLeafStruct(t reflect.Type) bool {
-	return t.PkgPath() == "time"
 }
 
 func friendlyType(t reflect.Type) string {

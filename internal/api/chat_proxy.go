@@ -130,6 +130,7 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	taskID, executionID := r.Header.Get("X-Vornik-Task-ID"), r.Header.Get("X-Vornik-Execution-ID")
+	recordExchange := false
 	if taskID != "" || executionID != "" {
 		// Validate that the task / execution actually belong to a
 		// project the caller is allowed to touch. Without this an
@@ -158,6 +159,10 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				respondError(w, http.StatusForbidden, "FORBIDDEN", "API key not authorised for the execution's project")
 				return
 			}
+			// Recording is decided here, on the execution's OWN project — the
+			// authz-checked value, not the header — and read per request from
+			// the registry snapshot (llm-exchange record/replay design §2.2).
+			recordExchange = s.projectRecordsExchanges(exec.ProjectID)
 		}
 		// NOTE 2026-05-10: previously this wired chat.QueueHooks to
 		// flip task.status QUEUED↔RUNNING based on chat-proxy queue
@@ -303,6 +308,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	s.emitLLMCallStarted(ctx, executionID, req.Model)
 	resp, err := provider.CompleteWithTools(ctx, req.Messages, req.Tools)
 	if err != nil {
+		if recordExchange {
+			// A replay of a step that met a provider error must reproduce it,
+			// so the error envelope is the recorded response (design §2.2).
+			s.recordLLMExchange(context.WithoutCancel(ctx), r, executionID, req, nil, err, time.Since(auditStart))
+		}
 		// Per-route queue overflow surfaces as 503 — distinct from
 		// 429 (upstream pushed back) and 502 (upstream errored).
 		// 503 means "the daemon refused to queue further" so HA
@@ -435,6 +445,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.recordChatAPIUsage(telemetryCtx, r, req.Model, resp)
 		s.recordChatAPIAudit(telemetryCtx, r, auditStart, req.Model, req.Messages, resp, cost)
 		s.emitLLMCallFinished(telemetryCtx, executionID, req.Model, resp, time.Since(auditStart))
+		if recordExchange {
+			s.recordLLMExchange(telemetryCtx, r, executionID, req, resp, nil, time.Since(auditStart))
+		}
 	}()
 }
 

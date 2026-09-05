@@ -107,6 +107,18 @@ func (m GoldManifest) Validate() error {
 	return nil
 }
 
+// ValidateTaskSetDigest is the exported form, so a COMMAND can apply this
+// precondition during argument parsing instead of at write time.
+//
+// That ordering is the whole point. On 2026-08-23 a `--topup` run was given
+// `topup0-<hash>`, executed all 13 tasks, completed 13 of 13 over 3h40m, and
+// was refused when the manifest was built — with nothing salvageable, because
+// `bench agent gold` runs the tasks itself and rescore needs a journal the
+// failed command never wrote. The value was knowable before the first
+// container started. A run that spends hours before it can discover it will
+// refuse to record the result has turned a cheap failure into an expensive one.
+func ValidateTaskSetDigest(digest string) error { return validateTaskSetDigest(digest) }
+
 // validateTaskSetDigest requires exactly 64 lowercase hex characters — the
 // shape hex.EncodeToString produces for a sha256, and nothing else. Lowercase
 // is required rather than folded: the fence compares digests by string

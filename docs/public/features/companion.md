@@ -3,9 +3,9 @@ sources:
     - path: internal/api/companion_mcp.go
       sha256: 79343c8c6c2bb8dbff8dc79be1e98ee4d7fe6d6fcc5715f6ba394506fe38b105
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: d7ff831aea5ee4a43807c360821d64b3beea78a0f74762220d46b0670f7cddb3
+      sha256: f2264b09f27fe2675b7df79956e333c62be761a2be23eaedf2e3dc5116d88f3c
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: 8c41ebef1d7901cec53c490f40eadd65479780f38759933b1ce960d3c11ccbb2
+      sha256: 502fb81b5a17ca7d9cb1c2b867c4f8c8c0358dde7bf4df43a154cd819107a3d8
 ---
 # Companion plugin
 
@@ -313,6 +313,14 @@ install it from the bundled plugin marketplace for a persistent setup. Once
 loaded, the tools and slash commands are available in the session, and a
 start-up digest brings recently-completed delegations and fresh memory back into
 context.
+
+The hook also fires **after a compaction**, and does something different there:
+it re-plants the standing directives — repo scope, recall-before-reading-code,
+skill capture — and deliberately does not reprint the delegation digest.
+Compaction is where a long session has lost the most context, so the directives
+are exactly what needs restoring; the digest is a point-in-time list you have
+usually already acted on, and reprinting it would spend the context the
+compaction just freed. Run `/peek` if you want it back.
 
 For Codex, install `codex-companion` from the bundled Codex marketplace at
 `<path>/.agents/plugins/marketplace.json`, or load the plugin directly from

@@ -1,0 +1,16 @@
+{
+  "function": {
+    "description": "Show git working-tree status as typed JSON {branch, ahead, behind, files:[{path,status}]}. Use this before committing or when assessing what a prior role changed.",
+    "name": "git_status",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Repo root. Default: 'project'.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

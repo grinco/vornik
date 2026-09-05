@@ -129,8 +129,12 @@ func TestTaskMessageRepositoryListAndCheckpointFlow(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, task_id, execution_id, parent_id")).
 		WithArgs("missing-msg").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE tasks SET open_checkpoint_id = NULL WHERE id = $1")).
-		WithArgs("task-dangling").
+	// The repair is GUARDED on the pointer the read above returned — the
+	// predicate, and the second argument, are the fix from the 2026-09-03
+	// audit: unguarded, a concurrent Insert's live pointer is erased. This
+	// expectation is what makes the SQL text itself part of the contract.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE tasks SET open_checkpoint_id = NULL WHERE id = $1 AND open_checkpoint_id = $2")).
+		WithArgs("task-dangling", "missing-msg").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	open, err = repo.GetOpenCheckpoint(context.Background(), "task-dangling")
 	if !errors.Is(err, persistence.ErrNotFound) || open != nil {

@@ -594,6 +594,14 @@ func TestSweep_OptInFieldsOffSkipsExtraQueries(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_path"}))
 	mock.ExpectQuery("SELECT COUNT.*FROM tasks").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	mock.ExpectQuery("SELECT COUNT.*FROM executions").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5b — step_prompts nothing references any more, always on (by reference, no horizon).
+	mock.ExpectQuery("SELECT COUNT.*FROM step_prompts WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5c/5d — the chat trail: a horizon on the turns, then the prompt bodies
+	// nothing points at any more. Both always-on (chat-audit design §4).
+	mock.ExpectQuery("SELECT COUNT.*FROM chat_audit_log WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT.*FROM chat_system_prompts WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5e — llm_exchanges whose execution is gone, always on (by reference, no horizon).
+	mock.ExpectQuery("SELECT COUNT.*FROM llm_exchanges WHERE NOT EXISTS").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// The expires_at sweep is ALWAYS-ON (TTL-verified-to-DELETE, §6.4), so even
 	// with MemoryChunksDays==0 project_memory_chunks IS queried — by expires_at,
 	// not by the created_at operator cap (which stays off).
@@ -606,6 +614,11 @@ func TestSweep_OptInFieldsOffSkipsExtraQueries(t *testing.T) {
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_policy_evaluations.*decision = 'allow'").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_policy_evaluations.*decision <> 'allow'").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// The eviction-evidence sweep is always-on: tombstones first, then the
+	// headers that would be left unreferenced once those tombstones go. Both are
+	// issued whatever the opt-in fields say, which is what "always-on" means.
+	mock.ExpectQuery("SELECT COUNT.*FROM memory_eviction_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT.*FROM memory_eviction_runs").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 
 	s := New(db, zerolog.Nop())
 	p := Resolve("p", Policy{}, Policy{
@@ -633,6 +646,14 @@ func TestSweep_OptInFieldsOnIssuesExtraQueries(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_path"}))
 	mock.ExpectQuery("SELECT COUNT.*FROM tasks").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	mock.ExpectQuery("SELECT COUNT.*FROM executions").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5b — step_prompts nothing references any more, always on (by reference, no horizon).
+	mock.ExpectQuery("SELECT COUNT.*FROM step_prompts WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5c/5d — the chat trail: a horizon on the turns, then the prompt bodies
+	// nothing points at any more. Both always-on (chat-audit design §4).
+	mock.ExpectQuery("SELECT COUNT.*FROM chat_audit_log WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT.*FROM chat_system_prompts WHERE").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// 5e — llm_exchanges whose execution is gone, always on (by reference, no horizon).
+	mock.ExpectQuery("SELECT COUNT.*FROM llm_exchanges WHERE NOT EXISTS").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 
 	// Opt-in prune queries, gated on TaskMessagesDays > 0 and
 	// MemoryChunksDays > 0.
@@ -649,6 +670,11 @@ func TestSweep_OptInFieldsOnIssuesExtraQueries(t *testing.T) {
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_policy_evaluations.*decision = 'allow'").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_policy_evaluations.*decision <> 'allow'").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// The eviction-evidence sweep is always-on: tombstones first, then the
+	// headers that would be left unreferenced once those tombstones go. Both are
+	// issued whatever the opt-in fields say, which is what "always-on" means.
+	mock.ExpectQuery("SELECT COUNT.*FROM memory_eviction_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	mock.ExpectQuery("SELECT COUNT.*FROM memory_eviction_runs").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 
 	s := New(db, zerolog.Nop())
 	p := Resolve("p",
@@ -1306,5 +1332,223 @@ func TestPurgeQuarantinedGraph_ZeroUsesTheDefault(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("zero must run the purge with the default horizon: %v", err)
+	}
+}
+
+// --- Eviction-evidence retention (2026-08-21 backlog item) ---------------------
+
+// TestPruneEvictionEvidence_TombstonesBeforeHeaders — regression for "the
+// eviction audit tables have no retention horizon".
+//
+// memory_eviction_audit (2026-05-28) and memory_eviction_runs (2026-08-21) are
+// both retained under Art 17(3)(b) and registered in datasubject.UncoveredTable
+// — correctly, since erasing them would destroy the evidence that an erasure
+// happened. Neither was swept by anything: they appeared in no allowlist and
+// grew without bound. Exempt from ERASURE is not exempt from RETENTION (chat
+// memory-write LLD §5.3.4), and indefinite retention of a table holding an
+// operator identifier and a free-text reason sits badly with Art 5(1)(e).
+//
+// ORDER IS THE ASSERTION. audit.run_id references runs ON DELETE RESTRICT, so a
+// sweep reaching the headers first FAILS rather than orphaning — the intended
+// direction, but only if the sweep never relies on it.
+func TestPruneEvictionEvidence_TombstonesBeforeHeaders(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	threshold := time.Now().AddDate(0, 0, -365)
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM memory_eviction_audit WHERE evicted_at < $1 AND project_id = $2")).
+		WillReturnResult(sqlmock.NewResult(0, 1240))
+	mock.ExpectExec("DELETE FROM memory_eviction_runs WHERE evicted_at < .1 AND project_id = .2 AND NOT EXISTS").
+		WillReturnResult(sqlmock.NewResult(0, 7))
+
+	s := New(db, zerolog.Nop())
+	got, err := s.pruneEvictionEvidence(context.Background(),
+		Policy{ProjectID: "proj-a", MemoryEvictionAuditDays: 365},
+		threshold.AddDate(0, 0, 365), false)
+	if err != nil {
+		t.Fatalf("pruneEvictionEvidence: %v", err)
+	}
+	if got.tombstones != 1240 || got.headers != 7 {
+		t.Errorf("counts = %+v, want {tombstones:1240 headers:7}", got)
+	}
+	// Ordered expectations: an unmet one here means the headers went first,
+	// which would hit the RESTRICT.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A header is removed only once nothing references it. Within one window the
+// tombstones and their header age out together, but a header written just before
+// the cutoff with tombstones just after would otherwise hit the RESTRICT and fail
+// the whole sweep — the NOT EXISTS makes that a no-op this run and a clean delete
+// the next, rather than an error every run forever.
+func TestPruneEvictionEvidence_HeaderDeleteIsGuardedByItsTombstones(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec("DELETE FROM memory_eviction_audit").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`NOT EXISTS \(\s*SELECT 1 FROM memory_eviction_audit a\s*WHERE a\.run_id = memory_eviction_runs\.id\)`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	s := New(db, zerolog.Nop())
+	if _, err := s.pruneEvictionEvidence(context.Background(),
+		Policy{ProjectID: "proj-a", MemoryEvictionAuditDays: 365}, time.Now(), false); err != nil {
+		t.Fatalf("pruneEvictionEvidence: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the header delete is not guarded by a tombstone check: %v", err)
+	}
+}
+
+// A PREVIEW must not understate its own effect. In preview the tombstones are
+// counted rather than deleted, so a plain NOT EXISTS would find every header
+// still referenced and report zero — the one thing a preview must not do. It
+// counts the headers that WOULD become unreferenced once the tombstone sweep
+// lands.
+func TestPruneEvictionEvidence_PreviewCountsHeadersItWouldFree(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT COUNT.*FROM memory_eviction_audit").
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(1240))
+	// The preview form carries the extra evicted_at bound on the subquery.
+	mock.ExpectQuery(`SELECT COUNT.*FROM memory_eviction_runs.*NOT EXISTS.*a\.evicted_at >= \$1`).
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(7))
+
+	s := New(db, zerolog.Nop())
+	got, err := s.pruneEvictionEvidence(context.Background(),
+		Policy{ProjectID: "proj-a", MemoryEvictionAuditDays: 365}, time.Now(), true)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got.tombstones != 1240 || got.headers != 7 {
+		t.Errorf("preview counts = %+v, want {tombstones:1240 headers:7}", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// The horizon is always-on: an operator who configures nothing still gets one,
+// because "no policy" is how both tables came to be unswept in the first place.
+func TestResolve_EvictionAuditHorizonIsAlwaysOn(t *testing.T) {
+	p := Resolve("proj-a", Policy{}, Policy{})
+	if p.MemoryEvictionAuditDays != DefaultMemoryEvictionAuditDays {
+		t.Fatalf("MemoryEvictionAuditDays = %d with nothing configured, want %d",
+			p.MemoryEvictionAuditDays, DefaultMemoryEvictionAuditDays)
+	}
+}
+
+// Neither table may be swept through the generic path under a column the
+// allowlist does not know: the guard is what keeps an interpolated table name
+// safe, and adding a table without its column would fail closed rather than
+// silently prune on the wrong one.
+func TestPruneOlderThan_EvictionTablesUseEvictedAt(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	s := New(db, zerolog.Nop())
+
+	for _, table := range []string{"memory_eviction_audit", "memory_eviction_runs"} {
+		if _, err := s.pruneOlderThan(context.Background(), table, "created_at",
+			"project_id = $2", "p", time.Now(), true); err == nil {
+			t.Errorf("%s accepted created_at; these tables are stamped evicted_at", table)
+		}
+	}
+}
+
+// TestPruneUnreferencedStepPrompts — step-prompt persistence design §6. A
+// content-addressed part lives exactly as long as an execution_step_outcomes
+// row references it through ANY of the three hash columns; the prune removes
+// the rest, and the preview counts exactly what the delete would remove.
+func TestPruneUnreferencedStepPrompts(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	s := New(db, zerolog.Nop())
+
+	// Preview: a COUNT over the same reference check, no DELETE.
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM step_prompts WHERE\s+NOT EXISTS .*prompt_system_hash.*NOT EXISTS .*prompt_user_hash.*NOT EXISTS .*prompt_tools_hash.*NOT EXISTS .*input_hash.*NOT EXISTS .*result_hash`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	n, err := s.pruneUnreferencedStepPrompts(context.Background(), true)
+	if err != nil || n != 3 {
+		t.Fatalf("preview = %d, %v; want 3 rows counted and no error", n, err)
+	}
+
+	// Apply: the DELETE with the identical five-column reference check.
+	mock.ExpectExec(`DELETE FROM step_prompts WHERE\s+NOT EXISTS .*prompt_system_hash.*NOT EXISTS .*prompt_user_hash.*NOT EXISTS .*prompt_tools_hash.*NOT EXISTS .*input_hash.*NOT EXISTS .*result_hash`).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	n, err = s.pruneUnreferencedStepPrompts(context.Background(), false)
+	if err != nil || n != 3 {
+		t.Fatalf("apply = %d, %v; want 3 rows removed", n, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// step_prompts is prunable — it is in the allowlist — and never a protected
+// evidence table.
+func TestStepPromptsIsPrunable(t *testing.T) {
+	if evidenceTables["step_prompts"] {
+		t.Fatal("step_prompts must not be an evidence table: its rows are pruned by reference")
+	}
+}
+
+// TestPruneOrphanedLLMExchanges — retention step 5e (llm-exchange record/replay
+// design §3): a recorded exchange lives exactly as long as its execution, and
+// the sweep — not a foreign key, which SQLite does not enforce — is what
+// removes the rows whose execution is gone, on both backends.
+func TestPruneOrphanedLLMExchanges(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	s := New(db, zerolog.Nop())
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_exchanges WHERE NOT EXISTS \(SELECT 1 FROM executions e WHERE e\.id = llm_exchanges\.execution_id\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	n, err := s.pruneOrphanedLLMExchanges(context.Background(), true)
+	if err != nil || n != 2 {
+		t.Fatalf("preview = %d, %v; want 2 rows counted and no error", n, err)
+	}
+	mock.ExpectExec(`DELETE FROM llm_exchanges WHERE NOT EXISTS \(SELECT 1 FROM executions e WHERE e\.id = llm_exchanges\.execution_id\)`).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	n, err = s.pruneOrphanedLLMExchanges(context.Background(), false)
+	if err != nil || n != 2 {
+		t.Fatalf("apply = %d, %v; want 2 rows removed", n, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if evidenceTables["llm_exchanges"] {
+		t.Fatal("llm_exchanges must not be an evidence table: its rows are pruned by reference")
+	}
+}
+
+// TestStepPromptsPredicateNamesEveryColumn pins the one-constant rule of the
+// step-I/O persistence design §3: every hash column an outcome row can carry
+// appears in the shared predicate, so a sixth part cannot be added to
+// StepPromptHashes without the prune learning it.
+func TestStepPromptsPredicateNamesEveryColumn(t *testing.T) {
+	for _, col := range []string{"prompt_system_hash", "prompt_user_hash", "prompt_tools_hash", "input_hash", "result_hash"} {
+		if !strings.Contains(stepPromptsUnreferencedWhere, "o."+col+" = step_prompts.hash") {
+			t.Errorf("stepPromptsUnreferencedWhere does not probe %s", col)
+		}
 	}
 }

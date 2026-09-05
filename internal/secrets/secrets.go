@@ -777,6 +777,15 @@ func findingAllowlisted(match string, allow [][]byte) bool {
 // (DropHeuristic, StrongPatterns, the CLI's rule selection) all preserve source
 // order rather than re-sorting. Passing an unordered set corrupts the output
 // silently, which is why every caller filters rather than rebuilds.
+//
+// INVARIANT the content stores rely on: a finding's span must not cross a
+// JSON string boundary, and the marker carries no quote or backslash, so a
+// JSON body stays parseable after redaction. The step-prompt store's tools
+// part and the step-I/O store's task.json/result.json (step-I/O persistence
+// design §4) are served as bytes and replayed as JSON; a detector kind whose
+// match could straddle a delimiter must be checked against this before it is
+// added. TestPersistStepIO_RedactedBodyStaysJSONAndFailureIsEmpty pins it at
+// the executor.
 func Redact(text []byte, findings []Finding) []byte {
 	if len(findings) == 0 {
 		return text

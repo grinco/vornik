@@ -40,6 +40,22 @@ type JournalEntry struct {
 	// Detail carries a failure reason for error/invalid outcomes so a resumed
 	// run can report WHY without re-running the failure.
 	Detail string `json:"detail,omitempty"`
+
+	// HaystackLoss is the fraction of this item's haystack the system refused at
+	// ingest, journaled so a RESUMED run can carry it forward.
+	//
+	// AssessTrust gates Trustworthy on two signals, and until this field existed
+	// only one of them survived --resume: counts are seeded from the journal so a
+	// resumed run "reports over the whole population", but worstLoss restarted at
+	// 0.0 and every already-Completed item was skipped. So a resumed run could be
+	// stamped trustworthy on exactly the evidence that would have failed it had
+	// it run in one pass — the harness reporting a WEAKER gate on the same work,
+	// with nothing saying so.
+	//
+	// omitempty is deliberate and safe: the zero value is "no loss", which is
+	// what a journal line written before this field existed also means for the
+	// max, so old journals resume with their trust unchanged rather than refused.
+	HaystackLoss float64 `json:"haystack_loss,omitempty"`
 }
 
 // Journal appends entries to a run's journal file.
@@ -95,6 +111,7 @@ func (j *Journal) Close() error {
 type Replay struct {
 	completed map[string]bool
 	byCat     map[string]OutcomeCounts
+	worstLoss float64
 }
 
 // Completed reports whether an item reached a verdict and can be skipped.
@@ -113,6 +130,11 @@ func (r Replay) CountsByCategory() map[string]OutcomeCounts {
 	}
 	return r.byCat
 }
+
+// WorstHaystackLoss is the largest per-item haystack loss recovered from the
+// journal, so a resumed run carries the trust evidence its earlier pass
+// recorded instead of restarting the measurement at zero.
+func (r Replay) WorstHaystackLoss() float64 { return r.worstLoss }
 
 // LoadJournal reads a journal. A missing file is an empty replay, not an error,
 // so --resume is safe to pass on a first run.
@@ -166,6 +188,9 @@ func LoadJournal(path string) (Replay, error) {
 		c := r.byCat[e.Category]
 		c.Add(e.Outcome)
 		r.byCat[e.Category] = c
+		if e.HaystackLoss > r.worstLoss {
+			r.worstLoss = e.HaystackLoss
+		}
 	}
 	return r, nil
 }

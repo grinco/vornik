@@ -41,6 +41,12 @@ const (
 	// ConditionComposePrefix gates an image on a compose stack having any
 	// containers, INCLUDING stopped ones (intent).
 	ConditionComposePrefix = "compose:"
+	// ConditionAlternativeSeparator joins alternatives that are ORed
+	// (design §12 C7): "unit:vornik-scraper|compose:scraper".
+	ConditionAlternativeSeparator = "|"
+	// NoTarget is what EmitRows prints in the target column of a
+	// single-stage image, so that no column is ever empty (design §12 C8).
+	NoTarget = "-"
 )
 
 // AgentImageTag is the image every install runs agents from. Named because
@@ -213,16 +219,34 @@ func All() []Image {
 // containers — the first draft of the design — reopens the defect the design
 // closes, merely delayed: a stack stopped for maintenance is skipped by the
 // update and then restarted onto code older than the daemon, invisibly.
+//
+// A condition may name alternatives separated by "|" (design §12 C7):
+// `unit:vornik-scraper|compose:scraper` holds when EITHER holds, because the
+// same image is run from a systemd unit on one topology and from a compose
+// stack on another, and an updater that knows only one leaves the other's
+// container stale forever. Each alternative is evaluated by the single-
+// condition rule, so a misspelt alternative is still a typo — false — and
+// cannot make a row deployable, nor poison a correct sibling.
 func (i Image) Needed(p Prober) bool {
+	for _, alt := range strings.Split(i.Condition, ConditionAlternativeSeparator) {
+		if conditionHolds(strings.TrimSpace(alt), p) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionHolds evaluates ONE alternative.
+func conditionHolds(cond string, p Prober) bool {
 	switch {
-	case i.Condition == ConditionAlways:
+	case cond == ConditionAlways:
 		return true
-	case i.Condition == ConditionTest, i.Condition == ConditionExcluded:
+	case cond == ConditionTest, cond == ConditionExcluded:
 		return false
-	case strings.HasPrefix(i.Condition, ConditionUnitPrefix):
-		return p.UnitEnabled(strings.TrimPrefix(i.Condition, ConditionUnitPrefix))
-	case strings.HasPrefix(i.Condition, ConditionComposePrefix):
-		return p.StackHasContainers(strings.TrimPrefix(i.Condition, ConditionComposePrefix))
+	case strings.HasPrefix(cond, ConditionUnitPrefix):
+		return p.UnitEnabled(strings.TrimPrefix(cond, ConditionUnitPrefix))
+	case strings.HasPrefix(cond, ConditionComposePrefix):
+		return p.StackHasContainers(strings.TrimPrefix(cond, ConditionComposePrefix))
 	default:
 		// An unrecognised condition is a typo, and a typo must drop the
 		// row rather than resolve to "build everything".
@@ -250,7 +274,15 @@ func Deployable(p Prober) []Image {
 // column if a field ever contains a space or the output grows a header — both
 // asserted against in the tests.
 //
-// Target is empty for single-stage images; every other field is always set.
+// NO COLUMN IS EVER EMPTY (design §12 C8). A single-stage image has no build
+// target, and an empty column is exactly what `read` cannot see: tab is IFS
+// whitespace, so "a<TAB><TAB>b" reads as two fields, not three, and every
+// column after the gap shifts left. That is how vornik-update.sh spent
+// 2026-08-25..09-05 asking podman to build the agent image with
+// `--target .` in a context named "always" (the Makefile's install-images
+// found the same shift on 08-27 and worked around it with cut -f; the
+// updater was not fixed). The target column carries NoTarget for a
+// single-stage image, and every consumer treats it as "no --target".
 func EmitRows(images []Image) string {
 	var b strings.Builder
 	for _, img := range images {
@@ -258,7 +290,11 @@ func EmitRows(images []Image) string {
 		b.WriteByte('\t')
 		b.WriteString(img.Containerfile)
 		b.WriteByte('\t')
-		b.WriteString(img.Target)
+		if img.Target == "" {
+			b.WriteString(NoTarget)
+		} else {
+			b.WriteString(img.Target)
+		}
 		b.WriteByte('\t')
 		b.WriteString(img.Context)
 		b.WriteByte('\t')

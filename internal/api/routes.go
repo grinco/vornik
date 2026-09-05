@@ -745,6 +745,25 @@ func (s *Server) apiV1ExecutionsHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// GET /executions/{executionId}/steps/{stepId}/prompt — what the step's
+	// model was told at its first request (step-prompt persistence design §7);
+	// …/exchanges — every model exchange of the step, when its project
+	// recorded them (llm-exchange record/replay design §7); …/input and
+	// …/result — the two files at the container boundary, as stored
+	// (step-I/O persistence design §5).
+	if stepID, sub, ok := stepSubresourcePath(remaining); ok {
+		switch sub {
+		case "prompt":
+			s.GetExecutionStepPrompt(w, r, executionID, stepID)
+		case "exchanges":
+			s.GetExecutionStepExchanges(w, r, executionID, stepID)
+		case "input":
+			s.GetExecutionStepInput(w, r, executionID, stepID)
+		case "result":
+			s.GetExecutionStepResult(w, r, executionID, stepID)
+		}
+		return
+	}
 
 	http.NotFound(w, r)
 }

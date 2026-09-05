@@ -1,4 +1,4 @@
-package api
+package supportbundle
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ import (
 func TestWindowFullSections(t *testing.T) {
 	now := time.Now().UTC()
 	auditSecret := secretFor("WINAUDIT")
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks: &fakeTaskReader{list: []*persistence.Task{
 				{ID: "w1", ProjectID: "p", CreatedAt: now, UpdatedAt: now},
 			}},
@@ -30,17 +30,17 @@ func TestWindowFullSections(t *testing.T) {
 				{ID: "u2", ProjectID: "p", Model: "claude", CostUSD: 2.5},
 			}},
 		},
-		detector: newTestDetector(t),
-		version:  "t",
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{Window: true, Since: now.Add(-time.Hour), Until: now.Add(time.Hour), MaxSize: 200 << 20}
+	req := Request{Window: true, Since: now.Add(-time.Hour), Until: now.Add(time.Hour), MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
 	// Admin audit secret redacted.
-	aa := res.files["window/admin_audit.json"]
+	aa := res.Files["window/admin_audit.json"]
 	if bytes.Contains(aa, []byte(auditSecret)) {
 		t.Errorf("admin audit secret leaked:\n%s", aa)
 	}
@@ -55,7 +55,7 @@ func TestWindowFullSections(t *testing.T) {
 		TotalUSD  float64            `json:"total_usd"`
 		Rows      int                `json:"rows"`
 	}
-	if err := json.Unmarshal(res.files["window/cost_rollup.json"], &roll); err != nil {
+	if err := json.Unmarshal(res.Files["window/cost_rollup.json"], &roll); err != nil {
 		t.Fatalf("cost rollup: %v", err)
 	}
 	if roll.TotalUSD != 4.0 || roll.Rows != 2 || roll.ByProject["p"] != 4.0 {
@@ -64,35 +64,35 @@ func TestWindowFullSections(t *testing.T) {
 }
 
 // TestEnforceTotalCap drops the largest non-essential section to honour
-// --max-size and notes it in the manifest; essentials survive.
+// --max-size and notes it in the Manifest; essentials survive.
 func TestEnforceTotalCap(t *testing.T) {
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks: &fakeTaskReader{get: &persistence.Task{ID: "t1", ProjectID: "p"}},
 			Messages: &fakeMessageReader{rows: []*persistence.TaskMessage{
 				{ID: "m1", TaskID: "t1", Content: makeLargeString(50_000)},
 			}},
 		},
-		detector: newTestDetector(t),
-		version:  "t",
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
 	// Tiny cap forces a drop of the big messages section.
-	req := bundleRequest{TaskID: "t1", MaxSize: 4096}
+	req := Request{TaskID: "t1", MaxSize: 4096}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if _, ok := res.files["task/messages.json"]; ok {
+	if _, ok := res.Files["task/messages.json"]; ok {
 		t.Error("oversized messages.json should have been dropped under the cap")
 	}
-	if res.truncations["task/messages.json"] == "" {
+	if res.Truncations["task/messages.json"] == "" {
 		t.Error("drop must be noted in truncations (never silent)")
 	}
 	// Essentials kept.
-	if _, ok := res.files["MANIFEST.json"]; !ok {
+	if _, ok := res.Files["MANIFEST.json"]; !ok {
 		t.Error("MANIFEST.json must always survive")
 	}
-	if _, ok := res.files["version.txt"]; !ok {
+	if _, ok := res.Files["version.txt"]; !ok {
 		t.Error("version.txt is essential and must survive")
 	}
 }
@@ -111,23 +111,23 @@ func TestIsEssentialFile(t *testing.T) {
 // TestWindowSectionErrors: window repos that error record section errors
 // without failing the build.
 func TestWindowSectionErrors(t *testing.T) {
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks:      &fakeTaskReader{err: errBoom},
 			AdminAudit: &fakeAdminAuditReaderErr{},
 			LLMUsage:   &fakeUsageReaderErr{},
 		},
-		detector: newTestDetector(t),
-		version:  "t",
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
 	now := time.Now()
-	req := bundleRequest{Window: true, Since: now.Add(-time.Hour), Until: now, MaxSize: 200 << 20}
+	req := Request{Window: true, Since: now.Add(-time.Hour), Until: now, MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	for _, k := range []string{"window/tasks.json", "window/admin_audit.json", "window/cost_rollup.json"} {
-		if res.sectionErrs[k] == "" {
+		if res.SectionErrs[k] == "" {
 			t.Errorf("expected section error recorded for %s", k)
 		}
 	}
@@ -211,8 +211,8 @@ func (errMetrics) Snapshot(context.Context) (string, error) { return "", errBoom
 
 // TestTaskAllSectionsError drives every collector's error branch.
 func TestTaskAllSectionsError(t *testing.T) {
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks:       &fakeTaskReader{err: errBoom},
 			Executions:  errExecReader{},
 			Outcomes:    errOutcomeReader{},
@@ -223,13 +223,13 @@ func TestTaskAllSectionsError(t *testing.T) {
 			PostMortem:  errPostMortemReader{},
 			Artifacts:   errArtifactReader{},
 		},
-		doctor:   errDoctor{},
-		health:   errHealth{},
-		metrics:  errMetrics{},
-		detector: newTestDetector(t),
-		version:  "t",
+		Doctor:   errDoctor{},
+		Health:   errHealth{},
+		Metrics:  errMetrics{},
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{TaskID: "x", MaxSize: 200 << 20}
+	req := Request{TaskID: "x", MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build must not fail on section errors: %v", err)
@@ -239,7 +239,7 @@ func TestTaskAllSectionsError(t *testing.T) {
 		"task/tool_audit.json", "task/llm_usage.json", "task/messages.json",
 		"task/judge.json", "task/postmortem.json", "doctor.json", "health.json", "metrics.txt",
 	} {
-		if res.sectionErrs[k] == "" {
+		if res.SectionErrs[k] == "" {
 			t.Errorf("expected section error recorded for %s", k)
 		}
 	}
@@ -248,25 +248,25 @@ func TestTaskAllSectionsError(t *testing.T) {
 // TestNilReposDegrade: a builder with no repos still produces a valid
 // bundle (always-on sections only).
 func TestNilReposDegrade(t *testing.T) {
-	b := &bundleBuilder{detector: newTestDetector(t), version: "t"}
-	res, err := b.Build(context.Background(), bundleRequest{TaskID: "x", MaxSize: 200 << 20})
+	b := &Builder{Detector: newTestDetector(t), Version: "t"}
+	res, err := b.Build(context.Background(), Request{TaskID: "x", MaxSize: 200 << 20})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if _, ok := res.files["MANIFEST.json"]; !ok {
+	if _, ok := res.Files["MANIFEST.json"]; !ok {
 		t.Error("MANIFEST.json should still be produced with no repos")
 	}
-	if _, ok := res.files["doctor.json"]; !ok {
+	if _, ok := res.Files["doctor.json"]; !ok {
 		t.Error("doctor.json placeholder should be produced when doctor nil")
 	}
 }
 
 func TestCapOutcomesTruncates(t *testing.T) {
-	res := &buildResult{truncations: map[string]string{}}
+	res := &Result{Truncations: map[string]string{}}
 	rows := make([]*persistence.ExecutionStepOutcome, 5)
 	out := capOutcomes(rows, 3, "x", res)
-	if len(out) != 3 || res.truncations["x"] == "" {
-		t.Fatalf("cap: len=%d trunc=%q", len(out), res.truncations["x"])
+	if len(out) != 3 || res.Truncations["x"] == "" {
+		t.Fatalf("cap: len=%d trunc=%q", len(out), res.Truncations["x"])
 	}
 }
 
@@ -286,7 +286,7 @@ func TestSafeArtifactFilename(t *testing.T) {
 }
 
 // TestPerSectionCaps exceeds each per-section row cap so the truncation
-// branches fire + are noted in the manifest.
+// branches fire + are noted in the Manifest.
 func TestPerSectionCaps(t *testing.T) {
 	mkAudit := func(n int) []*persistence.ToolAuditEntry {
 		out := make([]*persistence.ToolAuditEntry, n)
@@ -323,8 +323,8 @@ func TestPerSectionCaps(t *testing.T) {
 		}
 		return out
 	}
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks:     &fakeTaskReader{get: &persistence.Task{ID: "t1"}},
 			ToolAudit: &fakeToolAuditReader{rows: mkAudit(defaultToolAuditCap + 5)},
 			LLMUsage:  &fakeUsageReader{rows: mkUsage(defaultUsageCap + 5)},
@@ -332,10 +332,10 @@ func TestPerSectionCaps(t *testing.T) {
 			Outcomes:  &fakeOutcomeReader{rows: mkOut(defaultOutcomeCap + 5)},
 			Artifacts: &fakeArtifactReader{rows: mkArt(defaultArtifactCap + 5)},
 		},
-		detector: newTestDetector(t),
-		version:  "t",
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{TaskID: "t1", MaxSize: 200 << 20}
+	req := Request{TaskID: "t1", MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -344,7 +344,7 @@ func TestPerSectionCaps(t *testing.T) {
 		"task/tool_audit.json", "task/llm_usage.json", "task/messages.json",
 		"task/step_outcomes.json", "task/artifacts/MANIFEST.json",
 	} {
-		if res.truncations[k] == "" {
+		if res.Truncations[k] == "" {
 			t.Errorf("expected truncation note for %s", k)
 		}
 	}
@@ -353,18 +353,18 @@ func TestPerSectionCaps(t *testing.T) {
 // TestEmptyVersionAndContainerLogs covers the empty-version fallback and
 // the empty-container-log early return.
 func TestEmptyVersionAndContainerLogs(t *testing.T) {
-	b := &bundleBuilder{detector: newTestDetector(t)} // empty version
-	req := bundleRequest{TaskID: "t1", MaxSize: 200 << 20}
+	b := &Builder{Detector: newTestDetector(t)} // empty version
+	req := Request{TaskID: "t1", MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if !strings.Contains(string(res.files["version.txt"]), "unknown") {
-		t.Errorf("empty version should fall back to 'unknown': %q", res.files["version.txt"])
+	if !strings.Contains(string(res.Files["version.txt"]), "unknown") {
+		t.Errorf("empty version should fall back to 'unknown': %q", res.Files["version.txt"])
 	}
 	// Empty container logs: no file written.
 	b.WriteContainerLogs(req, res, "   ")
-	if _, ok := res.files["task/container_logs.txt"]; ok {
+	if _, ok := res.Files["task/container_logs.txt"]; ok {
 		t.Error("blank container logs should not produce a file")
 	}
 }

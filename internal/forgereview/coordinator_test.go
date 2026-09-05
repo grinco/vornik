@@ -41,7 +41,9 @@ func (f *fakeState) SetTask(_ context.Context, _, _ string, _ int, id string) er
 	f.setTo = append(f.setTo, id)
 	return nil
 }
-func (f *fakeState) BeginClosing(context.Context, string, string, int, string) error { return nil }
+func (f *fakeState) BeginClosing(context.Context, string, string, int, string, string) (persistence.ClosingOutcome, error) {
+	return persistence.ClosingOutcome{Applied: true}, nil
+}
 func (f *fakeState) MarkReviewed(context.Context, string, string, int, string, time.Time) error {
 	return nil
 }
@@ -71,6 +73,19 @@ func reviewJob() forgeapi.ForgeJob {
 		Provider: forgeapi.ProviderGitHub, Repo: "acme/api", Number: 12,
 		Action: "synchronize", IsChangeRequest: true, HeadSHA: "sha-new",
 	}
+}
+
+// commandJob is reviewJob as an on-demand request from someone with standing.
+// Every onDemand=true case uses it, because an on-demand job WITHOUT a trusted
+// author is now refused outright — that is the gate, not an incidental detail
+// of the fixture.
+func commandJob() forgeapi.ForgeJob {
+	j := reviewJob()
+	j.Action = "created"
+	j.OnDemand = true
+	j.Command = "review"
+	j.AuthorIsTrusted = true
+	return j
 }
 
 func newCoord(st StateStore, tk TaskStatusReader) *Coordinator {
@@ -124,7 +139,7 @@ func TestDecide_DeadOrMissingHolder_Enqueues(t *testing.T) {
 func TestDecide_OnDemand_NeverSkips(t *testing.T) {
 	st := &fakeState{priorID: "task-1"}
 	d := newCoord(st, &fakeTasks{status: persistence.TaskStatusRunning}).
-		Decide(context.Background(), "p1", reviewJob(), true)
+		Decide(context.Background(), "p1", commandJob(), true)
 	if d.Skip {
 		t.Fatal("an explicit request was coalesced away")
 	}
@@ -136,7 +151,7 @@ func TestDecide_Paused(t *testing.T) {
 	if d := newCoord(st, &fakeTasks{}).Decide(context.Background(), "p1", reviewJob(), false); !d.Skip {
 		t.Fatal("an automatic trigger ran while the PR was paused")
 	}
-	if d := newCoord(st, &fakeTasks{}).Decide(context.Background(), "p1", reviewJob(), true); d.Skip {
+	if d := newCoord(st, &fakeTasks{}).Decide(context.Background(), "p1", commandJob(), true); d.Skip {
 		t.Fatal("an explicit request was blocked by pause — the operator cannot escape it from the PR thread")
 	}
 }
@@ -180,4 +195,54 @@ func TestFakeState_ObeysTheMissContract(t *testing.T) {
 	repotest.AssertMiss(t, "ForgePRReviewStateRepository.Get", func() (*persistence.ForgePRReviewState, error) {
 		return f.Get(context.Background(), "p", "o/r", 1)
 	})
+}
+
+// THE AUTHOR-TRUST FLOOR — regression for the 2026-09-03 four-week audit's P1.
+//
+// The refusal for a command from someone with no standing in the repository
+// lived in ONE ingress (internal/api/webhook_handlers.go, 9ecedb2c) while the
+// GitHub App channel dispatched the identical command grammar with no author
+// gate at all. Both ingresses call Decide, so the rule belongs here: an ingress
+// added later inherits it instead of having to remember it.
+func TestDecide_OnDemand_FromAnUntrustedAuthor_Refuses(t *testing.T) {
+	job := commandJob()
+	job.AuthorIsTrusted = false
+
+	d := newCoord(&fakeState{}, &fakeTasks{}).Decide(context.Background(), "p1", job, true)
+	if !d.Skip {
+		t.Fatal("a command from an author without repository standing was enqueued — denial-of-wallet on a public repo")
+	}
+	if d.Reason != "author_untrusted" {
+		t.Errorf("Reason = %q, want author_untrusted", d.Reason)
+	}
+}
+
+// AUTHORIZATION IS NOT COALESCING, so it does not inherit "every uncertainty
+// resolves to enqueue". A deployment with no review state configured still must
+// not review on a stranger's say-so — and a nil Coordinator is exactly the
+// shape a CE deployment without the state store has.
+func TestDecide_OnDemand_FromAnUntrustedAuthor_RefusesEvenWithNoState(t *testing.T) {
+	job := commandJob()
+	job.AuthorIsTrusted = false
+
+	for name, c := range map[string]*Coordinator{
+		"nil coordinator": nil,
+		"nil state":       New(nil, nil, zerolog.Nop()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if d := c.Decide(context.Background(), "p1", job, true); !d.Skip {
+				t.Fatalf("%s enqueued an untrusted command; the missing-store early return must not open the gate", name)
+			}
+		})
+	}
+}
+
+// The gate is on COMMANDS only. A push carries no author standing — there is no
+// comment and nobody to vouch for — so gating automatic triggers on it would
+// stop reviewing pull requests altogether.
+func TestDecide_AutomaticTrigger_IsNotGatedOnAuthorTrust(t *testing.T) {
+	job := reviewJob() // AuthorIsTrusted false, as every push job is
+	if d := newCoord(&fakeState{}, &fakeTasks{}).Decide(context.Background(), "p1", job, false); d.Skip {
+		t.Fatalf("an automatic trigger was refused as untrusted (%q) — no pull request would ever be reviewed", d.Reason)
+	}
 }

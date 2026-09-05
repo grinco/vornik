@@ -53,8 +53,9 @@ else
     fi
 fi
 
-# Registration pins: the schema block + dispatch case must exist.
-if grep -q '"name": "skill_fetch"' "$ENTRYPOINT"; then
+# Registration pins: the declaration (schema in the generated registry the
+# entrypoint sources, from internal/agenttools) + the dispatch case must exist.
+if [ -n "$(tool_definition_for skill_fetch 2>/dev/null)" ]; then
     ok "skill_fetch tool schema registered"
 else
     bad "skill_fetch tool schema missing"

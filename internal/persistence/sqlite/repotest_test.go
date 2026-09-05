@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"vornik.io/vornik/internal/persistence/repotest"
 	"vornik.io/vornik/internal/persistence/sqlite"
@@ -364,6 +365,26 @@ func TestForgePRReviewStateRepository_Contract(t *testing.T) {
 	repotest.RunForgePRReviewStateSuite(t, sqlite.NewForgePRReviewStateRepository(db.DB))
 }
 
+// TestOpenCheckpointRepair_Contract — a dangling tasks.open_checkpoint_id must
+// not survive the read that reports it missing.
+//
+// This backend is where it can actually happen: sqlite runs with
+// foreign_keys(OFF) (sqlite.go), so deleting a checkpoint message leaves the
+// pointer behind, where postgres's ON DELETE SET NULL clears it. The shared
+// suite runs against Postgres too, asserting the same OBSERVABLE contract each
+// backend reaches by its own route.
+func TestOpenCheckpointRepair_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunOpenCheckpointRepairSuite(t,
+		sqlite.NewTaskMessageRepository(db.DB),
+		sqlite.NewTaskRepository(db.DB),
+		func(id string) error {
+			_, err := db.Exec(`DELETE FROM task_messages WHERE id = ?`, id)
+			return err
+		},
+	)
+}
+
 // TestChatMemoryWriteConfirmationRepository_Contract — the shared-scope memory-write
 // confirmation two-step (chat memory-write design §5.3). Real durable implementations on
 // SQLite, not stubs: a shared write cannot authorize without a persisted acknowledgement. The
@@ -390,4 +411,102 @@ func TestMCPOAuthTokenRepository_Contract(t *testing.T) {
 func TestExecutionToolGrantRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunExecutionToolGrantSuite(t, sqlite.NewExecutionToolGrantRepository(db.DB))
+}
+
+// TestProjectFirstSeen_Contract — the ledger behind project_created telemetry.
+// CE defaults to SQLite, and the adoption gap this closes is largest exactly
+// where CE deployments live, so this lane is the one that matters most.
+func TestProjectFirstSeen_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunProjectFirstSeenSuite(t, sqlite.NewProjectFirstSeenRepository(db.DB))
+}
+
+// TestStepPrompt_Contract — the content-addressed step-prompt store and the
+// hashes on the outcome row (step-prompt persistence design §4).
+func TestStepPrompt_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunStepPromptSuite(t, sqlite.NewStepPromptRepository(db.DB), sqlite.NewExecutionStepOutcomeRepository(db.DB))
+}
+
+// seedChunkForSuite is the SQLite half of repotest.SeedChunk: chunks are
+// cross-table state with backend-specific required columns, so each contract
+// file supplies its own raw insert (backend-contract coverage design §8).
+func seedChunkForSuite(db *sqlite.DB) repotest.SeedChunk {
+	return func(ctx context.Context, id, projectID, content string, needsExtraction bool, createdAt time.Time) error {
+		flag := 0
+		if needsExtraction {
+			flag = 1
+		}
+		_, err := db.ExecContext(ctx, `INSERT INTO project_memory_chunks
+			(id, project_id, content, content_hash, needs_graph_extraction, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, id, projectID, content, "h-"+id, flag, createdAt.UTC().Format(time.RFC3339Nano))
+		return err
+	}
+}
+
+// The thirteen dual-backend repositories the coverage gate listed on
+// 2026-09-04 with no shared suite (backend-contract coverage design §8). Each
+// test below deletes one line from cmd/lint-lld-contracts/repo_backend_allowlist.txt.
+func TestAdminAudit_Contract(t *testing.T) {
+	repotest.RunAdminAuditSuite(t, sqlite.NewAdminAuditRepository(newTestDB(t).DB))
+}
+
+func TestCapabilityUsage_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunCapabilityUsageSuite(t, sqlite.NewCapabilityUsageRepository(db.DB), sqlite.NewTaskRepository(db.DB))
+}
+
+func TestChatAudit_Contract(t *testing.T) {
+	repotest.RunChatAuditSuite(t, sqlite.NewChatAuditRepository(newTestDB(t).DB))
+}
+
+func TestChunkGraphExtraction_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunChunkGraphExtractionSuite(t, sqlite.NewChunkGraphExtractionRepository(db.DB), seedChunkForSuite(db))
+}
+
+func TestClusterNode_Contract(t *testing.T) {
+	repotest.RunClusterNodeSuite(t, sqlite.NewClusterNodeRepository(newTestDB(t).DB))
+}
+
+func TestLeaderLock_Contract(t *testing.T) {
+	repotest.RunLeaderLockSuite(t, sqlite.NewLeaderLockRepository(newTestDB(t).DB))
+}
+
+func TestEntityMention_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunEntityMentionSuite(t, sqlite.NewEntityMentionRepository(db.DB), sqlite.NewKnowledgeEntityRepository(db.DB), seedChunkForSuite(db))
+}
+
+func TestExecutionHint_Contract(t *testing.T) {
+	repotest.RunExecutionHintSuite(t, sqlite.NewExecutionHintRepository(newTestDB(t).DB))
+}
+
+func TestExecutionQualityScore_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunExecutionQualityScoreSuite(t, sqlite.NewExecutionQualityScoreRepository(db.DB), sqlite.NewExecutionRepository(db.DB), sqlite.NewTaskRepository(db.DB))
+}
+
+func TestMemorySearchStage_Contract(t *testing.T) {
+	repotest.RunMemorySearchStageSuite(t, sqlite.NewMemorySearchStageRepository(newTestDB(t).DB))
+}
+
+func TestOperatorProfile_Contract(t *testing.T) {
+	repotest.RunOperatorProfileSuite(t, sqlite.NewOperatorProfileRepository(newTestDB(t).DB))
+}
+
+func TestSecretRedactionAudit_Contract(t *testing.T) {
+	repotest.RunSecretRedactionAuditSuite(t, sqlite.NewSecretRedactionAuditRepository(newTestDB(t).DB))
+}
+
+func TestTaskCredential_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunTaskCredentialSuite(t, sqlite.NewTaskCredentialRepository(db.DB), sqlite.NewTaskRepository(db.DB))
+}
+
+// TestLLMExchange_Contract — the recorded model exchanges of an agent step
+// (llm-exchange record/replay design §3).
+func TestLLMExchange_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunLLMExchangeSuite(t, sqlite.NewLLMExchangeRepository(db.DB), sqlite.NewExecutionRepository(db.DB), sqlite.NewTaskRepository(db.DB))
 }

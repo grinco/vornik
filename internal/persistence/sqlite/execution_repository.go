@@ -180,6 +180,58 @@ func (r *ExecutionRepository) Update(ctx context.Context, e *persistence.Executi
 }
 
 // UpdateStatus flips status + bookkeeping columns.
+// UpdateWorkflowID persists the resolved workflow id and nothing else — see
+// the interface doc for why a narrow writer exists alongside Update.
+func (r *ExecutionRepository) UpdateWorkflowID(ctx context.Context, id, workflowID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE executions
+		SET workflow_id = ?,
+		    updated_at = ?
+		WHERE id = ?`,
+		workflowID, sqliteTime(time.Now().UTC()), id,
+	)
+	return err
+}
+
+// TransitionStatusConditional applies `to` only when the current status is one
+// of `from`, reporting whether a row changed. Compare-and-set, so the caller
+// never has to read-then-write. Postgres uses `= ANY($3)`; SQLite has no array
+// binding, so the IN list is built from placeholders.
+func (r *ExecutionRepository) TransitionStatusConditional(ctx context.Context, id string, from []persistence.ExecutionStatus, to persistence.ExecutionStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, fmt.Errorf("execution_repository: transition_status_conditional: empty from set")
+	}
+	now := time.Now().UTC()
+	args := []any{
+		string(to), string(to), sqliteTime(now),
+		string(to), sqliteTime(now),
+		sqliteTime(now), id,
+	}
+	placeholders := make([]string, 0, len(from))
+	for _, s := range from {
+		placeholders = append(placeholders, "?")
+		args = append(args, string(s))
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE executions
+		SET status = ?,
+		    started_at = CASE WHEN ? = 'RUNNING' AND started_at IS NULL THEN ? ELSE started_at END,
+		    completed_at = CASE WHEN ? IN ('COMPLETED','FAILED','CANCELLED') THEN ? ELSE completed_at END,
+		    updated_at = ?
+		WHERE id = ?
+		  AND status IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (r *ExecutionRepository) UpdateStatus(ctx context.Context, id string, status persistence.ExecutionStatus) error {
 	now := time.Now().UTC()
 	// Set started_at when transitioning to RUNNING for the first
@@ -270,7 +322,7 @@ func (r *ExecutionRepository) RecordCompletion(ctx context.Context, id string, r
 // doc for the full motivation.
 func (r *ExecutionRepository) SupersedeNonTerminalForTask(ctx context.Context, taskID string) (int64, error) {
 	return r.supersedeNonTerminal(ctx, taskID,
-		"superseded_by_terminal_task",
+		persistence.ExecErrCodeSupersededByTerminalTask,
 		"execution superseded when parent task reached terminal status")
 }
 
@@ -280,7 +332,7 @@ func (r *ExecutionRepository) SupersedeNonTerminalForTask(ctx context.Context, t
 // audit marker.
 func (r *ExecutionRepository) SupersedeStaleForTaskStart(ctx context.Context, taskID string) (int64, error) {
 	return r.supersedeNonTerminal(ctx, taskID,
-		"superseded_by_new_run",
+		persistence.ExecErrCodeSupersededByNewRun,
 		"execution superseded when the task started a new run")
 }
 

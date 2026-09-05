@@ -39,6 +39,13 @@ func (a uiExecutorAdapter) ResumePaused(execID string) error {
 	return a.e.ResumePaused(execID)
 }
 
+// RetryFromStep forwards the UI's retry-from-step action to the executor's
+// rewind — the ONE writer of the rewound state since 2026-09-04
+// (2026-09-04-execution-pause-write-ownership-design.md §3.2).
+func (a uiExecutorAdapter) RetryFromStep(ctx context.Context, executionID, stepID string) error {
+	return a.e.RetryFromStep(ctx, executionID, stepID)
+}
+
 // ResumeTask is the task-driven inverse of Pause — added 2026-05-26
 // to fix the operator-observed "Resume creates a new execution
 // while the paused one sits parked" bug. The UI's resume handler

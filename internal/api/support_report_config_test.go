@@ -7,7 +7,20 @@ import (
 
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/secrets"
 )
+
+// newTestDetector — the builder's own tests moved to internal/supportbundle
+// with the builder; the wiring tests below stayed here, and still need a real
+// detector to assert the Server hands one over.
+func newTestDetector(t *testing.T) secrets.Detector {
+	t.Helper()
+	d, err := secrets.NewMultiDetector(secrets.Config{})
+	if err != nil {
+		t.Fatalf("detector: %v", err)
+	}
+	return d
+}
 
 // TestRedactedConfigYAML confirms field-name redaction runs and the
 // output is YAML-shaped. The Telegram BotToken field marshals to a key
@@ -36,7 +49,7 @@ func TestNewBundleBuilderWiresConfig(t *testing.T) {
 		Admin: config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-x"}},
 	}))
 	b := s.newBundleBuilder()
-	if b.configYAML == "" {
+	if b.ConfigYAML == "" {
 		t.Error("expected config snapshot wired into builder")
 	}
 }
@@ -65,14 +78,14 @@ func TestNewBundleBuilderFullWiring(t *testing.T) {
 		config:                &config.Config{Telegram: config.TelegramConfig{BotToken: "x"}},
 	}
 	b := s.newBundleBuilder()
-	if b.detector == nil || b.opener == nil || b.doctor == nil || b.health == nil ||
-		b.metrics == nil || b.repos.JudgeVerdct == nil || b.repos.PostMortem == nil {
+	if b.Detector == nil || b.Opener == nil || b.Doctor == nil || b.Health == nil ||
+		b.Metrics == nil || b.Repos.JudgeVerdct == nil || b.Repos.PostMortem == nil {
 		t.Fatalf("newBundleBuilder did not wire all collectors: %+v", b)
 	}
-	if b.configYAML == "" {
+	if b.ConfigYAML == "" {
 		t.Error("config snapshot not wired")
 	}
-	if b.repos.Tasks == nil {
+	if b.Repos.Tasks == nil {
 		t.Error("task repo not wired")
 	}
 }

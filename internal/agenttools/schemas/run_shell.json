@@ -1,0 +1,19 @@
+{
+  "function": {
+    "description": "Run a shell command in the workspace directory. Use for tasks like listing files, running builds, etc. stdout+stderr is capped at 200KB; if you need more, pipe through grep/awk/tail to filter at the source (e.g. `go tool cover -func=cov.out | grep ^github.com/myorg/mypkg/`). gcc + libc6-dev are installed so `go test -race` works.",
+    "name": "run_shell",
+    "parameters": {
+      "properties": {
+        "command": {
+          "description": "Shell command to execute",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

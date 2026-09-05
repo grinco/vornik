@@ -149,6 +149,16 @@ func (r *TaskMessageRepository) List(ctx context.Context, filter persistence.Tas
 // (nil, persistence.ErrNotFound) when there is none — whether the task is
 // unknown, carries no open checkpoint, or points at a message that has since
 // been deleted. All three are absence; see internal/persistence/misscontract.
+//
+// A DANGLING POINTER IS REPAIRED AS THE MISS IS REPORTED, matching postgres.
+// This backend is the one where the state can actually arise: sqlite runs with
+// foreign_keys(OFF) project-wide (sqlite.go), so deleting a checkpoint message
+// leaves tasks.open_checkpoint_id behind, where postgres's
+// tasks_open_checkpoint_id_fkey ... ON DELETE SET NULL clears it for free.
+// Reporting the miss without the repair leaves the caller correct and the row
+// wrong: open_checkpoint_id is what the inbox and the steering path read to
+// decide a task is waiting on a human, so the task reads as blocked on a
+// checkpoint nobody can fetch or answer.
 func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID string) (*persistence.TaskMessage, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("TaskMessageRepository.GetOpenCheckpoint: task_id required")
@@ -173,9 +183,34 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 		FROM task_messages WHERE id = ?`, ptr.String)
 	m, err := scanTaskMessage(row)
 	if err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			// Pointer dangling — the message is gone. Clear it so the task
+			// can advance, then report the absence like every other miss.
+			r.repairDanglingCheckpointPointer(ctx, taskID, ptr.String)
+		}
 		return nil, err
 	}
 	return m, nil
+}
+
+// repairDanglingCheckpointPointer clears tasks.open_checkpoint_id after
+// GetOpenCheckpoint found it pointing at a message that no longer exists.
+//
+// GUARDED ON THE POINTER WE ACTUALLY READ. The read and this write are two
+// statements, so a concurrent Insert can open a NEW checkpoint in between;
+// without the predicate that live pointer would be erased here, and the task
+// would silently stop reading as awaiting a human — strictly worse than the
+// stale pointer this repairs. The postgres twin went unguarded until the
+// 2026-09-03 four-week audit; both backends now carry the same predicate.
+//
+// The repair failing is deliberately NOT fatal: the caller's answer is the
+// miss, and turning a successful read of absence into an error would break
+// every consumer that switches on it.
+func (r *TaskMessageRepository) repairDanglingCheckpointPointer(ctx context.Context, taskID, pointer string) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE tasks SET open_checkpoint_id = NULL
+		 WHERE id = ? AND open_checkpoint_id = ?`,
+		taskID, pointer)
 }
 
 // MarkCheckpointResolved flips the checkpoint message's metadata

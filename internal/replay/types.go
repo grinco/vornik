@@ -8,7 +8,14 @@
 // (fork.go) that mutates executions.
 //
 // Scope discipline: we surface what's persisted, no more.
-// Workflow-step LLM prompt bodies are NOT stored today — only
+// Since 2026-09-04 a step's FIRST model request (system, user, tools) IS
+// persisted, content-addressed and redacted, with the hashes on the outcome
+// row and on Step.PromptHashes; bodies are fetched on demand through the
+// executions API (step-prompt persistence design). What is still not here:
+// the model's intermediate assistant turns between tool calls. The paragraph
+// below describes the state before that and is kept for the record.
+//
+// Workflow-step LLM prompt bodies were NOT stored — only
 // token counts + cost on task_llm_usage. So `LLMCalls` carries
 // the summary (model, role, tokens, cost, iterations) but not
 // the prompt/response text. The dispatcher chat path persists
@@ -112,6 +119,12 @@ type Step struct {
 	// findings the executor wrote on this step's outcome row.
 	// Empty when no signals fired or detector not run.
 	HallucinationSignals json.RawMessage
+	// PromptHashes point into step_prompts: what the model was TOLD at the
+	// step's first request — system, user, tools — content-addressed and
+	// redacted at write (step-prompt persistence design). Bodies are fetched
+	// on demand (GET /api/v1/executions/{id}/steps/{step}/prompt). All empty
+	// for a step run by an image predating the contract.
+	PromptHashes persistence.StepPromptHashes
 }
 
 // LLMCall summarises one (model, role) tuple's spend on a step.

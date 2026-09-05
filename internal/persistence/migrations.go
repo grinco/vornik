@@ -7397,12 +7397,270 @@ UPDATE execution_step_outcomes SET error_class = 'model_unhealthy'
  WHERE error_class = 'unclassified'
    AND split_part(error_detail, '--- Container Log', 1) LIKE '%MODEL_UNHEALTHY%';
 `,
-		// Reversing to 'unclassified' restores the pre-migration state exactly:
-		// every row this touched held that value, and the live classifier is what
-		// would put them back here.
+		// BOUNDED BY applied_at, exactly as 170's Down is (see there for the
+		// argument in full).
+		//
+		// "Every row this touched held that value" is true only at the instant Up
+		// ran. This migration ships alongside the live classifier (4d951edb),
+		// which writes 'model_unhealthy' on NEW rows from the moment of deploy —
+		// so an unbounded Down reclassifies every legitimately-classified row
+		// back to 'unclassified', silently discarding real evidence of genuine
+		// circuit-open events. That is not hypothetical: glm-5.2 was open
+		// 2026-08-28 to 08-31.
+		//
+		// Same known limit as 170: Up -> live traffic -> Up again -> Down would
+		// over-revert, because the second applied_at postdates rows the live
+		// classifier wrote. The realistic usage is one Down immediately after a
+		// bad Up, so the bound is chosen to make the common case exact rather
+		// than the pathological one safe.
 		Down: `
 UPDATE execution_step_outcomes SET error_class = 'unclassified'
- WHERE error_class = 'model_unhealthy';
+ WHERE error_class = 'model_unhealthy'
+   AND recorded_at <= COALESCE(
+       (SELECT applied_at FROM migrations WHERE version = 173),
+       now());
+`,
+	},
+	{
+		Version: 174,
+		Name:    "project_first_seen",
+		// The first-seen ledger behind project_created telemetry.
+		//
+		// WHY A TABLE AND NOT A FLAG. A project is creatable four ways and only
+		// three emitted: `vornikctl init --template`, `vornikctl init`, and the
+		// API/UI template create. The fourth — writing configs/projects/<id>.yaml
+		// by hand, by config management, or by copying an existing project — is
+		// the one an operator uses for every project after their first, and the
+		// one every deployed project in this installation came from. So the
+		// adoption number counted projects created through a WIZARD, not projects
+		// that exist, and the error was CORRELATED WITH MATURITY: the more
+		// established the deployment, the larger the share it could not see.
+		//
+		// The hard part is not the emit, it is defining "created" on a path with
+		// no creation moment. LoadProjects runs on every daemon start and every
+		// registry reload, and sees existing and new projects identically —
+		// emitting per load would turn a lifecycle counter into a restart
+		// counter. This table is the first-seen predicate, PERSISTED rather than
+		// in-memory for exactly that reason: an in-memory set resets with the
+		// process, which is the failure mode being avoided.
+		//
+		// The insert is ON CONFLICT DO NOTHING and the emit is conditioned on it
+		// having actually inserted, so N daemon restarts produce one event.
+		//
+		// HONEST ACROSS A BACKUP RESTORE, within the limit of what is knowable.
+		// Restore the database with the config tree and the markers come back, so
+		// nothing re-emits. Restore a config tree onto an EMPTY database and every
+		// project reads as new — which is the correct reading, because that is a
+		// new deployment, and distinguishing it would need a cross-deployment
+		// identity this system deliberately does not mint.
+		//
+		// Not scoped to a project row: there is no projects table. The registry
+		// is the config tree, and this is a ledger ABOUT it.
+		Up: `
+CREATE TABLE IF NOT EXISTS project_first_seen (
+    project_id    TEXT PRIMARY KEY,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source        TEXT NOT NULL DEFAULT ''
+);
+
+COMMENT ON TABLE project_first_seen IS 'First time the daemon observed each project id, so project_created telemetry fires once per project rather than once per registry load. Also the only record of a project created by writing its config file, which no wizard path can see.';
+`,
+		Down: `
+DROP TABLE IF EXISTS project_first_seen;
+`,
+	},
+	{
+		Version: 175,
+		Name:    "step_prompts",
+		// What a workflow step was TOLD at its first model request, in three
+		// content-addressed parts, plus the hashes on the outcome row that point
+		// at them. Step-prompt persistence design (2026-09-03) §4.
+		//
+		// WHY A TABLE OF ITS OWN and not chat_system_prompts: different producer
+		// (the agent container, via a second output file beside result.json),
+		// different reader (replay, the execution prompt endpoint), and that
+		// table has neither retention nor a redaction seam — extending it would
+		// inherit both gaps. This one is pruned by reference (a row lives as
+		// long as an outcome row points at it) and written through the
+		// redaction decorator, hash taken after redaction.
+		//
+		// The three columns default to '' rather than NULL so the partial
+		// indexes below and the prune's reference check read one way; '' means
+		// "not recorded" — an image predating the contract, or a step that died
+		// before its first request.
+		Up: `
+CREATE TABLE IF NOT EXISTS step_prompts (
+    hash       TEXT PRIMARY KEY,
+    part       TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    bytes      INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE step_prompts IS 'Content-addressed parts (system, user, tools) of a workflow step''s first model request, redacted at write. Referenced from execution_step_outcomes.prompt_*_hash; pruned when unreferenced.';
+
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS prompt_system_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS prompt_user_hash   TEXT NOT NULL DEFAULT '';
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS prompt_tools_hash  TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_system ON execution_step_outcomes (prompt_system_hash) WHERE prompt_system_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_user   ON execution_step_outcomes (prompt_user_hash)   WHERE prompt_user_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_tools  ON execution_step_outcomes (prompt_tools_hash)  WHERE prompt_tools_hash <> '';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_step_outcomes_prompt_tools;
+DROP INDEX IF EXISTS idx_step_outcomes_prompt_user;
+DROP INDEX IF EXISTS idx_step_outcomes_prompt_system;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS prompt_tools_hash;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS prompt_user_hash;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS prompt_system_hash;
+DROP TABLE IF EXISTS step_prompts;
+`,
+	},
+	{
+		Version: 176,
+		Name:    "step_outcome_reclassify_orphaned",
+		// Companion to the `orphaned` outcome shipped 2026-09-04: the three
+		// paths that terminalise a task's leftover executions left the step
+		// outcomes beneath them pending, and the watchdog backstop relabelled
+		// them `superseded` — the OPERATOR's word for retry-from-step. That
+		// change applies to NEW rows only, and history is what every quality
+		// query reads.
+		//
+		// MEASURED before writing this, all-time on the production database:
+		// 835 `superseded` rows, of which 633 carry error_code
+		// 'superseded_by_new_run', 163 'superseded_by_terminal_task' and 13
+		// 'superseded_orphan_paused' — 809 written by an orphan sweep. Fifteen
+		// are genuine retry-from-step supersessions (null code, and a LATER row
+		// for the same step: the re-run). Eleven are unexplained and are left
+		// alone deliberately: relabelling a row on a guess is the defect this
+		// migration exists to undo.
+		//
+		// WHY error_code AND NOT the later-row test. The obvious predicate is
+		// "the step never re-ran", but SupersedeAfter relabels every row with
+		// recorded_at > cutoff — including steps that will NOT re-run, so an
+		// operator retrying from step B supersedes step A's row and A never
+		// runs again. That test alone would relabel a real supersession. The
+		// error_code is the marker the repository stamps for exactly this
+		// purpose: "so audits/metrics can tell sweep-finalized orphans from the
+		// per-task cascade and from genuine cancellations". This is such an
+		// audit.
+		//
+		// BOTH TESTS, not one: the NOT EXISTS clause is belt and braces against
+		// the single case the code alone would miss — an execution retried from
+		// a step and THEN superseded by a new run would carry an orphan code
+		// while holding rows an operator really did supersede. It has never
+		// happened (the combined predicate matches the same 809 rows as the
+		// code alone), so the clause costs nothing today and closes the case
+		// that would otherwise need luck.
+		//
+		// Postgres only (the runner is constructed solely by postgres/db.go;
+		// SQLite takes its shape from a fresh CREATE TABLE and has no history).
+		// IDEMPOTENT: after this runs no row matches the predicate, so a replay
+		// is inert. Bounded to one column and three literals — never a wipe, and
+		// the target IS the production database.
+		//
+		// Design: https://docs.vornik.io
+		Up: `
+UPDATE execution_step_outcomes o
+   SET outcome = 'orphaned'
+  FROM executions e
+ WHERE e.id = o.execution_id
+   AND o.outcome = 'superseded'
+   AND e.error_code IN (
+        'superseded_by_new_run',
+        'superseded_by_terminal_task',
+        'superseded_orphan_paused')
+   AND NOT EXISTS (
+        SELECT 1 FROM execution_step_outcomes l
+         WHERE l.execution_id = o.execution_id
+           AND l.step_id      = o.step_id
+           AND l.recorded_at  > o.recorded_at);
+`,
+		// NOT bounded by applied_at, and this is where it differs from 170 and
+		// 173 (review-20260904-5006, finding 4 — which corrected an earlier
+		// draft of this comment that copied their bound without re-deriving it).
+		//
+		// Those two Downs are bounded because an unbounded revert would DESTROY
+		// EVIDENCE: 'model_unhealthy' rows the live classifier wrote after the
+		// deploy carry real information that 'unclassified' does not, so
+		// reverting them discards it. Here the revert direction is the other
+		// way round. A Down accompanies rolling the BINARY back, and the rolled
+		// back binary writes 'superseded' again — so leaving post-deploy
+		// 'orphaned' rows behind would strand them in a label the running code
+		// no longer produces or reads. Reverting all of them is what "roll this
+		// change back" means.
+		//
+		// The predicate is its own bound: outcome='orphaned' under an
+		// orphan-sweep error_code is exactly the set this change created,
+		// before and after the deploy alike.
+		Down: `
+UPDATE execution_step_outcomes o
+   SET outcome = 'superseded'
+  FROM executions e
+ WHERE e.id = o.execution_id
+   AND o.outcome = 'orphaned'
+   AND e.error_code IN (
+        'superseded_by_new_run',
+        'superseded_by_terminal_task',
+        'superseded_orphan_paused');
+`,
+	},
+	{
+		Version: 177,
+		Name:    "llm_exchanges",
+		// Every model request/response pair of an agent step, recorded at the
+		// chat proxy when the execution's project opted in
+		// (2026-09-04-llm-exchange-record-replay-design.md §3). TEXT, not
+		// JSONB, for the two bodies: the byte-exactness incident of 2026-07-24
+		// is why — a replay matches the stored bytes' hash. The FK is a belt
+		// on this backend and documentation on SQLite (foreign keys off);
+		// retention step 5e is the mechanism on both.
+		Up: `
+CREATE TABLE IF NOT EXISTS llm_exchanges (
+    id                TEXT PRIMARY KEY,
+    execution_id      TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+    step_id           TEXT NOT NULL,
+    iteration         INTEGER,
+    seq               INTEGER NOT NULL,
+    request_hash      TEXT NOT NULL,
+    request_json      TEXT NOT NULL,
+    response_json     TEXT NOT NULL,
+    model             TEXT NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms       INTEGER NOT NULL DEFAULT 0,
+    redactions        INTEGER NOT NULL DEFAULT 0,
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_llm_exchanges_exec_step ON llm_exchanges (execution_id, step_id, seq);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_llm_exchanges_exec_step;
+DROP TABLE IF EXISTS llm_exchanges;
+`,
+	},
+	{
+		Version: 178,
+		Name:    "step_io_hashes",
+		// The two files at the container boundary — task.json in, result.json
+		// out — join the content-addressed step_prompts store as parts
+		// "input" and "result" (2026-09-05-step-io-persistence-design.md §3).
+		// Two more hash columns on the outcome row, each with the partial
+		// index the three prompt columns have, so PruneUnreferenced's five
+		// probes are all index lookups. No table change: step_prompts.part is
+		// free text by design.
+		Up: `
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS input_hash  TEXT NOT NULL DEFAULT '';
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS result_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_input  ON execution_step_outcomes (input_hash)  WHERE input_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_result ON execution_step_outcomes (result_hash) WHERE result_hash <> '';
+COMMENT ON COLUMN execution_step_outcomes.input_hash IS 'step_prompts.hash of the task.json the executor handed the container (part input), redacted at write; empty = not recorded.';
+COMMENT ON COLUMN execution_step_outcomes.result_hash IS 'step_prompts.hash of the result.json the daemon read back (part result), redacted at write; empty = not recorded.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_step_outcomes_result;
+DROP INDEX IF EXISTS idx_step_outcomes_input;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS result_hash;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS input_hash;
 `,
 	},
 }

@@ -131,13 +131,23 @@ type ChatAuditRepository interface {
 	// would be an N+1 on every inbox render.
 	GetChatAuditsByTurnIDs(ctx context.Context, turnIDs []string) (map[string]ChatAuditEntry, error)
 
-	// SavePrompt stores a system prompt body keyed by its sha256 hex
-	// digest. Idempotent: a second call with the same hash is a
-	// no-op (the digest IS the identity check). Returns
-	// ErrDuplicateKey only when two different bodies somehow hash to
-	// the same value — operationally impossible but surfaced for
-	// caller awareness.
-	SavePrompt(ctx context.Context, hash, body string) error
+	// SavePrompt stores a system prompt body and returns its identity: the
+	// sha256 hex digest of the bytes actually stored. Idempotent — the
+	// digest IS the identity check, so a second call with the same body is
+	// a no-op.
+	//
+	// The REPOSITORY hashes, not the caller. Callers used to compute the
+	// digest themselves and pass it in, which put the hash before the
+	// redaction seam: a decorator that redacts the body would then store
+	// bytes whose digest is not their key, and GetPrompt would return a
+	// body that fails verification. Handing the body in and taking the hash
+	// back makes "hash the unredacted body" unspellable — see
+	// https://docs.vornik.io §3.1.
+	// On a write failure the hash is returned ANYWAY, alongside the error:
+	// the caller records it on the audit row so a turn whose body write
+	// failed still points at the bytes a later successful save lands under.
+	// Returning an empty hash there would strand the row permanently.
+	SavePrompt(ctx context.Context, body string) (hash string, err error)
 
 	// GetPrompt fetches the body for a hash. Returns ErrNotFound
 	// when no row matches.

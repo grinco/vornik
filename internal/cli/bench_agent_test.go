@@ -650,3 +650,68 @@ func TestBuildArm_UnbatchedDescribesWhatItRan(t *testing.T) {
 			got.TaskSetSHA256, want.TaskSetSHA256)
 	}
 }
+
+// PRECONDITIONS BELONG AT THE START. `bench agent gold` runs every task itself
+// and only then builds the manifest, so any write-time precondition it holds is
+// a trap: on 2026-08-23 a malformed --task-set-hash was refused after 3h40m of
+// completed work that could not be salvaged, because rescore needs a journal
+// the failed command never wrote.
+//
+// preflightGoldWrite is what makes that refusal instant. These pin both
+// preconditions the command actually holds.
+func TestPreflightGoldWrite_RefusesABadDigestBeforeAnyRun(t *testing.T) {
+	dir := t.TempDir()
+	gold := filepath.Join(dir, "gold.json")
+
+	// The exact shape that cost 3h40m.
+	err := preflightGoldWrite(gold, "topup0-"+strings.Repeat("a", 64))
+	if err == nil {
+		t.Fatal("a malformed --task-set-hash passed preflight; it would be refused only after the runs")
+	}
+	if !strings.Contains(err.Error(), "task-set-hash") {
+		t.Errorf("error %q does not name the flag at fault", err)
+	}
+}
+
+func TestPreflightGoldWrite_RefusesAnUnwritableDestination(t *testing.T) {
+	dir := t.TempDir()
+	rodir := filepath.Join(dir, "readonly")
+	if err := os.Mkdir(rodir, 0o500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(rodir, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; mode bits do not deny writes")
+	}
+
+	err := preflightGoldWrite(filepath.Join(rodir, "gold.json"), strings.Repeat("a", 64))
+	if err == nil {
+		t.Fatal("an unwritable --gold destination passed preflight; the run would complete " +
+			"and then fail to record, which is the expensive ordering this exists to prevent")
+	}
+	if !strings.Contains(err.Error(), "gold") {
+		t.Errorf("error %q does not name the destination at fault", err)
+	}
+}
+
+// The happy path must leave NO residue: a preflight that creates the file it is
+// probing would make a later failure look like a partial write.
+func TestPreflightGoldWrite_AcceptsAndLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	gold := filepath.Join(dir, "gold.json")
+
+	if err := preflightGoldWrite(gold, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("a valid digest and writable destination were refused: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("preflight left %v behind; it must probe without creating anything", names)
+	}
+}

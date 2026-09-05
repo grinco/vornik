@@ -88,6 +88,39 @@ func New(state StateStore, tasks TaskStatusReader, logger zerolog.Logger) *Coord
 // answer, and pause must not become a trap the operator cannot escape from the
 // very thread they set it in.
 func (c *Coordinator) Decide(ctx context.Context, projectID string, job forgeapi.ForgeJob, onDemand bool) Decision {
+	// AUTHOR TRUST IS THE FIRST GATE, ahead of every early return below —
+	// including the nil-store one. A deployment with no review state still must
+	// not let a stranger spend its review budget, and "uncertainty resolves to
+	// enqueue" is a rule about COALESCING, not about authorization.
+	//
+	// onDemand means a human typed a command. Automatic triggers are exempt by
+	// construction: a push carries no author standing, and gating it would stop
+	// reviewing pull requests altogether (design §7.1).
+	//
+	// It lives HERE rather than in an ingress because the generic webhook path
+	// got this gate (9ecedb2c, webhook_handlers.go) and the GitHub App channel
+	// did not, while both dispatch the identical command grammar. The App
+	// channel leaned on its SenderAllowlist, which is documented and coded as
+	// "empty allows all logins" — a default-open gate on a public repository is
+	// a denial-of-wallet primitive. Both ingresses reach this function, so
+	// putting the refusal here is what makes the promise in
+	// docs/public/features/forge.md ("only people with standing in the
+	// repository can run these") true of the product rather than of one path.
+	//
+	// The generic ingress ALSO refuses earlier, where it can record a
+	// webhook_events row and answer the delivery; this is the floor under it,
+	// not a replacement for it.
+	if onDemand && !job.AuthorIsTrusted {
+		if c != nil {
+			c.logger.Warn().
+				Str("project_id", projectID).
+				Str("repo", job.Repo).Int("number", job.Number).
+				Str("command", job.Command).
+				Msg("forgereview: command from an author without repository standing; refusing")
+		}
+		return Decision{Skip: true, Reason: "author_untrusted"}
+	}
+
 	if c == nil || c.state == nil || !job.IsChangeRequest || job.Repo == "" || job.Number == 0 {
 		return Decision{}
 	}

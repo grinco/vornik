@@ -28,6 +28,7 @@ func CheckPhantomGrants(t *Table, grants map[string][]string) []Finding {
 	// exists to police, and treating them as proof here would let the two checks
 	// cover for each other.
 	runnable := t.setOf(KindAgentToolDispatch)
+	helper := t.setOf(KindAgentToolHelperDispatch) // a Go handler is a way to run (dispatch design §4)
 	handlers := t.setOf(KindSystemHandler)
 
 	holders := make([]string, 0, len(grants))
@@ -47,7 +48,7 @@ func CheckPhantomGrants(t *Table, grants map[string][]string) []Finding {
 			if _, ok := UngatedByDesign[tool]; ok {
 				continue
 			}
-			if runnable.has(tool) || handlers.has(tool) {
+			if runnable.has(tool) || helper.has(tool) || handlers.has(tool) {
 				continue
 			}
 			out = append(out, Finding{

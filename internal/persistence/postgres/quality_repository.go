@@ -41,14 +41,21 @@ const perStepUsage = `
 // real final outcome, so counting it as success or failure would bias the rate;
 // dropping it from both numerator and denominator is least-biased. canonStepFilter
 // relies on the `o.` alias bound by `FROM execution_step_outcomes o` below.
-const canonStepFilter = `o.recorded_at >= $1 AND o.outcome <> 'superseded'`
+//
+// `orphaned` joins it for the same reason and in far greater number (2026-09-04):
+// the execution went terminal by a path that never finalised the row, so nothing
+// learned the outcome. Those rows carried the 'superseded' literal until that
+// date and were therefore already excluded here — dropping them from this filter
+// when the label changed would have silently folded 800+ unlearned outcomes into
+// every quality rate this repository serves.
+const canonStepFilter = `o.recorded_at >= $1 AND o.outcome NOT IN ('superseded', 'orphaned')`
 
 // canonStepFilterBetween is the bounded twin of canonStepFilter (design §4.1):
 // the ONLY difference is the upper recorded_at bound, so the *Between aggregate
 // queries below reuse the identical canonicalisation/fold/score and cannot drift
 // from the unbounded queries except in the window they cover. $1=from (inclusive),
 // $2=to (exclusive).
-const canonStepFilterBetween = `o.recorded_at >= $1 AND o.recorded_at < $2 AND o.outcome <> 'superseded'`
+const canonStepFilterBetween = `o.recorded_at >= $1 AND o.recorded_at < $2 AND o.outcome NOT IN ('superseded', 'orphaned')`
 
 // RoleQualityAggregates returns per-(project, role) A1 aggregates since `since`.
 // Passing = steps with outcome 'ok' (constrained exits like prompt_token_budget

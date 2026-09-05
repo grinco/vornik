@@ -1,0 +1,31 @@
+{
+  "function": {
+    "description": "Show commit history as typed JSON [{sha, short_sha, author, date, subject}]. More token-efficient than parsing run_shell 'git log' output.",
+    "name": "git_log",
+    "parameters": {
+      "properties": {
+        "max": {
+          "description": "Max commits. Default: 20.",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Repo root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Limit history to commits touching these paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "Revision range (e.g. 'main..HEAD'). Default: HEAD.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

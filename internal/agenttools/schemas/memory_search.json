@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "Search project memory for relevant past findings, research notes, and task outputs from previous tasks in this project.",
+    "name": "memory_search",
+    "parameters": {
+      "properties": {
+        "limit": {
+          "description": "Max results to return (default 5, max 20)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Natural language query to search for",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

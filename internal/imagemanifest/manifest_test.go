@@ -362,18 +362,26 @@ func TestEmitRowsIsShellParseable(t *testing.T) {
 				"(tag, containerfile, target, context, condition)", line, len(fields))
 		}
 		for i, f := range fields {
-			// Target is legitimately empty for single-stage images; the
-			// other four never are, and an empty one would shift columns
-			// for a naive reader.
-			if i != 2 && f == "" {
-				t.Errorf("row %q: field %d is empty", line, i)
+			// NO field may be empty — including the target (design §12 C8).
+			// Tab is IFS whitespace, so bash's `read` collapses "<TAB><TAB>"
+			// into one separator and every later column shifts left; the
+			// single-stage agent image did exactly that to vornik-update.sh
+			// for eleven days. A single-stage image prints NoTarget instead.
+			if f == "" {
+				t.Errorf("row %q: field %d is empty — bash read would shift the columns after it", line, i)
 			}
 			if strings.ContainsAny(f, " \n") {
 				t.Errorf("row %q: field %q contains whitespace that breaks field splitting", line, f)
 			}
 		}
+		if strings.Contains(line, "\t\t") || strings.HasPrefix(line, "\t") || strings.HasSuffix(line, "\t") {
+			t.Errorf("row %q has an empty column; bash read cannot see it", line)
+		}
 		if fields[0] == AgentImageTag {
 			sawAgent = true
+			if fields[2] != NoTarget {
+				t.Errorf("the single-stage agent image must carry %q in the target column, got %q", NoTarget, fields[2])
+			}
 		}
 	}
 	if !sawAgent {
@@ -388,5 +396,50 @@ func TestEmitRowsIsShellParseable(t *testing.T) {
 func TestEmitRowsIsEmptyForNoImages(t *testing.T) {
 	if got := EmitRows(nil); got != "" {
 		t.Errorf("no images must emit nothing, got %q", got)
+	}
+}
+
+// TestConditionAlternativesOr pins §12 C7 of the image-freshness design: a
+// condition may name alternatives separated by "|", the row is needed when
+// ANY alternative holds, and a typo in one alternative is still a typo — it
+// resolves false rather than making the row deployable. Motivated by the
+// scraper rows, which named only the dev box's unit while the quickstart runs
+// the scraper from scraper.compose.yaml.
+func TestConditionAlternativesOr(t *testing.T) {
+	img := Image{Tag: "x", Condition: "unit:vornik-scraper|compose:scraper"}
+	if !img.Needed(&stubProbe{enabledUnits: map[string]bool{"vornik-scraper": true}}) {
+		t.Error("the unit alternative alone must make the row needed")
+	}
+	if !img.Needed(&stubProbe{stacksWithCtrs: map[string]bool{"scraper": true}}) {
+		t.Error("the compose alternative alone must make the row needed")
+	}
+	if img.Needed(&stubProbe{}) {
+		t.Error("neither alternative holding must leave the row skipped")
+	}
+	typo := Image{Tag: "x", Condition: "unit:vornik-scraper|conpose:scraper"}
+	if typo.Needed(&stubProbe{stacksWithCtrs: map[string]bool{"scraper": true}}) {
+		t.Error("a misspelt alternative must resolve false, never to 'build it'")
+	}
+	if !typo.Needed(&stubProbe{enabledUnits: map[string]bool{"vornik-scraper": true}}) {
+		t.Error("a misspelt alternative must not poison a correct one")
+	}
+}
+
+// TestScraperRowsNameBothTopologies: the dev box runs the scraper from a
+// systemd unit, the quickstart from scraper.compose.yaml; an updater that
+// knows only one leaves the other's scraper stale forever (§12.1).
+func TestScraperRowsNameBothTopologies(t *testing.T) {
+	seen := 0
+	for _, img := range All() {
+		if !strings.Contains(img.Tag, "vornik-scraper") {
+			continue
+		}
+		seen++
+		if img.Condition != "unit:vornik-scraper|compose:scraper" {
+			t.Errorf("%s condition = %q, want unit:vornik-scraper|compose:scraper", img.Tag, img.Condition)
+		}
+	}
+	if seen == 0 {
+		t.Skip("no scraper rows in this tree (Community export)")
 	}
 }

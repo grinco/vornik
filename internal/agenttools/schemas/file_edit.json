@@ -1,0 +1,33 @@
+{
+  "function": {
+    "description": "Edit a file by replacing an exact string. Prefer this over file_write for modifying existing files — it only sends the diff region and fails fast if old_string is absent or ambiguous. Fails if old_string does not match exactly once (unless replace_all is true). Paths are relative to /app/workspace/ — use 'project/' prefix for the persistent project folder.",
+    "name": "file_edit",
+    "parameters": {
+      "properties": {
+        "new_string": {
+          "description": "Replacement string. May be empty to delete the match.",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Exact string to replace. Must match byte-for-byte including whitespace and indentation.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative path from /app/workspace/.",
+          "type": "string"
+        },
+        "replace_all": {
+          "description": "Replace every occurrence instead of requiring exactly one. Default: false.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

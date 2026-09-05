@@ -1,0 +1,30 @@
+{
+  "status": "COMPLETED",
+  "message": "The task explicitly forbids reading, listing, searching, writing any files, running commands, or calling any tools — it asks for the plan as the final answer only. No file write is required or permitted here, so there is nothing to do with the tools.\n\nThe plan is my final answer:\n\n## Implementation Plan: `--version` flag for the snake binary\n\n1. **Define a version constant.** Add a package-level variable (e.g. `var Version = \"0.1.0\"`, or wired to build-time `-ldflags` injection) in the snake binary's main package or a dedicated `version.go` file, so the value can be overridden at build time without editing source.\n\n2. **Add `--version` flag handling in the CLI entrypoint.** In the argument-parsing path of the snake binary (`main` or its flag-parsing helper), detect `--version` (and the `-version` alias) before any other startup logic, print the version string to stdout, and `os.Exit(0)`. Use the stdlib `flag` package or whatever parser the binary already uses so behavior stays consistent with existing flags.\n\n3. **Make the output deterministic and replay-friendly.** Print exactly the version string (e.g. `snake 0.1.0\\n`) with no timestamps, ANSI colors, or trailing diagnostics, to stdout only (not stderr), so it diffs cleanly under replay-fixture capture.\n\n4. **Add a test asserting the behavior.** Write a unit/smoke test (build the binary, run with `--version`, assert stdout equals the expected string and exit code is 0) so future changes can't silently break the flag and so a replay fixture can pin the exact output.\n\n5. **Register a replay fixture.** Add a fixture entry invoking `snake --version` that records the expected stdout/exit-code pair, documenting the output format so the replay harness detects regressions automatically.",
+  "outputArtifacts": [
+    {
+      "name": "plan-response.md",
+      "path": "/app/workspace/artifacts/out/plan-response.md"
+    }
+  ],
+  "delegatedTasks": [],
+  "toolAudit": [],
+  "usage": {
+    "prompt_tokens": 8674,
+    "completion_tokens": 898,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "total_tokens": 9572,
+    "iterations": 2,
+    "max_request_bytes": 24076,
+    "max_prompt_tokens_estimate": 8026,
+    "prompt_tokens_estimated_total": 15439,
+    "max_prompt_tokens_actual": 4535,
+    "context_size": 100000,
+    "max_tokens": 8192
+  },
+  "diagnostics": {
+    "exitCode": 0,
+    "durationSeconds": 0
+  }
+}

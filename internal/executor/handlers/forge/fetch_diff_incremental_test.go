@@ -204,6 +204,17 @@ type supersededState struct {
 	pending  string
 }
 
+// newSupersededState keeps the row this double REPORTS and the row its
+// compare-and-set COMPARES AGAINST as one value. Letting them drift would make
+// the double contradict itself — every close refused against a pending head the
+// same double had just published — which is a fake failing for a reason no
+// backend has.
+func newSupersededState(baseline, pending string) *supersededState {
+	st := &supersededState{baseline: baseline, pending: pending}
+	st.pendingHead = pending
+	return st
+}
+
 func (s *supersededState) Get(context.Context, string, string, int) (*persistence.ForgePRReviewState, error) {
 	return &persistence.ForgePRReviewState{
 		LastReviewedHeadSHA: s.baseline,
@@ -214,7 +225,7 @@ func (s *supersededState) Get(context.Context, string, string, int) (*persistenc
 func TestFetchDiff_ReviewsTheSupersededHeadNotItsCreatingOne(t *testing.T) {
 	prov := &fakeProvider{compareDiff: []byte("through the newest push\n")}
 	h := NewFetchDiffHandler(fakeResolver{p: prov}).
-		WithReviewState(&supersededState{baseline: "sha-old", pending: "sha-newest"})
+		WithReviewState(newSupersededState("sha-old", "sha-newest"))
 
 	// The task was created by the push at sha-created; sha-newest landed after
 	// and was absorbed into this review.
@@ -233,7 +244,7 @@ func TestFetchDiff_ReviewsTheSupersededHeadNotItsCreatingOne(t *testing.T) {
 func TestFetchDiff_CommandWithNoHeadSHA_UsesTheRecordedHead(t *testing.T) {
 	prov := &fakeProvider{compareDiff: []byte("since the last review\n")}
 	h := NewFetchDiffHandler(fakeResolver{p: prov}).
-		WithReviewState(&supersededState{baseline: "sha-old", pending: "sha-current"})
+		WithReviewState(newSupersededState("sha-old", "sha-current"))
 
 	// HeadSHA empty, exactly as a comment-command job arrives.
 	if _, err := h.Execute(context.Background(), incrementalTask(t, "", false)); err != nil {
@@ -249,7 +260,7 @@ func TestFetchDiff_CommandWithNoHeadSHA_UsesTheRecordedHead(t *testing.T) {
 func TestFetchDiff_NoHeadAnywhere_FallsBackToFull(t *testing.T) {
 	prov := &fakeProvider{diff: []byte("the whole PR\n")}
 	h := NewFetchDiffHandler(fakeResolver{p: prov}).
-		WithReviewState(&supersededState{baseline: "sha-old", pending: ""})
+		WithReviewState(newSupersededState("sha-old", ""))
 
 	if _, err := h.Execute(context.Background(), incrementalTask(t, "", false)); err != nil {
 		t.Fatalf("Execute: %v", err)

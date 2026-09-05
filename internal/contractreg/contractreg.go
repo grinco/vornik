@@ -37,14 +37,38 @@ const (
 	// linters and the role-library validator accept.
 	KindAgentToolGo Kind = "agent_tool_go"
 
-	// KindAgentToolAdvertised is entrypoint.sh's BUILTIN_TOOL_NAMES_JSON,
-	// which filters which tool schemas are offered to the model.
+	// KindAgentToolAdvertised is BUILTIN_TOOL_NAMES_JSON — since 2026-09-03
+	// generated into images/vornik-agent/tool_registry.generated.sh from
+	// agenttools.Offerable() and sourced by the entrypoint. The "declared" set
+	// the fail-closed advertisement filter consults and is_builtin_tool() reads.
 	KindAgentToolAdvertised Kind = "agent_tool_advertised"
 
-	// KindAgentToolGate is entrypoint.sh's is_builtin_tool() case list — the
-	// EXECUTION-time allowlist gate. A name missing here is not gated at all,
-	// which is a privilege bypass rather than a cosmetic inconsistency.
-	KindAgentToolGate Kind = "agent_tool_gate"
+	// KindAgentToolRegistry is every entry of TOOL_REGISTRY_JSON in the
+	// generated registry — name plus definition. What tool_definitions() can
+	// offer at all.
+	KindAgentToolRegistry Kind = "agent_tool_registry"
+
+	// KindAgentToolNeverAdvertised is the registry entries whose advertise token
+	// is "never": tool_definitions() skips them and another path must append
+	// them by name, or they are declared and unreachable.
+	KindAgentToolNeverAdvertised Kind = "agent_tool_never_advertised"
+
+	// KindAgentToolAdvertiseToken is ADVERTISE_TOKENS_JSON — the closed set of
+	// advertise conditions the generator emits (agenttools.AdvertiseTokens()).
+	KindAgentToolAdvertiseToken Kind = "agent_tool_advertise_token"
+
+	// KindAgentToolAdvertiseCase is the case labels of the entrypoint's
+	// tool_advertised_now() — the one function that maps a token to an
+	// environment test. Compared against the tokens in both directions, the
+	// same shape as dispatch: a token with no case advertises nothing, a case
+	// with no token is dead code that reads like a rule.
+	KindAgentToolAdvertiseCase Kind = "agent_tool_advertise_case"
+
+	// KindAgentToolAppendedByName is every name the entrypoint passes to
+	// tool_definition_for — the path a never-advertised tool reaches the model
+	// by (tool_search from rebuild_tools_file). Presence only; whether the call
+	// sits behind a live condition is what the shell tests exercise.
+	KindAgentToolAppendedByName Kind = "agent_tool_appended_by_name"
 
 	// KindAgentToolInlineExempt is the set of tool names the execution gate
 	// exempts INLINE, e.g.
@@ -61,21 +85,45 @@ const (
 	// grant than a name, so it carries the same recorded-reason requirement.
 	KindAgentToolUngatedPrefix Kind = "agent_tool_ungated_prefix"
 
-	// KindAgentToolAdvertisementFilter records that tool_definitions()'s
-	// $extras_ungated append is filtered against the exemption registry rather
-	// than concatenated unconditionally.
+	// KindAgentToolAdvertisementFilter holds presence MARKERS, not a vocabulary:
+	// structural facts about the entrypoint whose ABSENCE is the finding.
 	//
-	// A presence marker, not a vocabulary: the thing worth asserting is that the
-	// THIRD PATH is closed. Until 2026-08-22 the append was unconditional, so a
-	// definition added to extras_ungated reached every role's model whatever the
-	// allowlist said and whatever the registries said — a bypass that no amount
-	// of registry agreement would have caught, because it went around the
-	// registries rather than disagreeing with them.
+	//   fail-closed-filter        tool_definitions() keeps a definition only if exempt,
+	//                             or declared AND on the role's allowlist (2026-08-20)
+	//   definitions-registry-only tool_definitions() reads TOOL_REGISTRY_JSON and carries
+	//                             no inline definition and no heredoc — there is no
+	//                             append step, so the 2026-08-22 class (a definition
+	//                             reaching the model without consulting a registry)
+	//                             has no place to happen
+	//   registry-sourced          the entrypoint sources tool_registry.generated.sh
+	//                             before its first use of a registry variable
+	//   registry-declared-inline  the entrypoint ALSO declares a registry variable —
+	//                             a second copy; its PRESENCE is the finding
+	//   gate-reads-registry       is_builtin_tool() consults BUILTIN_TOOL_NAMES_JSON
+	//                             rather than a hand-written case list
+	//   advertise-default-refuses tool_advertised_now()'s default arm returns 1
+	//
+	// The 2026-08-22 marker ("ungated-append") is retired with the append.
 	KindAgentToolAdvertisementFilter Kind = "agent_tool_advertisement_filter"
 
 	// KindAgentToolDispatch is entrypoint.sh's exec_tool case list: what can
 	// actually run. This is the authoritative set of implemented agent tools.
 	KindAgentToolDispatch Kind = "agent_tool_dispatch"
+
+	// KindAgentToolHelperDispatch is internal/agentloop.Handlers: the tools
+	// whose dispatch case is the Go helper rather than a bash case
+	// (agent-tool dispatch design §4). Added by the lint from HandlerNames().
+	KindAgentToolHelperDispatch Kind = "agent_tool_helper_dispatch"
+
+	// KindAgentToolHelperListed is the generated HELPER_TOOL_NAMES_JSON — what
+	// exec_tool actually delegates. Compared against the declaration.
+	KindAgentToolHelperListed Kind = "agent_tool_helper_listed"
+
+	// KindAgentToolHelperBranch carries the line-order markers of exec_tool's
+	// helper branch relative to its gate ("gate", "gate-end",
+	// "helper-branch#N", "case"), each with the line number in Status, for
+	// CheckHelperBranchIsGated.
+	KindAgentToolHelperBranch Kind = "agent_tool_helper_branch"
 
 	// KindSystemHandler is a workflow system-step handler name.
 	KindSystemHandler Kind = "system_handler"

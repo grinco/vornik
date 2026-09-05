@@ -1,6 +1,13 @@
-// Package main provides small, deterministic helpers for the agent shell
-// entrypoint. Keep this binary narrow: it exists to move fragile text/time
-// parsing out of bash without rewriting the whole runtime at once.
+// Package main is vornik-agent-helper: the Go half of the agent container's
+// runtime. It began as a narrow set of text/time helpers so fragile parsing
+// could leave bash without rewriting the loop at once, and until 2026-09-05
+// its own comment said to keep it that way. That policy is reversed, on
+// purpose and in the same commit that widened it: this binary is where the
+// agent loop is being rebuilt, one surface per slice, in the order the
+// backlog fixed — tool dispatch (`exec-tool`, internal/agentloop), then
+// prompt assembly, the gates, and the loop control flow — with each slice's
+// shell fixture still passing against it. Design of record:
+// https://docs.vornik.io
 package main
 
 import (
@@ -15,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"vornik.io/vornik/internal/agentloop"
 )
 
 var reasoningBlock = regexp.MustCompile(`(?is)<(think|thinking|reasoning)>.*?</(think|thinking|reasoning)>\s*`)
@@ -53,6 +61,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "exec-tool":
+		// exec-tool <name> <arguments-json>: the dispatch case for the tools
+		// declared agenttools.RuntimeHelper, reached from exec_tool AFTER the
+		// gate. Always exits 0 — a tool error is an "ERROR: …" line on
+		// stdout, which is what the loop's contract hands the model; a
+		// non-zero exit would be a failure class the loop has no branch for.
+		fmt.Print(execTool(os.Args[2:], os.Getenv("WORKSPACE")))
 	default:
 		usage()
 		os.Exit(2)
@@ -195,4 +210,22 @@ func (s *stringList) String() string { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// execTool runs the named tool through internal/agentloop. A panic inside a
+// handler becomes an ERROR line too, so the model sees text either way.
+func execTool(args []string, workspace string) (out string) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = fmt.Sprintf("ERROR: internal: %v", r)
+		}
+	}()
+	if len(args) < 1 {
+		return "ERROR: exec-tool requires a tool name"
+	}
+	raw := "{}"
+	if len(args) > 1 {
+		raw = args[1]
+	}
+	return agentloop.Dispatch(agentloop.Env{Workspace: workspace}, args[0], json.RawMessage(raw))
 }

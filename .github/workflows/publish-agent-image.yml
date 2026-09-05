@@ -23,7 +23,12 @@ name: publish-agent-image
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # Release tags use the DATE scheme (2026.9.2), never a v-prefix. This
+    # filter said 'v*' until 2026-09-05, so no release tag ever fired it and
+    # no release ever produced a version-tagged image — only :latest and
+    # sha-<commit> from the main-branch pushes. Verified against the live
+    # workflow runs (every run was a "sync: export CE" push, none a tag).
+    tags: ['20[0-9][0-9].*']
   workflow_dispatch:
 
 # NOT on pull_request, deliberately. A PR from a fork must never be able to

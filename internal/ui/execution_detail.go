@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"time"
 
@@ -137,6 +138,25 @@ type StepOutcomeRow struct {
 	// detector wasn't wired). Rendered in a "claim review" panel
 	// next to each step row.
 	HallucinationSignals []HallucinationSignalRow
+	// PromptURL links to what the step's model was TOLD at its first request
+	// (GET /api/v1/executions/{id}/steps/{step}/prompt) when the outcome row
+	// carries prompt hashes; empty for a step run by an image predating
+	// step-prompt persistence. A link rather than the bodies inline: the page
+	// is built to scan, and a prompt is tens of KB per step.
+	PromptURL string
+	// ExchangesURL links to every model exchange of the step
+	// (GET /api/v1/executions/{id}/steps/{step}/exchanges) when the execution
+	// recorded any — its project had recording.llm_exchanges on. Empty
+	// otherwise, so the link never leads to an empty list on a page that is
+	// built to scan.
+	ExchangesURL string
+	// InputURL and ResultURL link to the two files at the container
+	// boundary as stored — the task.json the executor handed the container
+	// and the result.json it read back — when the outcome row carries their
+	// hashes (step-I/O persistence design §5). Independent: a step whose
+	// container died before writing a result has an input and no result.
+	InputURL  string
+	ResultURL string
 }
 
 // HallucinationSignalRow projects one detector finding for the
@@ -307,6 +327,12 @@ func (s *Server) ExecutionDetail(w http.ResponseWriter, r *http.Request) {
 					}
 					return rows[i].ID < rows[j].ID
 				})
+				recorded := false
+				if s.llmExchangeRepo != nil {
+					if n, err := s.llmExchangeRepo.CountByExecution(ctx, executionID); err == nil && n > 0 {
+						recorded = true
+					}
+				}
 				data.Outcomes = make([]StepOutcomeRow, 0, len(rows))
 				data.OutcomeByStep = make(map[string]StepOutcomeRow, len(rows))
 				data.StepColorByID = make(map[string]string, len(rows))
@@ -318,6 +344,18 @@ func (s *Server) ExecutionDetail(w http.ResponseWriter, r *http.Request) {
 						Outcome:     o.Outcome,
 						ErrorClass:  o.ErrorClass,
 						ErrorDetail: o.ErrorDetail,
+					}
+					if o.PromptHashes != (persistence.StepPromptHashes{}) {
+						row.PromptURL = "/api/v1/executions/" + url.PathEscape(o.ExecutionID) + "/steps/" + url.PathEscape(o.StepID) + "/prompt"
+					}
+					if recorded {
+						row.ExchangesURL = "/api/v1/executions/" + url.PathEscape(o.ExecutionID) + "/steps/" + url.PathEscape(o.StepID) + "/exchanges"
+					}
+					if o.PromptHashes.Input != "" {
+						row.InputURL = "/api/v1/executions/" + url.PathEscape(o.ExecutionID) + "/steps/" + url.PathEscape(o.StepID) + "/input"
+					}
+					if o.PromptHashes.Result != "" {
+						row.ResultURL = "/api/v1/executions/" + url.PathEscape(o.ExecutionID) + "/steps/" + url.PathEscape(o.StepID) + "/result"
 					}
 					if o.AttributedToStepID != nil {
 						row.AttributedToStepID = *o.AttributedToStepID
@@ -445,10 +483,12 @@ func outcomeCSSClass(outcome string) string {
 		return "outcome-ok"
 	case "pending_validation":
 		return "outcome-pending"
-	case "cancelled", "superseded":
-		// "superseded" outcomes are the result of an operator
-		// retrying from an earlier step — neutral, not bad. They
-		// shouldn't drag the dashboard's quality stats down.
+	case "cancelled", "superseded", "orphaned":
+		// "superseded" is an operator retrying from an earlier step;
+		// "orphaned" is an attempt whose execution was terminalised
+		// before anything learned its outcome. Both are neutral — an
+		// absence and a replacement, neither a failure — and neither
+		// should drag the dashboard's quality stats down.
 		return "outcome-neutral"
 	case "parse_error", "schema_violation", "refused",
 		"iteration_exhausted", "degenerate_loop",

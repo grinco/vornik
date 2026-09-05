@@ -380,7 +380,10 @@ type closeNotifySpy struct {
 func (s *closeNotifySpy) Cancel(string) error       { return nil }
 func (s *closeNotifySpy) Pause(string) error        { return nil }
 func (s *closeNotifySpy) ResumePaused(string) error { return nil }
-func (s *closeNotifySpy) ResumeTask(string) error   { return nil }
+func (s *closeNotifySpy) RetryFromStep(context.Context, string, string) error {
+	return nil
+}
+func (s *closeNotifySpy) ResumeTask(string) error { return nil }
 func (s *closeNotifySpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	s.calls = append(s.calls, childTaskID)
 }

@@ -148,3 +148,44 @@ func TestUpdaterUsesTheManifest(t *testing.T) {
 			"covered by any update path (contract C4)")
 	}
 }
+
+// TestUpdaterRecreatesSidecarsBeforeCutover is §12 C5/C6 of the image-freshness
+// design: a rebuilt tag changes nothing already running, so the sidecar
+// containers created from a rebuilt image are recreated — after the rebuild,
+// BEFORE the binaries are swapped (the daemon restart that follows is what
+// reconnects its MCP client to a recreated broker), and fatally on failure.
+func TestUpdaterRecreatesSidecarsBeforeCutover(t *testing.T) {
+	body := readUpdater(t)
+	rebuild := strings.Index(body, "rebuild_images")
+	recreate := strings.Index(body, "recreate-sidecars.sh")
+	cutover := strings.Index(body, `install -m 0755 "$REPO_DIR/.bin/vornik"`)
+	if rebuild < 0 || recreate < 0 || cutover < 0 {
+		t.Fatalf("missing step: rebuild=%d recreate=%d cutover=%d", rebuild, recreate, cutover)
+	}
+	if rebuild >= recreate || recreate >= cutover {
+		t.Error("sidecars must be recreated after the images are rebuilt and before the cutover")
+	}
+	if !strings.Contains(body, "--no-recreate-sidecars") {
+		t.Error("the opt-out --no-recreate-sidecars must exist, and say what it leaves stale")
+	}
+	// Bound the fatal check to the recreate step.
+	rest := body[recreate:]
+	if end := strings.Index(rest, "\n# ----"); end > 0 {
+		rest = rest[:end]
+	}
+	if !strings.Contains(rest, "die ") {
+		t.Error("a failed sidecar recreate must be fatal before the cutover (C6)")
+	}
+}
+
+// TestUpdaterHandlesNoTargetPlaceholder is design §12 C8. Tab is IFS
+// whitespace, so `read` collapsed the emitter's empty target column and the
+// updater built the agent image with `--target .` in a context named
+// "always" from 2026-08-25 to 09-05. The emitter now prints "-" for no
+// target, and the updater must translate it rather than pass it to podman.
+func TestUpdaterHandlesNoTargetPlaceholder(t *testing.T) {
+	body := readUpdater(t)
+	if !strings.Contains(body, `"$target" != "-"`) {
+		t.Error(`the updater must treat a "-" target as "no --target" (imagemanifest.NoTarget)`)
+	}
+}

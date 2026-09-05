@@ -1,0 +1,22 @@
+{
+  "function": {
+    "description": "Read multiple files in one call. Returns a concatenated blob with '===== FILE: <path> =====' headers per file. Each file is capped at 30KB; total output is capped at 120KB (later files are truncated or dropped). Prefer this over N sequential file_read calls when exploring a directory.",
+    "name": "read_many_files",
+    "parameters": {
+      "properties": {
+        "paths": {
+          "description": "Relative paths from /app/workspace/.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

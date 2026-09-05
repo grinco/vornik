@@ -1,0 +1,23 @@
+{
+  "function": {
+    "description": "Detect project language and run type checking (go build / tsc --noEmit / mypy). Returns {language, checker, errors:[{file,line,message}], output}.",
+    "name": "typecheck_run",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Project root. Default: 'project'.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Limit to specific files or packages.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

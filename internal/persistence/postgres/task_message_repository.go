@@ -226,9 +226,7 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 			// band. Clear the pointer so the task can advance, then
 			// report the absence as ErrNotFound like every other
 			// miss (internal/persistence/misscontract).
-			_, _ = r.db.ExecContext(ctx,
-				`UPDATE tasks SET open_checkpoint_id = NULL WHERE id = $1`,
-				taskID)
+			r.repairDanglingCheckpointPointer(ctx, taskID, ptr.String)
 			return nil, persistence.ErrNotFound
 		}
 		return nil, mapDBError(err)
@@ -237,6 +235,29 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 		m.Metadata = []byte(meta.String)
 	}
 	return &m, nil
+}
+
+// repairDanglingCheckpointPointer clears tasks.open_checkpoint_id after
+// GetOpenCheckpoint found it pointing at a message that no longer exists.
+//
+// GUARDED ON THE POINTER WE ACTUALLY READ. The read and this write are two
+// statements, so a concurrent Insert can open a NEW checkpoint in between; an
+// unguarded `WHERE id = $1` would erase that LIVE pointer, and the task would
+// silently stop reading as awaiting a human — the exact failure the repair
+// exists to prevent, and strictly worse than the stale pointer it repairs. The
+// sqlite twin has carried this predicate since the parity work; this backend
+// did not, until the 2026-09-03 four-week audit found the divergence. The
+// analogous race in MarkCheckpointResolved below was already guarded the same
+// way.
+//
+// The repair failing is deliberately NOT fatal: the caller's answer is the
+// miss, and turning a successful read of absence into an error would break
+// every consumer that switches on it.
+func (r *TaskMessageRepository) repairDanglingCheckpointPointer(ctx context.Context, taskID, pointer string) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE tasks SET open_checkpoint_id = NULL
+		 WHERE id = $1 AND open_checkpoint_id = $2`,
+		taskID, pointer)
 }
 
 // MarkCheckpointResolved flips the checkpoint's metadata.resolved

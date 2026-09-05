@@ -178,6 +178,48 @@ func (r *ExecutionRepository) Update(ctx context.Context, execution *persistence
 }
 
 // UpdateStatus changes the execution status.
+// UpdateWorkflowID persists the resolved workflow id and nothing else — see
+// the interface doc for why a narrow writer exists alongside Update.
+func (r *ExecutionRepository) UpdateWorkflowID(ctx context.Context, id, workflowID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE executions
+		SET workflow_id = $2,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, workflowID)
+	return mapDBError(err)
+}
+
+// TransitionStatusConditional applies `to` only when the current status is one
+// of `from`, reporting whether a row changed. Compare-and-set, so the caller
+// never has to read-then-write.
+func (r *ExecutionRepository) TransitionStatusConditional(ctx context.Context, id string, from []persistence.ExecutionStatus, to persistence.ExecutionStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, fmt.Errorf("execution_repository: transition_status_conditional: empty from set")
+	}
+	fromStr := make([]string, 0, len(from))
+	for _, s := range from {
+		fromStr = append(fromStr, string(s))
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE executions
+		SET status = $2::execution_status,
+		    started_at = CASE WHEN $2::execution_status = 'RUNNING'::execution_status AND started_at IS NULL THEN NOW() ELSE started_at END,
+		    completed_at = CASE WHEN $2::execution_status IN ('COMPLETED'::execution_status, 'FAILED'::execution_status, 'CANCELLED'::execution_status) THEN NOW() ELSE completed_at END,
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND status::text = ANY($3)
+	`, id, to, pq.Array(fromStr))
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	return n > 0, nil
+}
+
 func (r *ExecutionRepository) UpdateStatus(ctx context.Context, id string, status persistence.ExecutionStatus) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE executions
@@ -272,7 +314,7 @@ func (r *ExecutionRepository) RecordFailure(ctx context.Context, id, errorMessag
 // metrics.
 func (r *ExecutionRepository) SupersedeNonTerminalForTask(ctx context.Context, taskID string) (int64, error) {
 	return r.supersedeNonTerminal(ctx, taskID,
-		"superseded_by_terminal_task",
+		persistence.ExecErrCodeSupersededByTerminalTask,
 		"execution superseded when parent task reached terminal status")
 }
 
@@ -282,7 +324,7 @@ func (r *ExecutionRepository) SupersedeNonTerminalForTask(ctx context.Context, t
 // audit marker.
 func (r *ExecutionRepository) SupersedeStaleForTaskStart(ctx context.Context, taskID string) (int64, error) {
 	return r.supersedeNonTerminal(ctx, taskID,
-		"superseded_by_new_run",
+		persistence.ExecErrCodeSupersededByNewRun,
 		"execution superseded when the task started a new run")
 }
 

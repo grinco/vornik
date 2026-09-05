@@ -668,9 +668,53 @@ CREATE TABLE IF NOT EXISTS execution_step_outcomes (
     requires_review        BOOLEAN NOT NULL DEFAULT 0,
     -- migration 169 parity: the container's exit status. NULL = no container
     -- ran, which is NOT the same as exiting 0.
-    container_exit_code    INTEGER
+    container_exit_code    INTEGER,
+    -- migration 175 parity: what the step was TOLD at its first model request,
+    -- as hashes into step_prompts. '' = not recorded.
+    prompt_system_hash     TEXT NOT NULL DEFAULT '',
+    prompt_user_hash       TEXT NOT NULL DEFAULT '',
+    prompt_tools_hash      TEXT NOT NULL DEFAULT '',
+    -- migration 178 parity: the two files at the container boundary
+    -- (task.json in, result.json out) as hashes into step_prompts.
+    input_hash             TEXT NOT NULL DEFAULT '',
+    result_hash            TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_execution ON execution_step_outcomes(execution_id);
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_system ON execution_step_outcomes(prompt_system_hash) WHERE prompt_system_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_user   ON execution_step_outcomes(prompt_user_hash)   WHERE prompt_user_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_prompt_tools  ON execution_step_outcomes(prompt_tools_hash)  WHERE prompt_tools_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_input  ON execution_step_outcomes(input_hash)  WHERE input_hash <> '';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_result ON execution_step_outcomes(result_hash) WHERE result_hash <> '';
+
+-- migration 175 parity: content-addressed parts of a step's first model
+-- request, redacted at write, pruned when no outcome row references them.
+CREATE TABLE IF NOT EXISTS step_prompts (
+    hash       TEXT PRIMARY KEY,
+    part       TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    bytes      INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+-- llm_exchanges — migration 177 parity (llm-exchange record/replay design §3).
+-- The REFERENCES clause is documentation here: this backend runs with
+-- foreign_keys OFF, and retention step 5e is what removes rows.
+CREATE TABLE IF NOT EXISTS llm_exchanges (
+    id                TEXT PRIMARY KEY,
+    execution_id      TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+    step_id           TEXT NOT NULL,
+    iteration         INTEGER,
+    seq               INTEGER NOT NULL,
+    request_hash      TEXT NOT NULL,
+    request_json      TEXT NOT NULL,
+    response_json     TEXT NOT NULL,
+    model             TEXT NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms       INTEGER NOT NULL DEFAULT 0,
+    redactions        INTEGER NOT NULL DEFAULT 0,
+    recorded_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_exchanges_exec_step ON llm_exchanges (execution_id, step_id, seq);
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_project_time ON execution_step_outcomes(project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_pending
   ON execution_step_outcomes(execution_id, step_id) WHERE outcome = 'pending_validation';
@@ -1051,6 +1095,15 @@ CREATE TABLE IF NOT EXISTS forge_pr_review_state (
     auto_review_paused     INTEGER NOT NULL DEFAULT 0,
     updated_at             TEXT    NOT NULL,
     PRIMARY KEY (project_id, repo, number)
+);
+
+-- The first-seen ledger behind project_created telemetry (migration 174). CE
+-- defaults to SQLite, and the counter it fixes under-reports adoption exactly
+-- where CE deployments live, so parity here is the point rather than a formality.
+CREATE TABLE IF NOT EXISTS project_first_seen (
+    project_id    TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL,
+    source        TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS chat_audit_log (

@@ -1,0 +1,16 @@
+{
+  "function": {
+    "description": "List the third-party API providers reachable from this project via the vornik gateway, with the paths/methods each allows. Call before query_api to discover the correct provider id and path.",
+    "name": "list_apis",
+    "parameters": {
+      "properties": {
+        "query": {
+          "description": "Optional filter to narrow the provider list",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "type": "function"
+}

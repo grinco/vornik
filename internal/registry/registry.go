@@ -38,6 +38,9 @@ type ConfigSet struct {
 	swarms    map[string]*Swarm
 	workflows map[string]*Workflow
 	configDir string
+	// index records which file supplied each object and which files the
+	// loader refused (TreeIndex). Built by the load itself.
+	index *TreeIndex
 }
 
 // ConfigDiff describes changes between the active and staged registry snapshots.
@@ -409,26 +412,29 @@ func (r *Registry) applyActiveLocked(cfg *ConfigSet) {
 }
 
 func loadConfigSet(configDir string) (*ConfigSet, error) {
-	projects, err := LoadProjects(configDir)
+	index := newTreeIndex(configDir)
+	projects, err := loadProjects(configDir, index)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load projects: %w", err)
 	}
 
-	swarms, err := LoadSwarms(configDir)
+	swarms, err := loadSwarms(configDir, index)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load swarms: %w", err)
 	}
 
-	workflows, err := LoadWorkflows(configDir)
+	workflows, err := loadWorkflows(configDir, index)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load workflows: %w", err)
 	}
+	index.indexRoleLibrary(configDir)
 
 	cfg := &ConfigSet{
 		projects:  projects,
 		swarms:    swarms,
 		workflows: workflows,
 		configDir: configDir,
+		index:     index,
 	}
 
 	return cfg, nil
@@ -504,6 +510,11 @@ func (r *Registry) LoadFromPaths(paths ...string) error {
 			merged.workflows[id] = v
 		}
 		merged.configDir = p
+		if merged.index == nil {
+			merged.index = layer.index
+		} else {
+			merged.index.merge(layer.index)
+		}
 	}
 	r.mu.Lock()
 	r.staged = merged

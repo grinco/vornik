@@ -2161,6 +2161,15 @@ func (te *ToolExecutor) taskProjectAllowed(ctx context.Context, taskID string, a
 	return task.ProjectID, nil
 }
 
+// RegisteredDispatcherTools is the complete vocabulary a chat model can be
+// offered: DispatcherTools() plus tool_search, whose descriptor is appended
+// by the deferred-MCP path (tool_search.go) rather than listed here. The
+// admin inventory and the shared-vocabulary contract test read THIS, so a
+// tool the model can call is never invisible to either.
+func RegisteredDispatcherTools() []chat.Tool {
+	return append(DispatcherTools(), toolSearchDescriptor())
+}
+
 // DispatcherTools returns the tool definitions available to the dispatcher agent.
 func DispatcherTools() []chat.Tool {
 	return []chat.Tool{

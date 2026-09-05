@@ -618,3 +618,112 @@ func TestRunReportReadOnly_IncludesAgentLLMTopology(t *testing.T) {
 	}
 	assert.True(t, found, "RunReportReadOnly must include the agent_llm_topology check")
 }
+
+// A model missing only by SPELLING must say so, because the remedy is the
+// opposite of the one the generic message implies.
+//
+// This is the failure that hid the live DeepSeek entry (backlog 2026-08-23):
+// `chat.router.http.model: DeepSeek-V4-Flash-0731` and the priced
+// `deepseek-v4-flash:0731` are the same model, differing by capitalisation and
+// a separator. Lookup is exact-match, so the id fell through to
+// default{1.00, 3.00} — roughly 15x input and 17x output overstatement on that
+// route, for weeks, while doctor reported OK.
+//
+// "Add it to pricing.yaml" is WRONG ADVICE here: doing that creates a second
+// entry for one model and the two spellings then drift apart. The fix is to
+// align the id. A check that cannot tell these apart sends the operator to the
+// wrong repair.
+func TestCheckPricingCoverage_FlagsASpellingVariantDistinctly(t *testing.T) {
+	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{
+		"swarms/s.md": `---
+swarmId: "s"
+roles:
+  - name: "tester"
+    runtime: { image: "x" }
+    model: "DeepSeek-V4-Flash-0731"
+---
+`,
+		"workflows/w.md": `---
+workflowId: "w"
+entrypoint: "test"
+steps:
+  test:
+    type: "agent"
+    role: "tester"
+    prompt: "x"
+terminals:
+  done: { status: "COMPLETED" }
+---
+`,
+		"projects/p.yaml": `projectId: "p"
+swarmId: "s"
+defaultWorkflowId: "w"
+`,
+	})
+	pricingPath := filepath.Join(dir, "pricing.yaml")
+	require.NoError(t, os.WriteFile(pricingPath, []byte(`models:
+  deepseek-v4-flash:0731:
+    input: 1.0
+    output: 2.0
+`), 0o644))
+
+	h := &DoctorHandlers{configDir: dir, pricingPath: pricingPath}
+	got := h.checkPricingCoverage()
+
+	require.Equal(t, "WARNING", got.Status)
+	require.NotEmpty(t, got.Items)
+	item := got.Items[0]
+	assert.Contains(t, item, "DeepSeek-V4-Flash-0731", "the finding must name the unpriced spelling")
+	assert.Contains(t, item, "deepseek-v4-flash:0731", "the finding must name the PRICED spelling it matches")
+	assert.Contains(t, strings.ToLower(item), "spelling",
+		"a variant must be reported as a spelling mismatch, not as an ordinary missing entry — "+
+			"the remedy is to align the id, not to add a second pricing entry")
+	assert.NotContains(t, item, "bills at the default rate, which is fabricated",
+		"the generic missing-entry wording sends the operator to the wrong repair")
+}
+
+// The complement: a genuinely unknown model keeps the ordinary wording, so the
+// variant path cannot swallow real gaps.
+func TestCheckPricingCoverage_UnrelatedModelKeepsTheGenericFinding(t *testing.T) {
+	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{
+		"swarms/s.md": `---
+swarmId: "s"
+roles:
+  - name: "tester"
+    runtime: { image: "x" }
+    model: "totally-unrelated-model"
+---
+`,
+		"workflows/w.md": `---
+workflowId: "w"
+entrypoint: "test"
+steps:
+  test:
+    type: "agent"
+    role: "tester"
+    prompt: "x"
+terminals:
+  done: { status: "COMPLETED" }
+---
+`,
+		"projects/p.yaml": `projectId: "p"
+swarmId: "s"
+defaultWorkflowId: "w"
+`,
+	})
+	pricingPath := filepath.Join(dir, "pricing.yaml")
+	require.NoError(t, os.WriteFile(pricingPath, []byte(`models:
+  deepseek-v4-flash:0731:
+    input: 1.0
+    output: 2.0
+`), 0o644))
+
+	h := &DoctorHandlers{configDir: dir, pricingPath: pricingPath}
+	got := h.checkPricingCoverage()
+	require.Equal(t, "WARNING", got.Status)
+	require.NotEmpty(t, got.Items)
+	assert.Contains(t, got.Items[0], "bills at the default rate")
+	assert.NotContains(t, strings.ToLower(got.Items[0]), "spelling")
+}

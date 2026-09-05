@@ -713,6 +713,12 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 		blocked    []blockReport
 		excused    []blockReport
 		successful int
+		// unclassified counts entries that were IN SCOPE but which
+		// classifyAuditEntry could not read. They contribute to no
+		// denominator, which is correct — we cannot say whether they blocked —
+		// but leaving them uncounted made the denominator a subset presented as
+		// the whole. Finding D, 2026-08-26 silent-controls audit.
+		unclassified int
 	)
 	for _, e := range in.AuditEntries {
 		if e == nil {
@@ -728,6 +734,14 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 			// Tool isn't in scope semantically (no classification
 			// applied). Don't count toward successful — only entries
 			// we know how to classify contribute to denominators.
+			//
+			// COUNTED, THOUGH. Excluding them is right; excluding them
+			// SILENTLY is what made zero coverage and a clean result render
+			// identically. In production 2,651 of 4,481 web_fetch rows were
+			// unreadable at once (a blind 4096-char tool_output slice cut the
+			// JSON), so this is not a rounding error on the denominator the
+			// thresholds are judged against.
+			unclassified++
 			continue
 		}
 		if !rep.blocked {
@@ -750,6 +764,15 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 	// Nothing in scope at all = nothing to verify. Don't fabricate a
 	// violation; another verifier (must_contain_url) owns "the
 	// scraper was supposed to run and didn't".
+	//
+	// KNOWN RESIDUAL, recorded rather than quietly accepted: when
+	// unclassified > 0 and nothing classified, this returns "nothing to
+	// verify" for a step where entries WERE in scope and none could be read —
+	// which is zero coverage, not absence, and the two still render
+	// identically here. Reporting it needs a Violation, and this package has no
+	// other output channel (it is a pure function with no logger), so saying so
+	// would change pass/fail — exactly the threshold-semantics review the
+	// backlog item deferred. Filed as its own P3 rather than smuggled in.
 	if successful == 0 && len(blocked) == 0 && len(excused) == 0 {
 		return nil, nil
 	}
@@ -774,6 +797,19 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 		"%d/%d fetch(es) blocked (ratio %.2f, max %.2f); %d ok; %d excused via skip path. ",
 		len(blocked), total, ratio, maxBlockRatio, successful, len(excused),
 	)
+	// The coverage boundary, published beside the denominator it bounds. Only
+	// when non-zero: a caveat printed on every clean run is one nobody reads.
+	//
+	// This reports; it does not re-judge. What counts toward the ratio and the
+	// floor is unchanged, because changing that moves pass/fail for every
+	// configured step and is owed its own review.
+	if unclassified > 0 {
+		summary += fmt.Sprintf(
+			"NOTE: %d further in-scope entr%s could not be classified and are outside this denominator, "+
+				"so the ratio is computed over %d of %d in-scope entries. ",
+			unclassified, plural(unclassified, "y", "ies"), total, total+unclassified,
+		)
+	}
 	if underFloor {
 		summary += fmt.Sprintf("Successful fetches (%d) below floor (%d). ", successful, minSuccess)
 	}
@@ -809,6 +845,15 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 		// can pin Terminal=true regardless via Config.Terminal.
 		Terminal: !allPermanent,
 	}, nil
+}
+
+// plural picks a suffix for a count. Small, but the alternative is an
+// "entry(s)" in an operator-facing finding.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // blockReport is one audit entry classified by classifyAuditEntry.

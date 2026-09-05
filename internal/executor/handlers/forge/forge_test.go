@@ -33,6 +33,13 @@ type fakeProvider struct {
 	compareDiff                    []byte
 	compareErr                     error
 	gotCompareBase, gotCompareHead string
+
+	// onFetch runs INSIDE FetchDiff / CompareDiff, so a test can make a push
+	// land during the forge round-trip. The window between reading the pending
+	// head and committing the ABSORBING → CLOSING transition is exactly that
+	// round-trip, and nothing could exercise it while the doubles returned
+	// instantly.
+	onFetch func()
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
@@ -40,6 +47,9 @@ func (f *fakeProvider) ClassifyEvent(http.Header, []byte) (forgeapi.ForgeJob, bo
 	return forgeapi.ForgeJob{}, false
 }
 func (f *fakeProvider) FetchDiff(context.Context, string, int) ([]byte, error) {
+	if f.onFetch != nil {
+		f.onFetch()
+	}
 	return f.diff, f.diffErr
 }
 
@@ -47,6 +57,9 @@ func (f *fakeProvider) FetchDiff(context.Context, string, int) ([]byte, error) {
 // incremental review actually asked for base..head and not the whole PR.
 func (f *fakeProvider) CompareDiff(_ context.Context, _, base, head string) ([]byte, error) {
 	f.gotCompareBase, f.gotCompareHead = base, head
+	if f.onFetch != nil {
+		f.onFetch()
+	}
 	if f.compareErr != nil {
 		return nil, f.compareErr
 	}

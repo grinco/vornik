@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // RunTaskWatcherSuite exercises the persistence.TaskWatcherRepository
@@ -2952,6 +2953,104 @@ func RunExecutionRepositorySuite(t *testing.T, repo persistence.ExecutionReposit
 		}
 	})
 
+	// TransitionStatusConditional + UpdateWorkflowID: the narrow writers the
+	// pause path needs (pause-write-ownership design §5.3/§5.6). Both lanes
+	// run this suite, so the Postgres `= ANY($3)` form and the SQLite
+	// placeholder-IN form are held to identical semantics.
+	t.Run("TransitionStatusConditional_applies_only_from_the_named_statuses", func(t *testing.T) {
+		e := newExec(t, uniqueID("task"), "p", persistence.ExecutionStatusRunning)
+		if err := repo.Create(ctx, e); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		ok, err := repo.TransitionStatusConditional(ctx, e.ID,
+			[]persistence.ExecutionStatus{persistence.ExecutionStatusRunning, persistence.ExecutionStatusPending},
+			persistence.ExecutionStatusPaused)
+		if err != nil {
+			t.Fatalf("TransitionStatusConditional: %v", err)
+		}
+		if !ok {
+			t.Fatal("transition from RUNNING must apply and report true")
+		}
+		got, _ := repo.Get(ctx, e.ID)
+		if got.Status != persistence.ExecutionStatusPaused {
+			t.Errorf("status = %s, want PAUSED", got.Status)
+		}
+	})
+
+	t.Run("TransitionStatusConditional_refuses_a_status_outside_the_from_set", func(t *testing.T) {
+		// The case the pause path depends on: an execution that reached a
+		// terminal state while a pause was being decided must NOT be
+		// reopened as PAUSED, or Recover() re-runs a finished workflow.
+		e := newExec(t, uniqueID("task"), "p", persistence.ExecutionStatusCompleted)
+		if err := repo.Create(ctx, e); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		ok, err := repo.TransitionStatusConditional(ctx, e.ID,
+			[]persistence.ExecutionStatus{persistence.ExecutionStatusRunning, persistence.ExecutionStatusPending},
+			persistence.ExecutionStatusPaused)
+		if err != nil {
+			t.Fatalf("TransitionStatusConditional: %v", err)
+		}
+		if ok {
+			t.Error("transition from COMPLETED must report false")
+		}
+		got, _ := repo.Get(ctx, e.ID)
+		if got.Status != persistence.ExecutionStatusCompleted {
+			t.Errorf("status = %s, want COMPLETED (row must be untouched)", got.Status)
+		}
+	})
+
+	t.Run("TransitionStatusConditional_rejects_an_empty_from_set", func(t *testing.T) {
+		// An unconditional overwrite must not be spellable by accident.
+		e := newExec(t, uniqueID("task"), "p", persistence.ExecutionStatusRunning)
+		if err := repo.Create(ctx, e); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if _, err := repo.TransitionStatusConditional(ctx, e.ID, nil, persistence.ExecutionStatusPaused); err == nil {
+			t.Error("empty from set must be an error, not an unconditional write")
+		}
+	})
+
+	t.Run("UpdateWorkflowID_touches_nothing_else", func(t *testing.T) {
+		// Why this method exists: the executor persisted the resolved
+		// workflow id with a WHOLE-ROW Update, which also wrote the
+		// in-memory struct's status and state_snapshot. That erased
+		// concurrent pauses (design §3.2) and, in 2026-06-11, started_at
+		// (the COALESCE case below). The narrow writer has nothing to
+		// clobber.
+		e := newExec(t, uniqueID("task"), "p", persistence.ExecutionStatusRunning)
+		e.StateSnapshot = []byte(`{"currentStepId":"implement","pausedReason":"shutdown"}`)
+		if err := repo.Create(ctx, e); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := repo.UpdateWorkflowID(ctx, e.ID, "wf-resolved"); err != nil {
+			t.Fatalf("UpdateWorkflowID: %v", err)
+		}
+		got, _ := repo.Get(ctx, e.ID)
+		if got.WorkflowID != "wf-resolved" {
+			t.Errorf("workflow_id = %q, want wf-resolved", got.WorkflowID)
+		}
+		if got.Status != persistence.ExecutionStatusRunning {
+			t.Errorf("status = %s, want RUNNING (untouched)", got.Status)
+		}
+		// Compare SEMANTICALLY, not byte-wise: Postgres stores this column
+		// as jsonb and hands back its own normalised key order, so a byte
+		// comparison passes on SQLite and fails on Postgres for a row
+		// nothing touched. (That divergence broke CI once already, on
+		// 2026-07-24.) What this case is actually about is that the narrow
+		// writer changed no CONTENT.
+		var wantSnap, gotSnap map[string]any
+		if err := json.Unmarshal(e.StateSnapshot, &wantSnap); err != nil {
+			t.Fatalf("unmarshal want snapshot: %v", err)
+		}
+		if err := json.Unmarshal(got.StateSnapshot, &gotSnap); err != nil {
+			t.Fatalf("unmarshal got snapshot: %v", err)
+		}
+		if !reflect.DeepEqual(wantSnap, gotSnap) {
+			t.Errorf("state_snapshot = %v, want it untouched (%v)", gotSnap, wantSnap)
+		}
+	})
+
 	// Regression (2026-06-11): /ui/executions showed blank Started +
 	// Duration for every row because started_at was NULL in the DB even
 	// for completed runs. Root cause: the executor stamps started_at via
@@ -4521,6 +4620,13 @@ type pendingOutcomeSweeper interface {
 	SweepPendingForTerminalExecutions(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
 }
 
+// taskOrphanSweeper is the per-task sweep the executor's supersede paths call
+// the moment they terminalise a task's leftover executions. Same optional-
+// capability shape as pendingOutcomeSweeper above, for the same reason.
+type taskOrphanSweeper interface {
+	SweepPendingForTaskOrphans(ctx context.Context, taskID string) (int64, error)
+}
+
 // RunPendingOutcomeBackstopSuite pins the contract of the pending-outcome
 // backstop on every backend that implements it.
 //
@@ -4560,9 +4666,12 @@ func RunPendingOutcomeBackstopSuite(t *testing.T, outcomes persistence.Execution
 	if n != 1 {
 		t.Errorf("swept %d rows, want 1 (only the stranded one qualifies)", n)
 	}
-	if got := h.outcomeOf(t, stranded); got != "superseded" {
-		t.Errorf("stranded row = %q, want superseded — a row under a terminal execution "+
-			"must never stay pending_validation, which counts as neither ok nor failure", got)
+	if got := h.outcomeOf(t, stranded); got != string(stepoutcome.Orphaned) {
+		t.Errorf("stranded row = %q, want %q — a row under a terminal execution must never "+
+			"stay pending_validation, which counts as neither ok nor failure. And it must not "+
+			"be `superseded` either: that is the OPERATOR's word for retry-from-step, and using "+
+			"it here made 809 of 835 such rows unreadable (design 2026-09-04-orphaned-step-outcomes)",
+			got, stepoutcome.Orphaned)
 	}
 	if got := h.outcomeOf(t, live); got != "pending_validation" {
 		t.Errorf("row under a RUNNING execution = %q, want pending_validation left alone: "+
@@ -4574,6 +4683,65 @@ func RunPendingOutcomeBackstopSuite(t *testing.T, outcomes persistence.Execution
 	}
 
 	runPendingOutcomeGuardCases(t, h, sweeper)
+	runTaskOrphanSweepCases(t, outcomes, execs, tasks)
+}
+
+// runTaskOrphanSweepCases pins the per-task sweep the supersede paths call.
+//
+// It is the same contract as the backstop with the grace removed — the caller
+// has just terminalised these executions itself, so there is nothing to race —
+// and one property the backstop does not have: it must not touch another task's
+// rows, because it is handed a task id rather than a global predicate.
+func runTaskOrphanSweepCases(t *testing.T, outcomes persistence.ExecutionStepOutcomeRepository,
+	execs persistence.ExecutionRepository, tasks persistence.TaskRepository) {
+	t.Helper()
+	sweeper, ok := outcomes.(taskOrphanSweeper)
+	if !ok {
+		t.Skip("backend does not implement SweepPendingForTaskOrphans")
+	}
+	h := newPendingOutcomeFixture(t, outcomes, execs, tasks)
+
+	// One task with a cancelled execution (the supersede shape) and a live
+	// one; a second task that must be untouched.
+	mine := newQueuedTask(h.project)
+	if err := tasks.Create(h.ctx, mine); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	cancelled := h.seedExecForTask(t, mine.ID, persistence.ExecutionStatusCancelled)
+	running := h.seedExecForTask(t, mine.ID, persistence.ExecutionStatusRunning)
+	h.seedPending(t, cancelled)
+	h.seedPending(t, running)
+
+	other := h.seedExec(t, persistence.ExecutionStatusCancelled, time.Hour)
+	h.seedPending(t, other)
+
+	n, err := sweeper.SweepPendingForTaskOrphans(h.ctx, mine.ID)
+	if err != nil {
+		t.Fatalf("SweepPendingForTaskOrphans: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d rows, want 1 — only the terminal execution of THIS task qualifies", n)
+	}
+	if got := h.outcomeOf(t, cancelled); got != string(stepoutcome.Orphaned) {
+		t.Errorf("row under this task's cancelled execution = %q, want %q", got, stepoutcome.Orphaned)
+	}
+	if got := h.outcomeOf(t, running); got != "pending_validation" {
+		t.Errorf("row under a RUNNING execution = %q, want pending_validation: its consumer may still finalize it", got)
+	}
+	if got := h.outcomeOf(t, other); got != "pending_validation" {
+		t.Errorf("another task's row = %q, want untouched — this sweep is scoped by task id", got)
+	}
+	// Idempotent: a second call finds nothing.
+	if again, err := sweeper.SweepPendingForTaskOrphans(h.ctx, mine.ID); err != nil || again != 0 {
+		t.Errorf("second sweep = (%d, %v), want (0, nil)", again, err)
+	}
+	// An empty task id is a no-op, not a table-wide update.
+	if n, err := sweeper.SweepPendingForTaskOrphans(h.ctx, ""); err != nil || n != 0 {
+		t.Errorf("empty task id = (%d, %v), want (0, nil) — never a global sweep", n, err)
+	}
+	if got := h.outcomeOf(t, other); got != "pending_validation" {
+		t.Errorf("another task's row after the empty-id call = %q, want untouched", got)
+	}
 }
 
 // runPendingOutcomeGuardCases covers the two ways a careless sweep does damage
@@ -4639,6 +4807,21 @@ func (h *pendingOutcomeFixture) seedExec(t *testing.T, status persistence.Execut
 // seedPending records one pending_validation row for the lead's `route` step —
 // the step that was actually stranded in production, and the only shape this
 // suite needs.
+// seedExecForTask seeds an execution under an EXISTING task, which the
+// per-task sweep needs (seedExec mints a fresh task per execution).
+func (h *pendingOutcomeFixture) seedExecForTask(t *testing.T, taskID string, status persistence.ExecutionStatus) string {
+	t.Helper()
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	e := &persistence.Execution{
+		ID: uniqueID("exec"), TaskID: taskID, ProjectID: h.project,
+		WorkflowID: "wf", Status: status, CreatedAt: at, UpdatedAt: at,
+	}
+	if err := h.execs.Create(h.ctx, e); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+	return e.ID
+}
+
 func (h *pendingOutcomeFixture) seedPending(t *testing.T, execID string) {
 	const step = "route"
 	t.Helper()

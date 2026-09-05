@@ -1,4 +1,4 @@
-package api
+package supportbundle
 
 import (
 	"bytes"
@@ -24,6 +24,12 @@ type fakeTaskReader struct {
 }
 
 func (f *fakeTaskReader) Get(_ context.Context, _ string) (*persistence.Task, error) {
+	// Absence is ErrNotFound, as production is: a double answering (nil, nil)
+	// certifies a caller's miss path without executing it (miss-contract
+	// design §8), and this package's collectors all have one.
+	if f.err == nil && f.get == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return f.get, f.err
 }
 func (f *fakeTaskReader) List(_ context.Context, _ persistence.TaskFilter) ([]*persistence.Task, error) {
@@ -76,6 +82,9 @@ type fakeJudgeReader struct {
 }
 
 func (f *fakeJudgeReader) GetByTask(_ context.Context, _ string) (*persistence.TaskJudgeVerdict, error) {
+	if f.v == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return f.v, nil
 }
 
@@ -84,6 +93,9 @@ type fakePostMortemReader struct {
 }
 
 func (f *fakePostMortemReader) Get(_ context.Context, _ string) (*persistence.TaskPostMortem, error) {
+	if f.pm == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return f.pm, nil
 }
 
@@ -107,7 +119,7 @@ type fakeArtifactOpener struct {
 	blobs map[string][]byte
 }
 
-func (f *fakeArtifactOpener) Open(_ context.Context, id string) (readCloser, error) {
+func (f *fakeArtifactOpener) Open(_ context.Context, id string) (ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(f.blobs[id])), nil
 }
 
@@ -147,7 +159,7 @@ func secretFor(tag string) string {
 // fullyWiredBuilder returns a builder whose every section carries a
 // distinct seeded secret. Returns the builder + the map of
 // section-tag -> seeded secret so the test can assert each is gone.
-func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
+func fullyWiredBuilder(t *testing.T) (*Builder, map[string]string) {
 	t.Helper()
 	secretsByTag := map[string]string{
 		"task":      secretFor("TASKAAAA"),
@@ -173,7 +185,7 @@ func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
 	pid := "proj1"
 	now := time.Now()
 
-	repos := supportRepos{
+	repos := Repos{
 		Tasks: &fakeTaskReader{
 			get: &persistence.Task{ID: taskID, ProjectID: pid, CreatedAt: now, UpdatedAt: now}, // stash a secret in a free-text-ish field by abusing the
 			// task description via JSON: we rely on Task having such a
@@ -214,20 +226,20 @@ func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
 	repos.Tasks.(*fakeTaskReader).get.LastError = &taskSecret
 	repos.Executions.(*fakeExecReader).rows[0].WorkflowID = secretsByTag["exec"]
 
-	b := &bundleBuilder{
-		repos:      repos,
-		opener:     &fakeArtifactOpener{blobs: map[string][]byte{"art1": []byte("artifact body " + secretsByTag["artifact"] + "\n")}},
-		doctor:     &fakeDoctor{rep: map[string]string{"note": secretsByTag["doctor"]}},
-		health:     &fakeHealth{snap: map[string]string{"status": secretsByTag["health"]}},
-		metrics:    &fakeMetrics{txt: "# metric line " + secretsByTag["metrics"] + "\n"},
-		detector:   newTestDetector(t),
-		version:    "2026.6.0-test",
-		configYAML: "api_key: " + secretsByTag["config"] + "\n",
+	b := &Builder{
+		Repos:      repos,
+		Opener:     &fakeArtifactOpener{blobs: map[string][]byte{"art1": []byte("artifact body " + secretsByTag["artifact"] + "\n")}},
+		Doctor:     &fakeDoctor{rep: map[string]string{"note": secretsByTag["doctor"]}},
+		Health:     &fakeHealth{snap: map[string]string{"status": secretsByTag["health"]}},
+		Metrics:    &fakeMetrics{txt: "# metric line " + secretsByTag["metrics"] + "\n"},
+		Detector:   newTestDetector(t),
+		Version:    "2026.6.0-test",
+		ConfigYAML: "api_key: " + secretsByTag["config"] + "\n",
 		// OPERATOR REQUEST 2026-08-03: a bug report about a task should be able to
 		// carry the Black Box trace for that task — the derived timeline is the
 		// evidence that explains WHY a task went wrong, and it was the one per-task
 		// section the bundle never collected.
-		blackbox: &fakeBlackBoxTraces{trace: map[string]string{"summary": secretsByTag["blackbox"]}},
+		Blackbox: &fakeBlackBoxTraces{trace: map[string]string{"summary": secretsByTag["blackbox"]}},
 	}
 	return b, secretsByTag
 }
@@ -237,7 +249,7 @@ func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
 // ANY produced file, and REDACTION.txt must count them.
 func TestRedactionCoverage(t *testing.T) {
 	b, secretsByTag := fullyWiredBuilder(t)
-	req := bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20}
+	req := Request{TaskID: "task_test_1", MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -245,10 +257,10 @@ func TestRedactionCoverage(t *testing.T) {
 	// Inject container logs the way the handler does.
 	b.WriteContainerLogs(req, res, "container stderr: "+secretsByTag["container"]+"\n")
 	// Re-finalize so REDACTION.txt/MANIFEST reflect the injected section.
-	b.finalize(req, res)
+	b.Finalize(req, res)
 
 	// No raw secret in ANY file.
-	for fname, content := range res.files {
+	for fname, content := range res.Files {
 		for tag, secret := range secretsByTag {
 			if tag == "window" || tag == "audit" {
 				continue // window-only sections; covered by the window test
@@ -278,18 +290,18 @@ func TestRedactionCoverage(t *testing.T) {
 	mustContainRedacted(t, res, "task/artifacts/art1-notes.txt")
 
 	// REDACTION.txt counts the openai_key type and a positive total.
-	red := string(res.files["REDACTION.txt"])
+	red := string(res.Files["REDACTION.txt"])
 	if !strings.Contains(red, "openai_key") {
 		t.Errorf("REDACTION.txt missing openai_key type tally:\n%s", red)
 	}
-	if res.tally.total < 13 {
-		t.Errorf("expected >=13 redactions across sections, got %d", res.tally.total)
+	if res.Tally.Total < 13 {
+		t.Errorf("expected >=13 redactions across sections, got %d", res.Tally.Total)
 	}
 }
 
-func mustContainRedacted(t *testing.T, res *buildResult, name string) {
+func mustContainRedacted(t *testing.T, res *Result, name string) {
 	t.Helper()
-	c, ok := res.files[name]
+	c, ok := res.Files[name]
 	if !ok {
 		t.Errorf("expected section %s to be present", name)
 		return
@@ -303,19 +315,19 @@ func mustContainRedacted(t *testing.T, res *buildResult, name string) {
 // verbatim and produces no redaction tally.
 func TestIncludeRawSkipsRedaction(t *testing.T) {
 	b, secretsByTag := fullyWiredBuilder(t)
-	req := bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20, IncludeRaw: true}
+	req := Request{TaskID: "task_test_1", MaxSize: 200 << 20, IncludeRaw: true}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	cfg := string(res.files["config.redacted.yaml"])
+	cfg := string(res.Files["config.redacted.yaml"])
 	if !strings.Contains(cfg, secretsByTag["config"]) {
 		t.Errorf("raw mode should keep the secret verbatim, got:\n%s", cfg)
 	}
-	if res.tally.total != 0 {
-		t.Errorf("raw mode must not redact; tally=%d", res.tally.total)
+	if res.Tally.Total != 0 {
+		t.Errorf("raw mode must not redact; tally=%d", res.Tally.Total)
 	}
-	if !res.manifest.Raw {
+	if !res.Manifest.Raw {
 		t.Error("manifest.raw should be true in raw mode")
 	}
 }
@@ -327,14 +339,14 @@ func TestRedactBeforeTruncate(t *testing.T) {
 	// Build a metrics blob: padding + secret. The whole file is
 	// redacted before any cap touches it.
 	pad := strings.Repeat("a", 4096)
-	b := &bundleBuilder{
-		metrics:  &fakeMetrics{txt: pad + " token=" + secret + " " + pad},
-		detector: newTestDetector(t),
-		version:  "t",
+	b := &Builder{
+		Metrics:  &fakeMetrics{txt: pad + " token=" + secret + " " + pad},
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{TaskID: "x", MaxSize: 200 << 20}
+	req := Request{TaskID: "x", MaxSize: 200 << 20}
 	res, _ := b.Build(context.Background(), req)
-	for fname, content := range res.files {
+	for fname, content := range res.Files {
 		if bytes.Contains(content, []byte(secret)) {
 			t.Fatalf("secret survived in %s despite redact-before-truncate", fname)
 		}
@@ -342,28 +354,28 @@ func TestRedactBeforeTruncate(t *testing.T) {
 }
 
 // TestBinaryArtifactMetadataOnly asserts a binary artifact is NOT
-// shipped as bytes, only listed in the manifest (review #1).
+// shipped as bytes, only listed in the Manifest (review #1).
 func TestBinaryArtifactMetadataOnly(t *testing.T) {
 	binary := []byte{0x00, 0x01, 0x02, 'k', 'e', 'y', 0x00, 0xff}
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Artifacts: &fakeArtifactReader{rows: []*persistence.Artifact{{ID: "bin1", Name: "blob.bin"}}},
 		},
-		opener:   &fakeArtifactOpener{blobs: map[string][]byte{"bin1": binary}},
-		detector: newTestDetector(t),
-		version:  "t",
+		Opener:   &fakeArtifactOpener{blobs: map[string][]byte{"bin1": binary}},
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{TaskID: "x", MaxSize: 200 << 20}
+	req := Request{TaskID: "x", MaxSize: 200 << 20}
 	res, _ := b.Build(context.Background(), req)
 	// No shipped bytes file for the binary.
-	for name := range res.files {
+	for name := range res.Files {
 		if strings.Contains(name, "blob.bin") {
 			t.Fatalf("binary artifact should not ship bytes; found %s", name)
 		}
 	}
 	// Manifest lists it with sha256 + shipped=false.
 	var metas []artifactMeta
-	if err := json.Unmarshal(res.files["task/artifacts/MANIFEST.json"], &metas); err != nil {
+	if err := json.Unmarshal(res.Files["task/artifacts/MANIFEST.json"], &metas); err != nil {
 		t.Fatalf("artifact manifest: %v", err)
 	}
 	if len(metas) != 1 || metas[0].Shipped || metas[0].SHA256 == "" {
@@ -374,26 +386,26 @@ func TestBinaryArtifactMetadataOnly(t *testing.T) {
 // TestBestEffortSectionError: a repo that errors records the error and
 // the build still completes other sections.
 func TestBestEffortSectionError(t *testing.T) {
-	b := &bundleBuilder{
-		repos: supportRepos{
+	b := &Builder{
+		Repos: Repos{
 			Tasks:      &fakeTaskReader{err: errBoom},
 			Executions: &fakeExecReader{rows: []*persistence.Execution{{ID: "e1"}}},
 		},
-		detector: newTestDetector(t),
-		version:  "t",
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{TaskID: "x", MaxSize: 200 << 20}
+	req := Request{TaskID: "x", MaxSize: 200 << 20}
 	res, err := b.Build(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Build should not fail on a section error: %v", err)
 	}
-	if _, ok := res.sectionErrs["task/task.json"]; !ok {
+	if _, ok := res.SectionErrs["task/task.json"]; !ok {
 		t.Error("expected task.json section error recorded")
 	}
-	if _, ok := res.files["task/executions.json"]; !ok {
+	if _, ok := res.Files["task/executions.json"]; !ok {
 		t.Error("expected executions.json still collected")
 	}
-	if res.manifest.SectionErrors["task/task.json"] == "" {
+	if res.Manifest.SectionErrors["task/task.json"] == "" {
 		t.Error("manifest should carry the section error")
 	}
 }
@@ -408,15 +420,15 @@ func TestWindowFiltering(t *testing.T) {
 		{ID: "old", ProjectID: "p", CreatedAt: now.Add(-10 * time.Hour), UpdatedAt: now.Add(-10 * time.Hour)},
 		{ID: "future", ProjectID: "p", CreatedAt: now.Add(2 * time.Hour), UpdatedAt: now.Add(2 * time.Hour)},
 	}
-	b := &bundleBuilder{
-		repos:    supportRepos{Tasks: &fakeTaskReader{list: tasks}},
-		detector: newTestDetector(t),
-		version:  "t",
+	b := &Builder{
+		Repos:    Repos{Tasks: &fakeTaskReader{list: tasks}},
+		Detector: newTestDetector(t),
+		Version:  "t",
 	}
-	req := bundleRequest{Window: true, Since: since, Until: until, MaxSize: 200 << 20}
+	req := Request{Window: true, Since: since, Until: until, MaxSize: 200 << 20}
 	res, _ := b.Build(context.Background(), req)
 	var got []*persistence.Task
-	if err := json.Unmarshal(res.files["window/tasks.json"], &got); err != nil {
+	if err := json.Unmarshal(res.Files["window/tasks.json"], &got); err != nil {
 		t.Fatalf("window tasks: %v", err)
 	}
 	if len(got) != 1 || got[0].ID != "in" {
@@ -424,13 +436,13 @@ func TestWindowFiltering(t *testing.T) {
 	}
 }
 
-// TestManifestShape locks the key manifest fields.
+// TestManifestShape locks the key Manifest fields.
 func TestManifestShape(t *testing.T) {
 	b, _ := fullyWiredBuilder(t)
-	req := bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20}
+	req := Request{TaskID: "task_test_1", MaxSize: 200 << 20}
 	res, _ := b.Build(context.Background(), req)
-	var mf manifest
-	if err := json.Unmarshal(res.files["MANIFEST.json"], &mf); err != nil {
+	var mf Manifest
+	if err := json.Unmarshal(res.Files["MANIFEST.json"], &mf); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
 	if mf.SchemaVersion != supportReportSchemaVersion {
@@ -453,8 +465,8 @@ func TestManifestShape(t *testing.T) {
 // TestRedactionDisabledNoDetectorErrors: redaction-on with nil
 // detector is a programming error, surfaced (not a silent leak).
 func TestNilDetectorErrors(t *testing.T) {
-	b := &bundleBuilder{version: "t"}
-	_, err := b.Build(context.Background(), bundleRequest{TaskID: "x"})
+	b := &Builder{Version: "t"}
+	_, err := b.Build(context.Background(), Request{TaskID: "x"})
 	if err == nil {
 		t.Fatal("expected error when redaction requested with nil detector")
 	}
@@ -467,7 +479,7 @@ type boomError struct{}
 func (*boomError) Error() string { return "boom" }
 
 // fakeBlackBoxTraces stands in for the EE blackbox.Service behind the
-// BlackBoxTraceService seam. err wins over trace when set.
+// TraceService seam. err wins over trace when set.
 type fakeBlackBoxTraces struct {
 	trace any
 	err   error
@@ -490,53 +502,53 @@ func (f *fakeBlackBoxTraces) Compare(_, _ any) (any, error) { return nil, nil }
 func TestBlackBoxTraceSection(t *testing.T) {
 	t.Run("collected when the seam is wired", func(t *testing.T) {
 		b, _ := fullyWiredBuilder(t)
-		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		res, err := b.Build(context.Background(), Request{TaskID: "task_test_1", MaxSize: 200 << 20})
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		if _, ok := res.files["task/blackbox_trace.json"]; !ok {
-			t.Fatalf("blackbox trace section absent; files: %v", sortedKeys(res.files))
+		if _, ok := res.Files["task/blackbox_trace.json"]; !ok {
+			t.Fatalf("blackbox trace section absent; files: %v", sortedKeys(res.Files))
 		}
 	})
 
 	t.Run("omitted on a Community build with no seam", func(t *testing.T) {
 		b, _ := fullyWiredBuilder(t)
-		b.blackbox = nil
-		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		b.Blackbox = nil
+		res, err := b.Build(context.Background(), Request{TaskID: "task_test_1", MaxSize: 200 << 20})
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		if _, ok := res.files["task/blackbox_trace.json"]; ok {
+		if _, ok := res.Files["task/blackbox_trace.json"]; ok {
 			t.Error("CE build must not produce a blackbox section")
 		}
-		if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+		if _, bad := res.SectionErrs["task/blackbox_trace.json"]; bad {
 			t.Error("an unwired seam is not a section ERROR — Black Box is EE-only")
 		}
 	})
 
 	t.Run("a task with no audit data is not an error", func(t *testing.T) {
 		b, _ := fullyWiredBuilder(t)
-		b.blackbox = &fakeBlackBoxTraces{err: contracts.ErrBlackBoxTaskNotFound}
-		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		b.Blackbox = &fakeBlackBoxTraces{err: contracts.ErrBlackBoxTaskNotFound}
+		res, err := b.Build(context.Background(), Request{TaskID: "task_test_1", MaxSize: 200 << 20})
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		if _, ok := res.files["task/blackbox_trace.json"]; ok {
+		if _, ok := res.Files["task/blackbox_trace.json"]; ok {
 			t.Error("no audit data must yield no section")
 		}
-		if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+		if _, bad := res.SectionErrs["task/blackbox_trace.json"]; bad {
 			t.Error("ErrBlackBoxTaskNotFound is an absence, not a failure")
 		}
 	})
 
 	t.Run("a real failure is recorded, not fatal", func(t *testing.T) {
 		b, _ := fullyWiredBuilder(t)
-		b.blackbox = &fakeBlackBoxTraces{err: errors.New("assemble exploded")}
-		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		b.Blackbox = &fakeBlackBoxTraces{err: errors.New("assemble exploded")}
+		res, err := b.Build(context.Background(), Request{TaskID: "task_test_1", MaxSize: 200 << 20})
 		if err != nil {
 			t.Fatalf("Build must stay best-effort: %v", err)
 		}
-		if _, ok := res.sectionErrs["task/blackbox_trace.json"]; !ok {
+		if _, ok := res.SectionErrs["task/blackbox_trace.json"]; !ok {
 			t.Error("a genuine assembly failure belongs in section_errors")
 		}
 	})
@@ -544,8 +556,8 @@ func TestBlackBoxTraceSection(t *testing.T) {
 	t.Run("window mode does not assemble a trace", func(t *testing.T) {
 		b, _ := fullyWiredBuilder(t)
 		fake := &fakeBlackBoxTraces{trace: map[string]string{"summary": "x"}}
-		b.blackbox = fake
-		if _, err := b.Build(context.Background(), bundleRequest{
+		b.Blackbox = fake
+		if _, err := b.Build(context.Background(), Request{
 			Window: true, Since: time.Now().Add(-time.Hour), Until: time.Now(), MaxSize: 200 << 20,
 		}); err != nil {
 			t.Fatalf("Build: %v", err)
@@ -561,15 +573,15 @@ func TestBlackBoxTraceSection(t *testing.T) {
 // an empty file. Untested before this.
 func TestBlackBoxTraceSection_NilTraceNoError(t *testing.T) {
 	b, _ := fullyWiredBuilder(t)
-	b.blackbox = &fakeBlackBoxTraces{trace: nil}
-	res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+	b.Blackbox = &fakeBlackBoxTraces{trace: nil}
+	res, err := b.Build(context.Background(), Request{TaskID: "task_test_1", MaxSize: 200 << 20})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if _, ok := res.files["task/blackbox_trace.json"]; ok {
+	if _, ok := res.Files["task/blackbox_trace.json"]; ok {
 		t.Error("a nil trace must produce no section rather than an empty file")
 	}
-	if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+	if _, bad := res.SectionErrs["task/blackbox_trace.json"]; bad {
 		t.Error("a nil trace with no error is an absence, not a failure")
 	}
 }

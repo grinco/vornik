@@ -22,7 +22,7 @@ func TestQualityRepository_RoleAggregates(t *testing.T) {
 	// canonicalise (DISTINCT ON), exclude superseded rows, AND order by
 	// recorded_at DESC (latest wins — a flip to ASC or a dropped filter fails).
 	canonRe := "(?s)" + regexp.QuoteMeta("DISTINCT ON (o.execution_id, o.step_id)") +
-		".*" + regexp.QuoteMeta("outcome <> 'superseded'") +
+		".*" + regexp.QuoteMeta("outcome NOT IN ('superseded', 'orphaned')") +
 		".*" + regexp.QuoteMeta("ORDER BY o.execution_id, o.step_id, o.recorded_at DESC")
 	mock.ExpectQuery(canonRe).
 		WithArgs(since).
@@ -58,7 +58,7 @@ func TestQualityRepository_TaskAggregates(t *testing.T) {
 	since := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
 	// Pin both the canonicalisation AND the A2 hard-fail bar.
 	a2Re := "(?s)" + regexp.QuoteMeta("DISTINCT ON (o.execution_id, o.step_id)") +
-		".*" + regexp.QuoteMeta("outcome <> 'superseded'") +
+		".*" + regexp.QuoteMeta("outcome NOT IN ('superseded', 'orphaned')") +
 		".*" + regexp.QuoteMeta("bool_or(c.outcome IN ('schema_violation','failed','refused'))")
 	mock.ExpectQuery(a2Re).
 		WithArgs(since).
@@ -130,7 +130,7 @@ func TestQualityRepository_RoleAggregatesBetween(t *testing.T) {
 	to := time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
 	re := "(?s)" + regexp.QuoteMeta("DISTINCT ON (o.execution_id, o.step_id)") +
 		".*" + regexp.QuoteMeta("o.recorded_at >= $1 AND o.recorded_at < $2") +
-		".*" + regexp.QuoteMeta("outcome <> 'superseded'")
+		".*" + regexp.QuoteMeta("outcome NOT IN ('superseded', 'orphaned')")
 	mock.ExpectQuery(re).
 		WithArgs(from, to).
 		WillReturnRows(sqlmock.NewRows([]string{"project_id", "role", "total", "passing", "passing_prompt_tokens"}).

@@ -79,6 +79,16 @@ cd ~/vornik/deployments/podman
    commit into each. This runs **before** the cutover and is **fatal** on
    failure, so a failed image build leaves the running install completely
    untouched rather than pairing a new daemon with an old image.
+3c. **Recreate the sidecars those images run in** — a rebuilt image changes
+   nothing already running, so every long-running container created from a
+   rebuilt image (the scraper, the broker sidecars) is recreated: a compose
+   service with `up -d --no-deps --force-recreate` against its own compose
+   file (the IB Gateway is never touched), a unit-run container by restarting
+   its unit. A `--health-on-failure` setting is carried over. Also before the
+   cutover and fatal on failure, and **not graceful**: a tool call in flight
+   against that sidecar fails at that moment, inside the same interruption
+   window the cutover already causes. The trading stack's environment file
+   is `VORNIK_TRADING_ENV` (default `~/.config/vornik/secrets/trading.env`).
 4. **Smoke check** — runs the new binary's `-version` before touching the
    service; a binary that can't start is caught before any swap.
 5. **Cutover** — stops the service, installs the new binaries, starts it.
@@ -89,6 +99,15 @@ cd ~/vornik/deployments/podman
 
 If a running/leased task is in flight, the script warns before the cutover
 (the restart interrupts it) — pass `--yes` to proceed anyway in automation.
+
+### `--no-recreate-sidecars`
+
+Rebuild the images but leave the scraper and broker containers on the ones
+they were created from. The script prints what it *would* have recreated so
+the pin is visible, and `podman ps` will keep showing the old image until you
+recreate them yourself (`deployments/podman/recreate-sidecars.sh --dry-run`
+shows the exact commands). The daemon's connection to a recreated broker is
+re-established only by a daemon restart, so recreate before restarting.
 
 ### `--no-rebuild-images`
 

@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/executor/retry_from_step.go
-      sha256: fbef38fde2fb045a8a473cb54d1b431dab6d72de9bc102b393cbb13cb33433d1
+      sha256: 7f84117d157056ad1511802c021fcbf789ef14e7915e7ffe817534157df96fac
     - path: internal/ui/execution_actions.go
-      sha256: 094d12d4180afe3a28dc8befe72fff9cc03fe1d19b671f86c00c294298346886
+      sha256: 58948b422300b9da773ca776bcbfa6a8a1c92887e542bfd444cb20f03e8bf623
 ---
 # Recovering failed work
 
@@ -42,9 +42,11 @@ keeping.
 
 When the early steps were fine and only a later step went wrong, you can **rerun
 from that step** instead of repeating the good work. On a failed (terminal)
-execution's detail page in the Web UI, choose a completed step and **Rerun from
-step**: vornik rewinds the execution to that point — keeping the upstream steps'
-results and artifacts — and runs forward again.
+execution's detail page in the Web UI, choose a completed step — or the step
+that failed — and **Rerun from step**: vornik rewinds the execution to that
+point — keeping the upstream steps' results and artifacts — and runs forward
+again. The chosen step's earlier outcome is marked *superseded*, so workflow
+statistics count the rerun, not both attempts.
 
 Two things to know:
 

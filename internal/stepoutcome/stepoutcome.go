@@ -107,7 +107,33 @@ const (
 	// label so dashboards can exclude them from quality stats
 	// without losing the audit trail. Never produced by the agent
 	// or executor directly — only by the retry-from-step API.
+	//
+	// That last sentence was FALSE for a year: the orphan sweeps wrote it
+	// too, and by 2026-09-04 they had written 809 of the 835 rows that
+	// carried it while retry-from-step had written 15. Those rows are
+	// Orphaned now. See https://docs.vornik.io
 	Superseded Outcome = "superseded"
+
+	// Orphaned — the execution reached a terminal status by a path that
+	// never finalised this row, so the step's true outcome was never
+	// learned. Neither a pass nor a failure: an ABSENCE, and the
+	// vocabulary has to be able to say that.
+	//
+	// Written by the paths that terminalise a task's leftover executions
+	// (supersedeStaleExecutions, cascadeOrphanExecutions) and by the
+	// watchdog backstop that catches what they race past.
+	//
+	// It exists because those rows used to be labelled Superseded, which
+	// is the OPERATOR's word for "I replaced this run" — so a reader could
+	// not tell "an operator retried this" from "nobody ever learned what
+	// happened", and on the highest-volume workflow in the fleet the second
+	// was 100% of the population. That is this codebase's own stated
+	// failure mode: a control that cannot distinguish "examined and clean"
+	// from "never examined" reports the first and means the second.
+	//
+	// Excluded from quality denominators — `vornikctl workflow-stats` says
+	// how many it dropped rather than dropping them quietly.
+	Orphaned Outcome = "orphaned"
 
 	// ParallelJoin — observability signal emitted by the parent on the
 	// proceed-true resume of a declarative `parallel` fan-out step. It is

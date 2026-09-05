@@ -245,7 +245,11 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 		ErrorClass: "none", DurationMS: &duration, FinalizedAt: &finalized, HallucinationSignals: []byte(`[{"kind":"url"}]`),
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO execution_step_outcomes")).
-		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, sqlmock.AnyArg(), outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, sqlmock.AnyArg(), outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			// migration 175: the three prompt hashes ('' when not recorded);
+			// migration 178: the two boundary-file hashes, same convention.
+			outcome.PromptHashes.System, outcome.PromptHashes.User, outcome.PromptHashes.Tools,
+			outcome.PromptHashes.Input, outcome.PromptHashes.Result).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := repo.Record(context.Background(), outcome); err != nil {
 		t.Fatalf("Record() error = %v", err)
@@ -285,7 +289,9 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 			"complexity_tier", "effective_tool_budget", "tool_calls_used",
 			"untrusted_content_used", "untrusted_sources", "requires_review",
 			"container_exit_code",
-		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", nil, "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false, nil))
+			"prompt_system_hash", "prompt_user_hash", "prompt_tools_hash",
+			"input_hash", "result_hash",
+		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", nil, "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false, nil, "", "", "", "", ""))
 	list, err := repo.List(context.Background(), persistence.ExecutionStepOutcomeFilter{
 		ProjectID: &projectID, StepID: &stepID, PageSize: 10,
 	})

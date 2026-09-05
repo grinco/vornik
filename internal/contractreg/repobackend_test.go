@@ -379,6 +379,13 @@ func TestRepoBackendCoverage_ThisRepositoryIsGreen(t *testing.T) {
 		t.Fatalf("audit found only %d repository interfaces — it is not reading the real tree", len(audit.Interfaces))
 	}
 	data, err := os.ReadFile(filepath.Join(root, "cmd", "lint-lld-contracts", "repo_backend_allowlist.txt"))
+	if os.IsNotExist(err) {
+		// The Community export prunes cmd/lint-lld-contracts (Enterprise
+		// tooling); the coverage gate runs in the Enterprise tree, where the
+		// allowlist lives. Found 2026-09-05 when the export's CI first ran
+		// this test.
+		t.Skip("repo backend allowlist not in this tree (Community export)")
+	}
 	if err != nil {
 		t.Fatalf("read allowlist: %v", err)
 	}

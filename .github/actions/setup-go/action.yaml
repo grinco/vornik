@@ -1,24 +1,58 @@
 name: Setup Go
-description: Install Go and optionally download modules.
-
+description: Install Go with separate module and daily compiler caches.
 inputs:
   go-version:
-    description: Go version to install.
+    description: Go version to install
     required: true
   download-deps:
-    description: Whether to run go mod download.
-    required: false
+    description: Download modules
     default: "true"
-
+  cache-profile:
+    description: Compiler cache family (build, race or integration)
+    default: build
+  cache-write:
+    description: Allow this designated main-branch job to refresh the cache
+    default: "false"
 runs:
   using: composite
   steps:
-    - name: Set up Go
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version: ${{ inputs.go-version }}
-
+        cache: false
+    - id: paths
+      shell: bash
+      run: |
+        echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+        echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+    - name: Restore modules
+      if: github.ref != 'refs/heads/main' || inputs.cache-write != 'true' || inputs.cache-profile != 'build'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.paths.outputs.modules }}
+        key: modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ hashFiles('go.sum') }}
+    - name: Cache modules (single main writer)
+      if: github.ref == 'refs/heads/main' && inputs.cache-write == 'true' && inputs.cache-profile == 'build'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.paths.outputs.modules }}
+        key: modules-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ hashFiles('go.sum') }}
+    - name: Restore compiler outputs
+      if: github.ref != 'refs/heads/main' || inputs.cache-write != 'true'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.paths.outputs.build }}
+        key: build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ inputs.cache-profile }}-${{ hashFiles('go.sum') }}-${{ steps.paths.outputs.day }}
+        restore-keys: build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ inputs.cache-profile }}-${{ hashFiles('go.sum') }}-
+    - name: Refresh compiler outputs (main only)
+      if: github.ref == 'refs/heads/main' && inputs.cache-write == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.paths.outputs.build }}
+        key: build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ inputs.cache-profile }}-${{ hashFiles('go.sum') }}-${{ steps.paths.outputs.day }}
+        restore-keys: build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.go-version }}-${{ inputs.cache-profile }}-${{ hashFiles('go.sum') }}-
     - name: Download dependencies
-      if: ${{ inputs.download-deps == 'true' }}
+      if: inputs.download-deps == 'true'
       shell: bash
       run: go mod download

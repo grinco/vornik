@@ -1,0 +1,23 @@
+name: Set up publishing SSH
+description: Configure a repository deploy key with pinned GitHub host identity.
+inputs:
+  private-key:
+    description: Single-repository SSH deploy key
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.private-key }}
+      run: |
+        set -euo pipefail
+        test -n "$DEPLOY_KEY" || { echo '::error::Publishing deploy key is missing'; exit 1; }
+        umask 077
+        key_dir=$(mktemp -d "$RUNNER_TEMP/publish-ssh.XXXXXX")
+        printf '%s\n' "$DEPLOY_KEY" > "$key_dir/key"
+        # GitHub metadata API, verified 2026-09-05. No unauthenticated ssh-keyscan.
+        printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$key_dir/known_hosts"
+        echo "GIT_SSH_COMMAND=ssh -i '$key_dir/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='$key_dir/known_hosts'" >> "$GITHUB_ENV"
+        # Redirect git transports without embedding credentials in remote URLs.
+        git config --global url.'git@github.com:'.insteadOf https://github.com/

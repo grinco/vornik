@@ -13,6 +13,14 @@ this updates.
 
 ## Container images are part of the update
 
+> **Since 2026.9.3 the agent image is PULLED, not built.** The release publishes
+> it to `ghcr.io/grinco/vornik-agent`, and the updater fetches it **by digest**
+> — so an ordinary update no longer spends several minutes building a container.
+> Images the release did not publish (the broker, the scraper, the cluster pair)
+> are still built locally, and so is the agent image on a host that cannot reach
+> the registry. `vornikctl doctor` reports which of your images were pulled and
+> which were built.
+
 Agent-side product code ships **inside** the agent image, not in the daemon
 binary: `cmd/mcp-bridge`, `cmd/agent-helper` and
 `images/vornik-agent/entrypoint.sh` are baked in at build time. An update that
@@ -25,7 +33,7 @@ entrypoint. Between 2026-07-13 and 2026-08-25 `vornik-update.sh` treated the
 image rebuild as opt-in, so installs updated through the documented path
 received the daemon half only and kept the bypass reachable.
 
-Since 2026-08-25 **images are rebuilt by default**, and only images whose build
+Since 2026-08-25 **images are refreshed by default**, and only images whose build
 revision differs from the target commit are rebuilt — a release that touched no
 image inputs costs one label read per image, not a build. `vornikctl doctor`'s
 `image_freshness` check reports any image that has drifted from the running
@@ -74,10 +82,12 @@ cd ~/vornik/deployments/podman
    (pre-upgrade commit + DB migration version).
 3. **Checkout + rebuild** — checks out the target ref and rebuilds CE binaries
    in the golang container, version-stamped via `-ldflags`.
-3b. **Rebuild drifted images** — rebuilds every image this host's deployment
-   uses whose build revision differs from the target commit, stamping the new
-   commit into each. This runs **before** the cutover and is **fatal** on
-   failure, so a failed image build leaves the running install completely
+3b. **Obtain drifted images** — for every image this host's deployment uses,
+   `vornik-images -obtain` decides: pull it by digest where the release
+   published one, build it locally where it did not, or leave it alone when the
+   registry cannot be reached and an image is already present. A failed pull
+   cleans up and falls back to a build. This runs **before** the cutover and is
+   **fatal** on failure, so a failure leaves the running install completely
    untouched rather than pairing a new daemon with an old image.
 3c. **Recreate the sidecars those images run in** — a rebuilt image changes
    nothing already running, so every long-running container created from a
@@ -126,6 +136,39 @@ The script still takes a full dump every run as a safety net.
 > **Caveat:** the automation assumes migrations stay additive. If a future
 > release ships a destructive migration, read its release notes before running
 > unattended (`--yes`). The pre-upgrade dump lets you restore regardless.
+
+## Recovering from an update that reported "Nothing to do"
+
+**If you updated between 2026.9.0 and 2026.9.3, check this before anything
+else.** Until 2026.9.3 the updater checked out the new release *while bash was
+still reading the script file*, so on any upgrade where `vornik-update.sh`
+changed size the run died right after the checkout with a nonsense error — and
+nothing after it ran. No binaries were installed, no images rebuilt, no restart.
+
+Because the checkout had already moved, re-running the script then reported:
+
+```
+==> Checkout already at target commit. Nothing to do.
+```
+
+and exited 0. That message means the *checkout* is current — it says nothing
+about your installed binaries or images, which in this case were not touched.
+
+To check whether you are in that state:
+
+```bash
+vornik --version                    # the installed binary
+git -C ~/vornik describe --tags     # what the checkout claims
+```
+
+If they disagree, or if `vornikctl doctor` reports `image_freshness` drift:
+
+```bash
+cd ~/vornik/deployments/podman
+./vornik-update.sh --force          # rebuild + reinstall from the current checkout
+```
+
+`--force` is required precisely because the checkout already matches the target.
 
 ## Rollback
 

@@ -35,6 +35,7 @@ func main() {
 	record := flag.String("record", "", "write the release image record from LOCAL images to this path (dev boxes)")
 	recordRegistry := flag.String("record-from-registry", "", "write the release image record from PUBLISHED manifests to this path (releases)")
 	commit := flag.String("commit", "", "source commit for -record-from-registry (40 hex chars); defaults to git HEAD")
+	obtain := flag.Bool("obtain", false, "obtain deployable images (pull by digest where published), then print the rows that still need a local build")
 	flag.Parse()
 
 	if *recordRegistry != "" {
@@ -55,6 +56,31 @@ func main() {
 	images := imagemanifest.All()
 	if !*all {
 		images = imagemanifest.Deployable(imagemanifest.HostProber{})
+	}
+
+	// -obtain decides, pulls and records; what it prints is what still needs a
+	// LOCAL BUILD, in the same columns. See obtain.go for why the split falls
+	// here (design §S2.3 — the skip rule must have ONE owner).
+	if *obtain {
+		head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vornik-images: cannot read git HEAD: %v\n", err)
+			os.Exit(1)
+		}
+		images, err = runObtain(images, obtainOpts{
+			arch:       runtime.GOARCH,
+			head:       strings.TrimSpace(string(head)),
+			recordPath: imagemanifest.RecordPath,
+			inspect:    podmanInspect,
+			resolve:    skopeoResolve,
+			pull:       podmanPull,
+			remove:     podmanRemove,
+			log:        func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "vornik-images: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if _, err := fmt.Fprint(os.Stdout, imagemanifest.EmitRows(images)); err != nil {
 		fmt.Fprintf(os.Stderr, "vornik-images: %v\n", err)

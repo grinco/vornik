@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 )
 
 // RecordPath is where the package installs the release record.
@@ -108,24 +107,13 @@ type ImageRecord struct {
 // source, and its digest depends on build-time incidentals. Any digest recorded
 // for one is guaranteed not to match — a check that always fails, which is as
 // useless as one that always passes and considerably noisier.
+//
+// DELEGATES to IsRegistryTag (obtain.go) rather than restating the rule. Since
+// 2026-09-06 the Stage 2 obtain selector asks the same question, and a safety
+// check with two implementations has one that is wrong — usually the newer
+// (tenet §5). The OCI reasoning lives with the function.
 func (r ImageRecord) IsRegistryPinned() bool {
-	// The OCI rule: a tag is registry-qualified only when its FIRST path
-	// segment is a host — it contains a dot or a colon. A bare, host-less name
-	// like "something:latest" is only ever built locally; treating it as remote
-	// sent the recorder to docker.io looking for an image that has never
-	// existed there (found by running the recorder for real, on a test-fixture
-	// tag that has since been deleted).
-	head, rest, ok := strings.Cut(r.Tag, "/")
-	if !ok || rest == "" {
-		return false
-	}
-	if !strings.ContainsAny(head, ".:") {
-		return false
-	}
-	// localhost is a host, but it means "this machine" — including with a port,
-	// as a local registry would be written.
-	host, _, _ := strings.Cut(head, ":")
-	return host != "localhost"
+	return IsRegistryTag(r.Tag)
 }
 
 // DigestForArch returns the digest this release published for one architecture.

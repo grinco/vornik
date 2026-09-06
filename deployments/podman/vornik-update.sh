@@ -47,9 +47,16 @@
 #   entrypoint, and every install updated with the old opt-in default got the
 #   daemon half only, leaving the bypass reachable.
 #
-#   Only images whose build revision already matches the target commit are
-#   skipped, so a release that touched no image inputs costs one label read per
-#   image rather than a rebuild.
+#   SINCE 2026-09-06 AN IMAGE IS PULLED WHERE THE RELEASE PUBLISHED ONE, and
+#   built locally only when it did not, or when the registry cannot be reached.
+#   `vornik-images -obtain` makes that decision and records which happened; this
+#   script builds what it is handed. An update across a release that touched no
+#   image inputs costs a digest comparison per image rather than a build.
+#
+#   Air-gapped hosts are unaffected: with no reachable registry they build
+#   locally exactly as before. A host that already PULLED an image and later
+#   loses network keeps that image rather than rebuilding over it — see
+#   2026-08-28-packaged-image-provenance-design.md §S2.3.
 #
 #   --no-rebuild-images is honoured, but while images are stale `vornikctl
 #   doctor` will report a WARNING on every run. That warning confirms the pin is
@@ -66,6 +73,43 @@
 #   VORNIK_GO_IMAGE      build image                (default: docker.io/library/golang:1.25)
 #
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Run from a private copy — THIS SCRIPT CHECKS OUT A NEW VERSION OF ITSELF.
+#
+# Step 2 runs `git -C "$REPO_DIR" checkout "$TARGET_REF"`, and this file lives
+# inside $REPO_DIR, so that line rewrites the file bash is reading. Bash reads a
+# script lazily and seeks back to a saved byte offset after every command; once
+# the file underneath changes, it resumes at that offset inside the NEW file and
+# executes whatever byte lands there.
+#
+# Not theoretical (2026-09-06). Every CE upgrade whose vornik-update.sh changed
+# size died at the checkout — 2026.8.x (13023 B) -> 2026.9.x (17612 B) and
+# 2026.9.1 -> 2026.9.2 (20487 B) both did — with a nonsense error and exit 127.
+# Nothing after the checkout ran: no binary build, no image rebuild, no sidecar
+# recreate, no cutover. And because the checkout HAD moved, the operator's retry
+# printed "Checkout already at target commit. Nothing to do." and exited 0 — an
+# install that was never updated, reporting success. That is worse than the
+# half-applied state contract C3 forbids, because nothing reports it.
+# (2026-08-25-image-freshness-and-rebuild-on-update-design.md §13.)
+#
+# The copy is what makes the file bash reads immutable for the whole run. It is
+# taken BEFORE anything else so no code path can reach the checkout without it.
+if [[ -z "${VORNIK_UPDATE_REEXEC:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  _copy_dir="$(mktemp -d "${TMPDIR:-/tmp}/vornik-update.XXXXXX")"
+  cat "${BASH_SOURCE[0]}" > "$_copy_dir/vornik-update.sh"
+  chmod +x "$_copy_dir/vornik-update.sh"
+  # The copy carries the full comment header, so --help still works from it.
+  export VORNIK_UPDATE_REEXEC="${BASH_SOURCE[0]}" VORNIK_UPDATE_COPY_DIR="$_copy_dir"
+  exec bash "$_copy_dir/vornik-update.sh" "$@"
+fi
+# Every later exit must take the copy with it. The one other EXIT trap in this
+# script (the rebuilt-rows tempfile) re-states this cleanup rather than
+# replacing it — bash keeps a single EXIT trap, so a second `trap ... EXIT`
+# silently drops the first.
+if [[ -n "${VORNIK_UPDATE_COPY_DIR:-}" ]]; then
+  trap 'rm -rf "$VORNIK_UPDATE_COPY_DIR"' EXIT
+fi
 
 # ---------------------------------------------------------------------------
 # Settings (env-overridable; defaults match deployments/podman/quickstart.sh)
@@ -206,10 +250,15 @@ log "Backup complete ($(du -h "$BK/$DUMP" | cut -f1) DB dump + binaries + config
 #        quickstart's build exactly: same image, mounts, caches, ldflags).
 # ---------------------------------------------------------------------------
 git -C "$REPO_DIR" checkout --quiet "$TARGET_REF"
+# Resolved OUTSIDE the DO_BUILD branch: step 3b stamps VORNIK_VERSION on every
+# image it rebuilds, and rebuilding images is not conditional on rebuilding
+# binaries. While this sat inside the branch, `--no-build` died at the first
+# image with "VERSION: unbound variable" (set -u) — invisible until the
+# re-exec fix let any run reach step 3b at all.
+VERSION="$(git -C "$REPO_DIR" describe --tags --always 2>/dev/null || echo dev)"
 if [[ "$DO_BUILD" == 1 ]]; then
   log "Rebuilding vornik + vornikctl in $GO_IMAGE (first run downloads modules, ~2-3 min)"
   mkdir -p "$REPO_DIR/.bin"
-  VERSION="$(git -C "$REPO_DIR" describe --tags --always 2>/dev/null || echo dev)"
   BUILD_DATE="$(git -C "$REPO_DIR" log -1 --format=%cI 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
   LDFLAGS="-X main.Version=${VERSION} -X main.BuildDate=${BUILD_DATE}"
   podman run --rm \
@@ -243,37 +292,32 @@ fi
 #     list is how the cluster tags ended up with no builder at all, and how the
 #     scraper and broker images ended up covered by no update path.
 # ---------------------------------------------------------------------------
-IMAGE_REVISION_LABEL="org.opencontainers.image.revision"
-
-# deployed_image_revision <tag> — prints the commit an image was built from,
-# or nothing when the image is absent or predates provenance labelling.
-deployed_image_revision() {
-  local tag="$1" rev
-  podman image exists "$tag" 2>/dev/null || { printf ''; return 0; }
-  rev="$(podman image inspect "$tag" --format "{{index .Labels \"$IMAGE_REVISION_LABEL\"}}" 2>/dev/null || true)"
-  [[ "$rev" == "<no value>" ]] && rev=""
-  printf '%s' "$rev"
-}
-
+# Since 2026-09-06 the DECISION is Go's, not this script's.
+#
+# `vornik-images -obtain` resolves each deployable image, pulls by digest what
+# the release published, records what this host obtained (contract C5), and
+# prints only the rows that still need a LOCAL BUILD — in the same five columns
+# this loop already read. What used to live here was a second implementation of
+# the skip rule, and it was the WRONG one after Stage 2: it compared an image's
+# revision label against `git rev-parse HEAD`, and a pulled image carries the CE
+# commit it was built from, which an EE HEAD never equals. See
+# 2026-08-28-packaged-image-provenance-design.md §S2.3.
 rebuild_images() {
   local emitter="$REPO_DIR/.bin/vornik-images"
   [[ -x "$emitter" ]] || die "image manifest emitter missing at $emitter (re-run without --no-build)"
 
-  local target_rev built=0 skipped=0
+  local target_rev built=0
   target_rev="$(git -C "$REPO_DIR" rev-parse HEAD)"
 
-  local tag containerfile target context condition current
+  local rows
+  rows="$(cd "$REPO_DIR" && "$emitter" -obtain)" \
+    || die "obtaining container images failed — nothing swapped, the running install is untouched"
+
+  local tag containerfile target context condition
   while IFS=$'\t' read -r tag containerfile target context condition; do
     [[ -n "$tag" ]] || continue
 
-    current="$(deployed_image_revision "$tag")"
-    if [[ -n "$current" && "$current" == "$target_rev" ]]; then
-      log "  $tag — already at $(printf '%.12s' "$current")"
-      skipped=$((skipped + 1))
-      continue
-    fi
-
-    log "  $tag — rebuilding (condition: $condition)"
+    log "  $tag — building (condition: $condition)"
     local -a build_args=(
       build -f "$REPO_DIR/$containerfile"
       --build-arg "VORNIK_REVISION=$target_rev"
@@ -292,14 +336,21 @@ rebuild_images() {
       || die "image build failed for $tag — nothing swapped, the running install is untouched"
     built=$((built + 1))
     # Remember the row: the containers created from this tag are recreated
-    # in step 3c, and only those — a tag skipped as current changed nothing.
+    # in step 3c, and only those.
+    #
+    # A PULLED image is deliberately NOT here. The only registry-pinned image is
+    # the agent, whose containers are the warm pool — drained by the cutover
+    # restart (design §5). The sidecars that step 3c exists for are host-built,
+    # so they arrive through this loop as they always did.
     printf '%s\t%s\t%s\t%s\t%s\n' "$tag" "$containerfile" "$target" "$context" "$condition" >> "$REBUILT_ROWS"
-  done < <("$emitter")
+  done <<< "$rows"
 
-  log "Images: $built rebuilt, $skipped already current"
+  log "Images: $built built locally (obtain decisions above)"
 }
 REBUILT_ROWS="$(mktemp)"
-trap 'rm -f "$REBUILT_ROWS"' EXIT
+# Re-states the private-copy cleanup: bash keeps ONE EXIT trap, so this
+# replaces the one set at the top rather than adding to it.
+trap 'rm -f "$REBUILT_ROWS"; rm -rf "${VORNIK_UPDATE_COPY_DIR:-/nonexistent}"' EXIT
 
 if [[ "$REBUILD_IMAGES" == 1 ]]; then
   log "Rebuilding container images that drifted from $TARGET_REF"

@@ -126,14 +126,31 @@ func TestUpdaterStampsProvenanceOnRebuild(t *testing.T) {
 	}
 }
 
-// TestUpdaterSkipsImagesAlreadyAtTargetRevision: inverting the default is only
-// safe if the common no-op update stays cheap. An update across a release that
-// touched no image inputs should cost a label read per image, not a rebuild.
-func TestUpdaterSkipsImagesAlreadyAtTargetRevision(t *testing.T) {
+// TestUpdaterDelegatesTheObtainDecision — since Stage 2 (2026-09-06) the
+// decision of skip/pull/build belongs to `vornik-images -obtain`, and this
+// script only builds what it is handed.
+//
+// THIS TEST REPLACES TestUpdaterSkipsImagesAlreadyAtTargetRevision, which
+// asserted the opposite: that the script read the revision label itself. It
+// did, and after Stage 2 that was the WRONG rule — a pulled image carries the
+// CE commit it was built from, which an EE HEAD never equals, so the script's
+// own comparison would have rebuilt on every update forever
+// (2026-08-28-packaged-image-provenance-design.md §S2.3).
+//
+// The invariant now is the absence of a second implementation: a safety check
+// with two implementations has one that is wrong, and the wrong one is usually
+// the newer.
+func TestUpdaterDelegatesTheObtainDecision(t *testing.T) {
 	body := readUpdater(t)
-	if !strings.Contains(body, "org.opencontainers.image.revision") {
-		t.Error("the updater must READ the revision label to decide whether a " +
-			"rebuild is needed; without it every update rebuilds everything")
+
+	if !strings.Contains(body, "-obtain") {
+		t.Error("the updater must call `vornik-images -obtain`; the skip/pull/build " +
+			"decision is Go-owned so the daemon's doctor check and this path agree")
+	}
+	if strings.Contains(body, "org.opencontainers.image.revision") {
+		t.Error("the updater has re-grown its own revision-label comparison. That rule now " +
+			"lives in internal/imagemanifest.Decide, and a second copy here is the " +
+			"CE-commit-vs-EE-commit inversion waiting to happen (design §S2.3)")
 	}
 }
 

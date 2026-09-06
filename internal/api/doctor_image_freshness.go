@@ -250,13 +250,27 @@ func (h *DoctorHandlers) checkImageFreshness(ctx context.Context) DoctorCheck {
 
 	sort.Strings(warn)
 
+	// Contract C5 (Stage 2, 2026-09-06): say how each image got here.
+	//
+	// This cannot be inspected after the fact. §5.2 established by running it
+	// that podman writes a RepoDigests entry even for a never-pushed local
+	// build, and once a pull has happened the revision label is the CE commit
+	// the image was built from — indistinguishable from a host that built at
+	// that commit. So the obtain step writes it down and this reads it back.
+	//
+	// A HOST WITH NO RECORD IS NORMAL, not a fault: any install predating
+	// Stage 2, and any image obtained outside the update path. Absent is
+	// reported as unknown rather than guessed, because a guess here is exactly
+	// the "examined and clean" / "never examined" conflation the tenets forbid.
+	provenance := obtainProvenanceSummary()
+
 	if len(warn) == 0 {
-		return DoctorCheck{
-			Name:   name,
-			Status: "OK",
-			Message: fmt.Sprintf("%d checked, all match the build this release declares (%s)",
-				okCount, shortRev(daemonRev)),
+		msg := fmt.Sprintf("%d checked, all match the build this release declares (%s)",
+			okCount, shortRev(daemonRev))
+		if provenance != "" {
+			msg += ". " + provenance
 		}
+		return DoctorCheck{Name: name, Status: "OK", Message: msg}
 	}
 
 	// AGGREGATE FIRST, detail after. One image passing must not read as the
@@ -268,10 +282,41 @@ func (h *DoctorHandlers) checkImageFreshness(ctx context.Context) DoctorCheck {
 		Name:   name,
 		Status: "WARNING",
 		Message: fmt.Sprintf("%d OK, %d WARNING (%s). Agent-side code ships INSIDE these images, "+
-			"so a release that changed both the daemon and an image is only half-applied here.",
-			okCount, len(warn), strings.Join(warned, ", ")),
+			"so a release that changed both the daemon and an image is only half-applied here.%s",
+			okCount, len(warn), strings.Join(warned, ", "), provenanceSuffix(provenance)),
 		Items: warn,
 	}
+}
+
+// obtainProvenanceSummary reports how this host obtained its images, or "" when
+// it has no record to read.
+func obtainProvenanceSummary() string {
+	rec, err := imagemanifest.LoadObtained(imagemanifest.DefaultObtainedPath())
+	if err != nil {
+		// Corrupt is worth saying out loud: the host believes it is recording
+		// provenance and is not.
+		return fmt.Sprintf("Obtain provenance unreadable (%v)", err)
+	}
+	if len(rec.Images) == 0 {
+		return ""
+	}
+	var pulled, built int
+	for _, img := range rec.Images {
+		switch img.Method {
+		case imagemanifest.MethodPulled:
+			pulled++
+		case imagemanifest.MethodBuilt:
+			built++
+		}
+	}
+	return fmt.Sprintf("Obtained: %d pulled, %d built locally", pulled, built)
+}
+
+func provenanceSuffix(s string) string {
+	if s == "" {
+		return ""
+	}
+	return " " + s
 }
 
 // legacyFreshness is the pre-record behaviour: compare each image's label

@@ -43,38 +43,60 @@
 # bench_config_database FILE — print the `database.name` value from a daemon
 # config. Prints nothing when the file, the block, or the key is absent.
 #
-# Parses the database BLOCK specifically. The sibling generator
-# (scripts/gen-shell-env.sh) takes the first `name:` in the file, which is a
-# different key on any config whose earlier sections have one — a latent bug
-# filed separately. Not repeated here.
+# Parses the database BLOCK specifically, not the file's first `name:`. The
+# difference is not academic: a sequence item whose `name:` is not its first key
+# emits an ordinary `  name: x` line, so any such section above `database:` wins.
+#
+# THE ONE IMPLEMENTATION. scripts/gen-shell-env.sh sources this file and calls
+# this function; it used to carry its own first-`name:` sed, which named the
+# WRONG database in VORNIK_BENCH_DENY_DATABASES — denying a database the
+# benchmark would never touch while permitting the real one (fixed 2026-09-07).
+# A safety check with two implementations has one that is wrong.
+#
+# awk, not python3: gen-shell-env.sh runs on the INSTALL path, and quickstart.sh
+# treats python3 as optional. A parser that returns nothing on a python3-less
+# host would leave that deployment's own database undenied — silently, which is
+# the failure mode this whole file exists to remove.
 bench_config_database() {
     [ -r "${1:-}" ] || return 0
-    python3 - "$1" <<'PY' 2>/dev/null || true
-import re, sys
-try:
-    text = open(sys.argv[1], encoding="utf-8").read()
-except OSError:
-    raise SystemExit(0)
-# The `database:` block, then its `name:` — indentation-scoped, so a `name:`
-# belonging to any other section cannot be mistaken for it.
-block = re.search(r"(?m)^database:[ \t]*$\n((?:[ \t]+.*\n|\s*\n)*)", text)
-if not block:
-    # Say why. A silent exit here becomes a refusal with no diagnosis, and an
-    # operator cannot tell a mis-indented config from a missing one.
-    print("bench guard: no `database:` block in %s" % sys.argv[1], file=sys.stderr)
-    raise SystemExit(0)
-name = re.search(r"(?m)^[ \t]+name:[ \t]*(.+?)[ \t]*$", block.group(1))
-if not name:
-    print("bench guard: `database:` block in %s has no name: key" % sys.argv[1], file=sys.stderr)
-    raise SystemExit(0)
-value = name.group(1).strip()
-# A trailing YAML comment is part of the line, not the value. Only outside
-# quotes: `name: "db # 1"` is a (perverse) literal name, `name: db # prod` is
-# not. Without this the comparison fails closed on a spurious mismatch.
-if not value.startswith(('"', "'")):
-    value = re.split(r"\s+#", value, 1)[0].strip()
-print(value.strip('"').strip("'"))
-PY
+    awk -v file="$1" -v sq="'" -v dq='"' '
+      /^database:[ \t]*(#.*)?$/ { in_db = 1; seen_block = 1; next }
+      in_db && /^[^ \t]/        { in_db = 0 }
+      in_db && !found && match($0, /^[ \t]+name:[ \t]*/) {
+          value = substr($0, RSTART + RLENGTH)
+          found = 1
+      }
+      END {
+          # Say why. A silent exit here becomes a refusal with no diagnosis, and
+          # an operator cannot tell a mis-indented config from a missing one.
+          if (!seen_block) {
+              printf("bench guard: no `database:` block in %s\n", file) > "/dev/stderr"
+              exit 0
+          }
+          if (!found) {
+              printf("bench guard: `database:` block in %s has no name: key\n", file) > "/dev/stderr"
+              exit 0
+          }
+          sub(/[ \t]+$/, "", value)
+          # A trailing YAML comment is part of the line, not the value. Only
+          # outside quotes: `name: "db # 1"` is a (perverse) literal name,
+          # `name: db # prod` is not. Without this the comparison fails closed
+          # on a spurious mismatch.
+          first = substr(value, 1, 1)
+          if (first != dq && first != sq) {
+              sub(/[ \t]+#.*$/, "", value)
+              sub(/[ \t]+$/, "", value)
+          }
+          if (length(value) >= 2) {
+              first = substr(value, 1, 1)
+              last  = substr(value, length(value), 1)
+              if ((first == dq && last == dq) || (first == sq && last == sq)) {
+                  value = substr(value, 2, length(value) - 2)
+              }
+          }
+          print value
+      }
+    ' "$1"
 }
 
 # bench_assert_write_target RESOLVED_DB BENCH_CONFIG

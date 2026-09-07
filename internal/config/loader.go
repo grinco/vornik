@@ -37,25 +37,48 @@ func Load() (*Config, string, error) {
 // LoadWithProvenance is Load, keeping the provenance the loader recorded so
 // the daemon can serve it (`config show --provenance`) without a second load.
 func LoadWithProvenance() (*Config, string, *Provenance, error) {
-	// Parse flags
-	var (
-		configPath  = flag.String("config", "", "Path to configuration file")
-		showVersion = flag.Bool("version", false, "Show version information")
-	)
+	// Parse flags. Registration is idempotent — see commandLineFlag.
+	configPath := commandLineFlag("config", func() { flag.String("config", "", "Path to configuration file") })
+	showVersion := commandLineFlag("version", func() { flag.Bool("version", false, "Show version information") })
 	flag.Parse()
 
-	if *showVersion {
+	if showVersion.Value.String() == "true" {
 		return nil, "", nil, ErrVersionRequested
 	}
 
 	// Determine config path with precedence
-	path := resolveConfigPath(*configPath)
+	path := resolveConfigPath(configPath.Value.String())
 
 	cfg, prov, err := LoadFromPathWithProvenance(path)
 	if err != nil {
 		return nil, path, nil, err
 	}
 	return cfg, path, prov, nil
+}
+
+// commandLineFlag returns the named flag on flag.CommandLine, calling register
+// to declare it only if it is not already there.
+//
+// This used to be a bare flag.String / flag.Bool on every call, so a SECOND
+// config.Load() in one process panicked with "flag redefined". Nothing in
+// production hit it because no command loaded the config twice — until the CE
+// support bundle's local driver (2026-09-04), which loads it to open the
+// database and then runs the offline doctor, which loaded it again. That was
+// worked around at the call site, and internal/cli's integration harness
+// carries a dbcovResetFlags() helper swapping flag.CommandLine for a fresh set
+// for the same reason. Two workarounds for one defect is the signal to fix the
+// defect.
+//
+// The flag's VALUE is read through the returned *flag.Flag rather than a
+// captured pointer, because on the second call the pointer a fresh
+// registration would have handed back does not exist — the value lives in the
+// flag registered first.
+func commandLineFlag(name string, register func()) *flag.Flag {
+	if f := flag.Lookup(name); f != nil {
+		return f
+	}
+	register()
+	return flag.Lookup(name)
 }
 
 // LoadFromPath parses and validates the config at path (or returns a validated

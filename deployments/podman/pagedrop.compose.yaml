@@ -59,7 +59,21 @@ services:
       # password-protected pages only work when the browser reaches the page
       # over HTTPS. The proxy forwards to this host:port.
       # 8888 avoids the benchmark daemon, which owns host port 8090.
-      - "192.0.2.10:8888:8080"
+      #
+      # Binds ALL interfaces by default (operator decision 2026-09-06). This
+      # replaced a hardcoded `192.0.2.10`. A published port is bound at
+      # container start and MUST already exist on the host, so that literal
+      # address became unbindable the moment the host's LAN address changed
+      # (2026-09-06: the box came back from a reboot on 192.168.0.142). podman
+      # failed with `cannot assign requested address`, which aborted
+      # podman-restart.service for every container it had not yet reached.
+      # 0.0.0.0 is always assignable, whatever the host's address is.
+      #
+      # Reachability is now whatever the host's firewall allows, NOT just the
+      # LAN: this port has no authentication in front of it (per-page passwords
+      # are the only gate). Set PAGEDROP_VIEW_BIND to a specific address to
+      # narrow it again.
+      - "${PAGEDROP_VIEW_BIND:-0.0.0.0}:${PAGEDROP_VIEW_PORT:-8888}:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz >/dev/null 2>&1 || exit 1"]
       interval: 15s

@@ -23,7 +23,9 @@ import (
 //   - migration state (applied head vs the binary's expected head)
 //   - recent daemon journal errors ("why won't it boot")
 //
-// It never mutates anything. Exit is non-zero if any check FAILs.
+// It never mutates anything — true as of 2026-09-07, and not before: the
+// database check ran storage.Open, which migrates on SQLite. See
+// offlineCheckDatabase. Exit is non-zero if any check FAILs.
 // buildOfflineDoctorReport runs the static (daemon-down) checks and returns the
 // report + the resolved config path. Extracted so `vornikctl report` can reuse
 // the offline diagnostics at install time (design 2026-07-25-vornik-report).
@@ -140,7 +142,22 @@ func offlineCheckConfig(r *doctorReport) (*config.Config, string) {
 }
 
 func offlineCheckDatabase(ctx context.Context, cfg *config.Config, r *doctorReport) {
-	backend, err := storage.Open(ctx, cfg.Database)
+	// OpenReadOnly, never Open. storage.Open MIGRATES on its SQLite branch —
+	// schemaSQL plus an ALTER TABLE reconciler for columns added after a table
+	// first shipped — so a CLI one build ahead of the daemon moved the
+	// operator's schema forward while they believed they were only gathering
+	// evidence. This command exists for the case where the daemon will not
+	// start, which is exactly when an unexpected migration is least welcome, and
+	// Community defaults to SQLite, so it was CE's default path.
+	//
+	// The migration-state check below is unaffected: it needs Postgres, whose
+	// branch never migrated on either function, and on SQLite it reports
+	// "skipped (non-postgres backend)" either way. So the schema change was
+	// pure side effect on the only path that had one.
+	//
+	// Filed 2026-09-04 with the CE support bundle, which added OpenReadOnly
+	// rather than adding a second instance of this. Fixed 2026-09-07.
+	backend, err := storage.OpenReadOnly(ctx, cfg.Database)
 	if err != nil {
 		r.Checks = append(r.Checks, doctorCheck{
 			Name: "database", Status: "fail",

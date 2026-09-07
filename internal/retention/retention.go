@@ -113,6 +113,16 @@ const (
 	// a correctness-of-posture fix, not a capacity one — which is why the horizon
 	// is generous rather than tight.
 	DefaultMemoryEvictionAuditDays = 365
+
+	// DefaultExecutionRatingsDays bounds execution_ratings when the operator
+	// configures nothing. Longer than any other retention class on purpose: a
+	// rating is a few bytes, it is the scarcest signal in the system, and
+	// phase 2's rollup compares windows on either side of a change — a horizon
+	// shorter than the comparison would silently narrow it.
+	//
+	// A number rather than "forever" because an unbounded table is a decision
+	// nobody made (ratings design §6).
+	DefaultExecutionRatingsDays = 400
 	// MinimumFloorDays is the absolute minimum any window can be pinned
 	// to regardless of operator config. Protects against typos that
 	// would nuke fresh operational data.
@@ -374,6 +384,8 @@ type GlobalCounts struct {
 	// (Phase 4 consumes it); wiring the sweep now means a row can never
 	// outlive its grace once Phase 4 starts minting codes.
 	LinkCodes int
+	// ExecutionRatings is how many human verdicts aged past their horizon.
+	ExecutionRatings int
 }
 
 // uiSessionGraceDays is the fixed window kept after a session
@@ -422,102 +434,149 @@ func (s *Sweeper) Preview(ctx context.Context, p Policy) (Counts, error) {
 	return s.run(ctx, p, true)
 }
 
-// SweepGlobal prunes non-project-scoped tables (caches). Runs once
-// per cycle, regardless of the project count. Returns counts +
-// best-effort error — a failure in one cache doesn't abort the
-// others.
-func (s *Sweeper) SweepGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int) (GlobalCounts, error) {
-	return s.runGlobal(ctx, responseCacheDays, embeddingCacheDays, false)
+// GlobalPolicy is the horizon set for the non-project-scoped sweeps.
+//
+// A struct rather than positional ints: with three of them in a row an
+// argument swap at a call site is invisible, and these are DELETE horizons.
+// The two cache fields and the ratings field also disagree about what zero
+// means, which a positional list gives the reader no way to see.
+type GlobalPolicy struct {
+	// ResponseCacheDays evicts cold llm_response_cache rows.
+	// Zero → SKIPPED (keep forever). A cache is a performance artifact; not
+	// pruning one costs disk, and the operator chose that.
+	ResponseCacheDays int
+	// EmbeddingCacheDays evicts cold embedding_cache rows. Zero → SKIPPED,
+	// same reasoning.
+	EmbeddingCacheDays int
+	// ExecutionRatingsDays bounds execution_ratings.
+	//
+	// Zero → DefaultExecutionRatingsDays, NOT skipped. The opposite of the two
+	// fields above, deliberately: the ratings design states a number rather
+	// than "forever" because an unbounded table is a decision nobody made, so
+	// an operator who configures nothing still gets a horizon.
+	ExecutionRatingsDays int
+}
+
+// SweepGlobal prunes non-project-scoped tables (caches, ratings, and the
+// always-on session/key/code cleanups). Runs once per cycle, regardless of the
+// project count. Returns counts + best-effort error — a failure in one table
+// doesn't abort the others.
+func (s *Sweeper) SweepGlobal(ctx context.Context, p GlobalPolicy) (GlobalCounts, error) {
+	return s.runGlobal(ctx, p, false)
 }
 
 // PreviewGlobal counts what SweepGlobal would prune without
 // deleting. Used by the operator-facing preview surface.
-func (s *Sweeper) PreviewGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int) (GlobalCounts, error) {
-	return s.runGlobal(ctx, responseCacheDays, embeddingCacheDays, true)
+func (s *Sweeper) PreviewGlobal(ctx context.Context, p GlobalPolicy) (GlobalCounts, error) {
+	return s.runGlobal(ctx, p, true)
 }
 
-func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int, previewOnly bool) (GlobalCounts, error) {
+func (s *Sweeper) runGlobal(ctx context.Context, p GlobalPolicy, previewOnly bool) (GlobalCounts, error) {
 	if s == nil || s.db == nil {
 		return GlobalCounts{}, nil
 	}
 	var counts GlobalCounts
 	var firstErr error
 
-	if responseCacheDays > 0 {
-		threshold := time.Now().UTC().AddDate(0, 0, -responseCacheDays)
-		n, err := s.pruneResponseCache(ctx, threshold, previewOnly)
-		if err != nil {
-			s.warn("llm_response_cache", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			counts.ResponseCache = n
+	// One line per table. The six blocks this replaced were the same
+	// warn-remember-continue shape copied out, which is where the complexity
+	// lived rather than in any decision being made.
+	days := func(configured, fallback int) time.Time {
+		if configured <= 0 {
+			configured = fallback
 		}
+		return time.Now().UTC().AddDate(0, 0, -configured)
 	}
 
-	if embeddingCacheDays > 0 {
-		threshold := time.Now().UTC().AddDate(0, 0, -embeddingCacheDays)
-		n, err := s.pruneEmbeddingCache(ctx, threshold, previewOnly)
-		if err != nil {
-			s.warn("embedding_cache", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			counts.EmbeddingCache = n
-		}
+	// The two caches SKIP at zero: not pruning a performance artifact costs
+	// disk, and the operator chose that.
+	if p.ResponseCacheDays > 0 {
+		s.runGlobalPrune(ctx, "llm_response_cache", days(p.ResponseCacheDays, 0), previewOnly,
+			s.pruneResponseCache, &counts.ResponseCache, &firstErr)
+	}
+	if p.EmbeddingCacheDays > 0 {
+		s.runGlobalPrune(ctx, "embedding_cache", days(p.EmbeddingCacheDays, 0), previewOnly,
+			s.pruneEmbeddingCache, &counts.EmbeddingCache, &firstErr)
 	}
 
-	// ui_sessions cleanup — always runs (no config knob). Fixed
-	// 7-day grace after expiry/revocation.
-	{
-		threshold := time.Now().UTC().AddDate(0, 0, -uiSessionGraceDays)
-		n, err := s.pruneUISessions(ctx, threshold, previewOnly)
-		if err != nil {
-			s.warn("ui_sessions", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			counts.UISessions = n
-		}
-	}
-
-	// api_keys cleanup — always runs (no config knob). Fixed 7-day
-	// grace keeps recent dead rows for short-window audit. Per-task
-	// agent keys are minted and revoked within seconds; without this
-	// sweep the table would grow one row per task indefinitely.
-	{
-		threshold := time.Now().UTC().AddDate(0, 0, -apiKeyGraceDays)
-		n, err := s.pruneAPIKeys(ctx, threshold, previewOnly)
-		if err != nil {
-			s.warn("api_keys", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			counts.APIKeys = n
-		}
-	}
-
-	// link_codes cleanup — always runs (no config knob). Fixed 7-day grace.
-	// The table has no writers yet (Phase 4 consumes it); wiring the sweep
-	// now guarantees a code can't outlive its grace once minting begins.
-	{
-		threshold := time.Now().UTC().AddDate(0, 0, -linkCodeGraceDays)
-		n, err := s.pruneLinkCodes(ctx, threshold, previewOnly)
-		if err != nil {
-			s.warn("link_codes", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			counts.LinkCodes = n
-		}
-	}
+	// The rest always run. ui_sessions / api_keys / link_codes carry fixed
+	// grace periods with no config knob; execution_ratings takes a configured
+	// horizon but treats zero as the DEFAULT rather than as "skip", because the
+	// ratings design chose a number over "forever".
+	s.runGlobalPrune(ctx, "ui_sessions", days(uiSessionGraceDays, uiSessionGraceDays), previewOnly,
+		s.pruneUISessions, &counts.UISessions, &firstErr)
+	s.runGlobalPrune(ctx, "api_keys", days(apiKeyGraceDays, apiKeyGraceDays), previewOnly,
+		s.pruneAPIKeys, &counts.APIKeys, &firstErr)
+	s.runGlobalPrune(ctx, "link_codes", days(linkCodeGraceDays, linkCodeGraceDays), previewOnly,
+		s.pruneLinkCodes, &counts.LinkCodes, &firstErr)
+	s.runGlobalPrune(ctx, "execution_ratings", days(p.ExecutionRatingsDays, DefaultExecutionRatingsDays), previewOnly,
+		s.pruneExecutionRatings, &counts.ExecutionRatings, &firstErr)
 
 	return counts, firstErr
+}
+
+// runGlobalPrune runs one global sweep and keeps the best-effort contract: a
+// failure in one table is warned about and remembered, but never aborts the
+// others — a cache that cannot be probed must not stop the session cleanup.
+func (s *Sweeper) runGlobalPrune(
+	ctx context.Context,
+	table string,
+	threshold time.Time,
+	previewOnly bool,
+	prune func(context.Context, time.Time, bool) (int, error),
+	dst *int,
+	firstErr *error,
+) {
+	n, err := prune(ctx, threshold, previewOnly)
+	if err != nil {
+		s.warn(table, err)
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		return
+	}
+	*dst = n
+}
+
+// pruneExecutionRatings bounds execution_ratings on the rating's OWN age.
+//
+// Keyed on created_at — when the run was FIRST judged — rather than on the
+// execution's retention, because the two are independent by design: a rating
+// outlives the run it judges (no foreign key), and phase 2's rollup compares
+// windows, so a rating that expired with its execution would take the
+// comparison with it.
+//
+// to_regclass guards a deployment whose migration 179 has not landed, the same
+// way the cache sweeps guard theirs: an optional table's absence must not take
+// the whole retention cycle down.
+func (s *Sweeper) pruneExecutionRatings(ctx context.Context, threshold time.Time, previewOnly bool) (int, error) {
+	var present bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.execution_ratings') IS NOT NULL`).Scan(&present); err != nil {
+		return 0, fmt.Errorf("probe execution_ratings: %w", err)
+	}
+	if !present {
+		return 0, nil
+	}
+	if previewOnly {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM execution_ratings WHERE created_at < $1`,
+			threshold).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count execution_ratings: %w", err)
+		}
+		return n, nil
+	}
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM execution_ratings WHERE created_at < $1`, threshold)
+	if err != nil {
+		return 0, fmt.Errorf("delete execution_ratings: %w", err)
+	}
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected for execution_ratings: %w", err)
+	}
+	return int(aff), nil
 }
 
 // evidenceTables are NEVER prunable, whatever any allowlist says.

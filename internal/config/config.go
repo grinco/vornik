@@ -1446,6 +1446,17 @@ type RetentionConfig struct {
 	// keep forever (which grows unbounded on busy deployments —
 	// 30d is the recommended setting).
 	ResponseCacheDays int `yaml:"response_cache_days" doc:"Days to keep cached LLM responses (30d recommended on busy deployments)."`
+	// ExecutionRatingsDays bounds execution_ratings — the human up/down
+	// verdicts on execution output. Global table (keyed execution_id +
+	// rater_id, no project_id), so it is swept once per cycle beside the
+	// caches rather than per project.
+	//
+	// ALWAYS-ON; zero → the compiled default of 400 days, NOT "keep forever" —
+	// the opposite of the two cache knobs above. A rating is a few bytes and
+	// the scarcest signal in the system, so the horizon is long; it is a number
+	// rather than "forever" because an unbounded table is a decision nobody
+	// made (2026-09-04-execution-ratings-design §6).
+	ExecutionRatingsDays int `yaml:"execution_ratings_days" doc:"Days to keep execution ratings. 0 means the 400-day default, not forever."`
 	// EmbeddingCacheDays evicts rows from embedding_cache (LLM caching
 	// Phase D) whose last_hit_at is older than the window. Global table
 	// — not scoped by project — swept once per cycle alongside

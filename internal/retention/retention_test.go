@@ -716,7 +716,13 @@ func TestSweepGlobal_DisabledShortCircuits(t *testing.T) {
 	// link_codes cleanup is also unconditional; absent table → no-op.
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
-	counts, err := s.SweepGlobal(context.Background(), 0, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal(0): %v", err)
 	}
@@ -754,7 +760,13 @@ func TestSweepGlobal_TableAbsentNoOp(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 30, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -788,7 +800,13 @@ func TestPreviewGlobal_CountsWithoutDelete(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM link_codes WHERE expires_at < $1 OR (used_at IS NOT NULL AND used_at < $1)")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
-	counts, err := s.PreviewGlobal(context.Background(), 30, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.PreviewGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("PreviewGlobal: %v", err)
 	}
@@ -834,7 +852,13 @@ func TestSweepGlobal_DeleteRemovesRows(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM link_codes WHERE")).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
-	counts, err := s.SweepGlobal(context.Background(), 30, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -876,7 +900,13 @@ func TestSweepGlobal_UISessionsDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -910,7 +940,13 @@ func TestSweepGlobal_LinkCodesDeletedWithGrace(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM link_codes WHERE expires_at < $1 OR (used_at IS NOT NULL AND used_at < $1)")).
 		WillReturnResult(sqlmock.NewResult(0, 4))
 
-	counts, err := s.SweepGlobal(context.Background(), 0, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -943,7 +979,13 @@ func TestSweepGlobal_APIKeysDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0, 0)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -957,7 +999,9 @@ func TestSweepGlobal_APIKeysDeletedWithGrace(t *testing.T) {
 
 func TestSweepGlobal_NilDBSafe(t *testing.T) {
 	var s *Sweeper
-	if _, err := s.SweepGlobal(context.Background(), 30, 0); err != nil {
+	// No expectations: a nil sweeper returns before it touches the database,
+	// which is the property under test.
+	if _, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0}); err != nil {
 		t.Errorf("nil sweeper: %v", err)
 	}
 }
@@ -990,7 +1034,13 @@ func TestSweepGlobal_EmbeddingCacheDeleteRemovesRows(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0, 30)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -1024,7 +1074,13 @@ func TestSweepGlobal_EmbeddingCacheTableAbsentNoOp(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0, 30)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -1057,7 +1113,13 @@ func TestPreviewGlobal_EmbeddingCache(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.PreviewGlobal(context.Background(), 0, 30)
+	// These cases are about the caches and the always-on cleanups, not ratings.
+	// Declaring execution_ratings ABSENT is the least-coupling way to say so:
+	// the sweep is always-on, so sqlmock sees its to_regclass probe either way.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.PreviewGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("PreviewGlobal: %v", err)
 	}

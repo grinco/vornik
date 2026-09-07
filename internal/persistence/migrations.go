@@ -7663,4 +7663,42 @@ ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS result_hash;
 ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS input_hash;
 `,
 	},
+	{
+		Version: 179,
+		Name:    "execution_ratings",
+		// The human verdict on what an execution produced
+		// (2026-09-04-execution-ratings-design.md §3). An editable SIDECAR: its
+		// own table, so a rating cannot change the history a later step derives
+		// from, and upserted per (execution, rater), so re-rating replaces a
+		// verdict while a second person's opinion is a second row.
+		//
+		// NO FOREIGN KEY to executions, deliberately. A rating is evidence about
+		// a run and outlives the retention that prunes the run; a cascade delete
+		// would silently destroy the only human signal in the system, and a
+		// RESTRICT would block execution pruning outright. Retention prunes
+		// ratings on their own 400-day horizon (§6).
+		//
+		// The CHECK is the third place the verdict set is closed (handler, Go
+		// constant, here), so a future writer that skips the handler still
+		// cannot introduce a third value.
+		Up: `
+CREATE TABLE IF NOT EXISTS execution_ratings (
+    execution_id TEXT NOT NULL,
+    rater_id     TEXT NOT NULL,
+    verdict      TEXT NOT NULL CHECK (verdict IN ('up', 'down')),
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (execution_id, rater_id)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_ratings_created ON execution_ratings (created_at);
+COMMENT ON TABLE execution_ratings IS 'Human up/down verdicts on execution output. Sidecar: never read by the executor, the instinct layer or the skill store; informs an operator, never gates a run.';
+COMMENT ON COLUMN execution_ratings.rater_id IS 'Resolved operator identity (requestOperatorID). Never empty — an anonymous rating cannot be edited by its author or attributed in a rollup.';
+COMMENT ON COLUMN execution_ratings.created_at IS 'When this rater FIRST judged the run. Preserved across edits.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_execution_ratings_created;
+DROP TABLE IF EXISTS execution_ratings;
+`,
+	},
 }

@@ -293,16 +293,26 @@ func (c *Container) runRetentionLoop(ctx context.Context, sweeper *retention.Swe
 }
 
 func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Sweeper, defaults retention.Policy) {
-	// Global (non-project-scoped) caches run once per cycle BEFORE
-	// the per-project loop. ResponseCacheDays / EmbeddingCacheDays both
-	// default to 0 which short-circuits inside SweepGlobal; operators
-	// opt in via retention.response_cache_days / embedding_cache_days
-	// (recommended: 30 on deployments where the tables grow large).
-	if g, err := sweeper.SweepGlobal(ctx, c.Config.Retention.ResponseCacheDays, c.Config.Retention.EmbeddingCacheDays); err != nil {
+	// Global (non-project-scoped) tables run once per cycle BEFORE the
+	// per-project loop. ResponseCacheDays / EmbeddingCacheDays both default to
+	// 0, which SKIPS those sweeps; operators opt in via
+	// retention.response_cache_days / embedding_cache_days (recommended: 30 on
+	// deployments where the tables grow large).
+	//
+	// ExecutionRatingsDays is the opposite: 0 means the compiled 400-day
+	// default, not "keep forever". A named struct rather than three positional
+	// ints, so that difference is visible here rather than only in the sweeper.
+	globalPolicy := retention.GlobalPolicy{
+		ResponseCacheDays:    c.Config.Retention.ResponseCacheDays,
+		EmbeddingCacheDays:   c.Config.Retention.EmbeddingCacheDays,
+		ExecutionRatingsDays: c.Config.Retention.ExecutionRatingsDays,
+	}
+	if g, err := sweeper.SweepGlobal(ctx, globalPolicy); err != nil {
 		c.Logger.Warn().Err(err).Msg("retention global sweep partially failed")
-	} else if g.ResponseCache > 0 || g.EmbeddingCache > 0 {
+	} else if g.ResponseCache > 0 || g.EmbeddingCache > 0 || g.ExecutionRatings > 0 {
 		c.Logger.Info().
 			Int("response_cache", g.ResponseCache).
+			Int("execution_ratings", g.ExecutionRatings).
 			Int("embedding_cache", g.EmbeddingCache).
 			Msg("retention global sweep pruned rows")
 	}

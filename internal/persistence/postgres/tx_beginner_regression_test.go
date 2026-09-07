@@ -182,7 +182,7 @@ func TestTaskMessageInsert_MetricsWrappedDB_IsTransactional(t *testing.T) {
 func TestDeleteProjectData_MetricsWrappedDB_IsTransactional(t *testing.T) {
 	db, mock, cleanup := newMetricsWrappedMockDB(t)
 	defer cleanup()
-	repo := NewProjectDataCleanupRepository(db)
+	repo := NewProjectDataCleanupRepositoryWithoutCacheEviction(db)
 
 	mock.ExpectBegin()
 	for range persistence.ProjectDataTables {
@@ -209,7 +209,7 @@ func TestDeleteProjectData_MetricsWrappedDB_IsTransactional(t *testing.T) {
 func TestDeleteProjectData_EmptyProjectIDRejected(t *testing.T) {
 	db, _, cleanup := newMockDBTX(t)
 	defer cleanup()
-	repo := NewProjectDataCleanupRepository(db)
+	repo := NewProjectDataCleanupRepositoryWithoutCacheEviction(db)
 	if _, err := repo.DeleteProjectData(context.Background(), ""); err == nil {
 		t.Fatal("empty projectID must be rejected")
 	}
@@ -227,7 +227,7 @@ func TestDeleteProjectData_AlreadyInTx_RunsDirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin outer tx: %v", err)
 	}
-	repo := NewProjectDataCleanupRepository(outerTx) // *sql.Tx -> BeginTx ok=false
+	repo := NewProjectDataCleanupRepositoryWithoutCacheEviction(outerTx) // *sql.Tx -> BeginTx ok=false
 
 	for range persistence.ProjectDataTables {
 		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM ")).
@@ -256,7 +256,7 @@ func TestDeleteProjectData_AlreadyInTx_RunsDirect(t *testing.T) {
 func TestDeleteProjectData_RollsBackOnDeleteError(t *testing.T) {
 	db, mock, cleanup := newMockDBTX(t) // raw pool -> transactional path
 	defer cleanup()
-	repo := NewProjectDataCleanupRepository(db)
+	repo := NewProjectDataCleanupRepositoryWithoutCacheEviction(db)
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM ")).

@@ -20,6 +20,18 @@ type ProjectDataStats struct {
 	// callers should treat the number as a lower bound or
 	// "unknown".
 	RowsDeleted int64
+
+	// CachedEmbeddingsEvicted counts embedding_cache rows removed for this
+	// project. That table is keyed (content_hash, model) with no project_id
+	// column, so it is unreachable by ProjectDataTables and is deleted by a
+	// dedicated evictor instead.
+	CachedEmbeddingsEvicted int
+
+	// CacheEvictionRan says whether that evictor was wired and invoked at all.
+	// Without it a zero could mean "nothing to evict" or "never attempted",
+	// and an audit row showing the first while meaning the second is precisely
+	// the control this codebase does not accept.
+	CacheEvictionRan bool
 }
 
 // ProjectDataDeleter wipes every row in every project-scoped

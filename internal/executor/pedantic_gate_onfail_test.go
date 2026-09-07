@@ -133,17 +133,32 @@ func TestPedantic_GateFailureSkipsTheRecoveryHop(t *testing.T) {
 func TestNonPedantic_GateFailureStillTakesTheRecoveryHop(t *testing.T) {
 	rt, tr, id := runGatedTask(t, nil)
 
-	assert.Eventually(t, func() bool {
-		rt.mu.Lock()
-		defer rt.mu.Unlock()
-		return rt.startCalls == 2
-	}, 3*time.Second, 10*time.Millisecond,
-		"a non-pedantic project must still route a gate failure to its recovery step")
-
-	task, _ := tr.Get(context.Background(), id)
-	require.NotNil(t, task)
-	assert.Equal(t, persistence.TaskStatusCompleted, task.Status,
+	// WAIT ON THE END STATE, NOT ON A PROXY FOR IT.
+	//
+	// This waited for startCalls == 2 — the recovery step has STARTED — and
+	// then read the task status on the very next line. But starting a step is
+	// not finishing the run: WaitForExit, result parsing, terminal resolution
+	// and the task update all still have to happen. The comment above this test
+	// already names that hazard for startCalls and the assertion below then
+	// walked straight into it.
+	//
+	// It won locally and on the fork's CI and LOST on the parent repo's runner
+	// (grinco/vornik-ee run 34033978109, 2026-09-06: task.Status was RUNNING).
+	// Waiting for COMPLETED is both race-free and strictly stronger — a build
+	// that skipped the recovery hop ends FAILED, so this times out rather than
+	// passing for the wrong reason.
+	require.Eventually(t, func() bool {
+		task, _ := tr.Get(context.Background(), id)
+		return task != nil && task.Status == persistence.TaskStatusCompleted
+	}, 5*time.Second, 10*time.Millisecond,
 		"the recovery step succeeds in this fixture, so the non-pedantic path ends COMPLETED")
+
+	rt.mu.Lock()
+	calls := rt.startCalls
+	rt.mu.Unlock()
+	assert.Equal(t, 2, calls,
+		"a non-pedantic project must still route a gate failure to its recovery step: "+
+			"the gated step plus the recovery step is two container starts")
 }
 
 // Guard against the whole class, not just the two sites fixed on 2026-08-19.

@@ -172,6 +172,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `retention.executions_days` | int | Days to keep execution rows. | — |
 | `retention.artifacts_days` | int | Days to keep artifacts. | — |
 | `retention.response_cache_days` | int | Days to keep cached LLM responses (30d recommended on busy deployments). | — |
+| `retention.execution_ratings_days` | int | Days to keep execution ratings. 0 means the 400-day default, not forever. | — |
 | `retention.embedding_cache_days` | int | Days to keep cached embeddings before evicting cold entries (0 = keep forever; 30d recommended if the table grows large). | — |
 
 ## workspace_ingest

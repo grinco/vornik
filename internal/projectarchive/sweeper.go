@@ -277,14 +277,26 @@ func (s *Sweeper) deleteProject(ctx context.Context, p *registry.Project) error 
 		}
 	}
 
+	// A wipe that left the derived vectors behind is not the deletion the row
+	// claims, so the row says what happened to them. Both fields, always: a bare
+	// zero cannot distinguish "nothing was derived from this project" from "no
+	// evictor was wired and nobody looked".
+	if !stats.CacheEvictionRan && s.cfg.DataDeleter != nil {
+		s.cfg.Logger.Warn().Str("project_id", p.ID).
+			Msg("archive-sweeper: project wiped with NO embedding-cache eviction; " +
+				"vectors derived from the deleted content remain")
+	}
+
 	s.audit(ctx, "project.deleted", p.ID, map[string]any{
-		"tables_cleared":      stats.TablesCleared,
-		"rows_deleted":        stats.RowsDeleted,
-		"artifacts_removed":   artifactsRemoved,
-		"artifacts_count":     artifactsCount,
-		"yaml_removed":        yamlRemoved,
-		"projectmd_removed":   mdRemoved,
-		"scheduled_delete_at": yamlScheduledDeleteAtOf(p),
+		"tables_cleared":            stats.TablesCleared,
+		"rows_deleted":              stats.RowsDeleted,
+		"cache_eviction_ran":        stats.CacheEvictionRan,
+		"cached_embeddings_evicted": stats.CachedEmbeddingsEvicted,
+		"artifacts_removed":         artifactsRemoved,
+		"artifacts_count":           artifactsCount,
+		"yaml_removed":              yamlRemoved,
+		"projectmd_removed":         mdRemoved,
+		"scheduled_delete_at":       yamlScheduledDeleteAtOf(p),
 	})
 
 	if firstErr != nil {

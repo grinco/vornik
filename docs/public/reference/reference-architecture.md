@@ -7,7 +7,7 @@ sources:
     - path: internal/memory/reranker.go
       sha256: fa57cbdcf4bbbb803d0074c2eb3740dc0d509d92a9b91d1cf3495b9cf8dc3ad8
     - path: internal/config/config.go
-      sha256: cb99d3b9628e91d7b41cf30523b8263b96392f8ad8e31b1afca9bfdd790a0d8b
+      sha256: 7731849779559233ea3642c09a1d04123549c109f7b5e17c44cdd2a8dc8adc62
 ---
 # Reference architecture
 

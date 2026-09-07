@@ -148,7 +148,7 @@ func TestIntegration_RetentionSweepLinkCodes(t *testing.T) {
 	insert("c-expired-recent", withinGrace, nil) // KEEP (within grace)
 
 	sweeper := retention.New(db, zerolog.Nop())
-	counts, err := sweeper.SweepGlobal(ctx, 0, 0) // response/embedding cache days=0 → cache prunes skipped
+	counts, err := sweeper.SweepGlobal(ctx, retention.GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0}) // response/embedding cache days=0 → cache prunes skipped
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestIntegration_RetentionSweepEmbeddingCache(t *testing.T) {
 
 	sweeper := retention.New(db, zerolog.Nop())
 	// response cache days=0 (skip), embedding cache days=30 → prune cold only.
-	counts, err := sweeper.SweepGlobal(ctx, 0, 30)
+	counts, err := sweeper.SweepGlobal(ctx, retention.GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}

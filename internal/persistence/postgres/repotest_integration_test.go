@@ -383,6 +383,19 @@ func TestCostTuningCanaries_PartialIndex_Postgres(t *testing.T) {
 	}
 }
 
+// TestExecutionRatingRepository_PostgresContract — the human verdict on an
+// execution, the same suite the SQLite side runs.
+//
+// The upsert is where these two could most easily diverge: Postgres says
+// ON CONFLICT ... DO UPDATE and SQLite's obvious spelling (INSERT OR REPLACE)
+// would delete-and-reinsert, silently moving created_at to the edit time. The
+// shared suite asserts created_at is preserved, so the divergence fails rather
+// than shipping.
+func TestExecutionRatingRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunExecutionRatingSuite(t, NewExecutionRatingRepository(db.DB))
+}
+
 // TestExecutionInjectedSkillRepository_PostgresContract — the
 // execution→skill association, same suite the SQLite side runs.
 func TestExecutionInjectedSkillRepository_PostgresContract(t *testing.T) {

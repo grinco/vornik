@@ -581,3 +581,141 @@ func TestRunBenchMemory_Tier2OnlyNeedsNoModelSelection(t *testing.T) {
 			"That refusal is what makes the flag useless for the CI gate it exists to serve.", err)
 	}
 }
+
+// --answer-model / --judge-model name a MODEL; the endpoint comes from
+// VORNIK_BENCH_LLM_URL, falling back to OLLAMA_HOST then to a local default.
+// Nothing correlated the two, so naming a model the default endpoint cannot
+// serve produced a FULL-LENGTH run in which every item errored:
+//
+//	answer: answer generation: chat completion: http 404 from http://127.0.0.1:11434/v1
+//
+// Measured 2026-08-21: 120/120 items errored that way, ~20 minutes of ingest and
+// recall wasted, and it surfaced only in the final scoreboard. Retrieval had
+// scored perfectly, which made the run read as half-successful rather than
+// misconfigured.
+func TestPreflightBenchLLM_RefusesNamingBothTheEndpointAndTheModel(t *testing.T) {
+	withFlags(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"model not found"}}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_BENCH_LLM_URL", srv.URL+"/v1")
+	t.Setenv("OLLAMA_HOST", "")
+	benchTier2Only = false
+	benchAnswerModel = "a-model-this-endpoint-cannot-serve"
+	benchJudgeModel = "a-model-this-endpoint-cannot-serve"
+
+	err := preflightBenchLLM(context.Background(), io.Discard)
+	if err == nil {
+		t.Fatal("preflight passed against an endpoint that 404s every completion — " +
+			"this is the run that wastes 20 minutes and reports it in the scoreboard")
+	}
+	msg := err.Error()
+	// Both values, because either one alone leaves the operator guessing which
+	// half is wrong — and the usual cause is a model named without its endpoint.
+	for _, want := range []string{srv.URL, "a-model-this-endpoint-cannot-serve"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("refusal does not name %q: %s", want, msg)
+		}
+	}
+}
+
+// A reachable endpoint that serves the named model must not be blocked.
+func TestPreflightBenchLLM_PassesAgainstAServingEndpoint(t *testing.T) {
+	withFlags(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_BENCH_LLM_URL", srv.URL+"/v1")
+	benchTier2Only = false
+	benchAnswerModel = "answerer"
+	benchJudgeModel = "judge"
+
+	if err := preflightBenchLLM(context.Background(), io.Discard); err != nil {
+		t.Fatalf("preflight refused a serving endpoint: %v", err)
+	}
+	// Both models are used by a judged run, and a wrong judge model fails the
+	// pass exactly as a wrong answer model does. Probing only one would leave
+	// half the configuration unproven.
+	if calls != 2 {
+		t.Fatalf("preflight made %d completion(s), want 2 (answerer and judge)", calls)
+	}
+}
+
+// The same model for both halves is one probe, not two: the second would prove
+// nothing and cost a call.
+func TestPreflightBenchLLM_ProbesOneModelOnce(t *testing.T) {
+	withFlags(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_BENCH_LLM_URL", srv.URL+"/v1")
+	benchTier2Only = false
+	benchAnswerModel = "same"
+	benchJudgeModel = "same"
+
+	if err := preflightBenchLLM(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("preflight made %d completion(s), want 1 for a single model", calls)
+	}
+}
+
+// --tier2-only constructs no LLM client at all — that is the entire point of the
+// flag, since a gate that required a judge could not run on a fork PR. The
+// preflight must not resurrect the dependency it removes.
+func TestPreflightBenchLLM_SkipsEntirelyInTier2Only(t *testing.T) {
+	withFlags(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("tier-2-only contacted a model endpoint")
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_BENCH_LLM_URL", srv.URL+"/v1")
+	benchTier2Only = true
+	benchAnswerModel = ""
+	benchJudgeModel = ""
+
+	if err := preflightBenchLLM(context.Background(), io.Discard); err != nil {
+		t.Fatalf("tier-2-only preflight failed: %v", err)
+	}
+}
+
+// The probe is the run's first model call, so it pays any cold load — up to the
+// client's 10-minute ceiling. Silence for that long reads as a hang, so it must
+// say which endpoint and model it is waiting on.
+func TestPreflightBenchLLM_SaysWhatItIsWaitingOn(t *testing.T) {
+	withFlags(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_BENCH_LLM_URL", srv.URL+"/v1")
+	benchTier2Only = false
+	benchAnswerModel = "answerer"
+	benchJudgeModel = "answerer"
+
+	var out strings.Builder
+	if err := preflightBenchLLM(context.Background(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{srv.URL, "answerer"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("preflight progress does not name %q:\n%s", want, out.String())
+		}
+	}
+}

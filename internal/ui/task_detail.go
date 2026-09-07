@@ -25,9 +25,12 @@ type TaskDetailData struct {
 	CurrentPage string
 	Task        *persistence.Task
 	Project     *registry.Project
-	Execution   *persistence.Execution   // most recent execution
-	Executions  []*persistence.Execution // all executions (newest first)
-	Artifacts   []*persistence.Artifact
+	Execution   *persistence.Execution // most recent execution
+	// Rating is the caller's own verdict on that execution, and the run it
+	// applies to. nil when no rating repo is wired — the control is optional.
+	Rating     *TaskRatingView
+	Executions []*persistence.Execution // all executions (newest first)
+	Artifacts  []*persistence.Artifact
 	// Credentials are tool-issued access credentials (e.g. a PageDrop viewing
 	// password) captured for this task (latest execution only), rendered
 	// code-formatted + copyable in the Artifacts panel. Read server-side from
@@ -348,6 +351,9 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 			if err == nil && len(execs) > 0 {
 				data.Executions = execs
 				data.Execution = execs[0] // most recent
+				// The control rates the run being displayed, so it is loaded
+				// from the same execution the page just chose.
+				data.Rating = s.loadTaskRating(ctx, r, data.Execution)
 				// Story panel seed (task 2.2): read-only against the
 				// 2.1 narrator's execution_narration store, keyed off
 				// the most recent execution. Best-effort — see

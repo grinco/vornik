@@ -65,5 +65,20 @@ a=read('.github/actions/setup-go/action.yaml')
 assert a['inputs']['cache-write']['default'] == 'false'
 assert 'refs/heads/main' in str(a)
 assert 'actions/cache/restore@' in str(a)
+# The CE tag step. Nothing created the CE tag until 2026-09-06: the export
+# pushed to main and stopped, every previous tag was made by hand, and 2026.9.3
+# shipped with no public tag and no version-tagged agent image because of it.
+# A documented step with no mechanism is a step that is sometimes skipped.
+ce=read('.github/workflows/publish-ce.yaml')
+steps=ce['jobs']['publish-ce']['steps'] if 'publish-ce' in ce['jobs'] else list(ce['jobs'].values())[0]['steps']
+tag_steps=[s for s in steps if 'tag' in s.get('name','').lower()]
+assert tag_steps, 'publish-ce must tag the exported CE tree'
+body=str(tag_steps[0])
+assert 'ls-remote' in body, 'the CE tag step must be idempotent — a re-run must not fail on an existing tag'
+assert 'release.tag_name' in body, 'the tag must come from the release that triggered the publish'
+# A release tag names one artifact forever. Moving it makes a published name
+# mean something new, which is the one thing a tag must never do.
+assert '--force' not in body and '-f ' not in body, 'the CE tag must never be moved'
+
 print('CI/release policy: PASS')
 PY

@@ -49,6 +49,7 @@ type Repositories struct {
 	RecoveryEvents         persistence.RecoveryEventRepository
 	Skills                 persistence.SkillRepository
 	ExecInjectedSkills     persistence.ExecutionInjectedSkillRepository
+	ExecutionRatings       persistence.ExecutionRatingRepository
 	Proposals              persistence.ProposalRepository
 	// CostTuningCanaries backs the cost/quality canary + regression
 	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D).
@@ -376,6 +377,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db),
 		Skills:                         sqlite.NewSkillRepository(db),
 		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
+		ExecutionRatings:               sqlite.NewExecutionRatingRepository(db),
 		Proposals:                      sqlite.NewProposalRepository(db),
 		CostTuningCanaries:             sqlite.NewCostTuningCanaryRepository(db),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
@@ -496,6 +498,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		RecoveryEvents:                 postgres.NewRecoveryEventRepository(dbtx),
 		Skills:                         postgres.NewSkillRepository(dbtx),
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
+		ExecutionRatings:               postgres.NewExecutionRatingRepository(dbtx),
 		Proposals:                      postgres.NewProposalRepository(dbtx),
 		CostTuningCanaries:             postgres.NewCostTuningCanaryRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
@@ -542,10 +545,6 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		CrossProjectCalls:              postgres.NewCrossProjectCallRepository(dbtx),
 		ProjectSpawns:                  postgres.NewProjectSpawnRepository(dbtx),
 		IntentVerdicts:                 postgres.NewIntentVerdictRepository(dbtx),
-		TradingOrders:                  postgres.NewTradingOrderRepository(dbtx),
-		TradingSafetyEvents:            postgres.NewTradingSafetyEventRepository(dbtx),
-		TradingFills:                   postgres.NewTradingFillRepository(dbtx),
-		TradingSnapshots:               postgres.NewTradingSnapshotRepository(dbtx),
 		ExtractedDocuments:             postgres.NewExtractedDocumentRepository(dbtx),
 		Reminders:                      postgres.NewReminderRepository(dbtx),
 		HealingTriggers:                postgres.NewWorkflowHealingTriggerRepository(dbtx),
@@ -564,8 +563,21 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		WorkflowProposals:              postgres.NewWorkflowProposalRepository(dbtx),
 		ExecutionNarration:             postgres.NewExecutionNarrationRepository(dbtx),
 	}
+	withPostgresTradingStores(r, dbtx)
 	withPostgresRedactedStores(r, dbtx)
 	return r
+}
+
+// withPostgresTradingStores attaches the trading-domain repositories.
+//
+// Split out of Build for length (funlen, 80 lines) rather than for behaviour —
+// it is the same wiring, and trading is the grouping that reads as one thing.
+// Follows withPostgresRedactedStores below, which established the shape.
+func withPostgresTradingStores(r *Repositories, dbtx persistence.DBTX) {
+	r.TradingOrders = postgres.NewTradingOrderRepository(dbtx)
+	r.TradingSafetyEvents = postgres.NewTradingSafetyEventRepository(dbtx)
+	r.TradingFills = postgres.NewTradingFillRepository(dbtx)
+	r.TradingSnapshots = postgres.NewTradingSnapshotRepository(dbtx)
 }
 
 // withPostgresRedactedStores attaches the three content stores the secrets

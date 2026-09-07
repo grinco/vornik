@@ -61,13 +61,21 @@ generate() {
 }
 
 # deny_value <fragment> — source it in a clean sh and print the deny-list.
+#
+# The variable is UNSET first: this suite runs in an operator shell that has
+# very likely sourced the real fragment from its rc, and inheriting that value
+# makes a case expecting NO denial read the host's own database instead of the
+# fixture's.
 deny_value() {
-  ( PATH="$STUB:$PATH"; . "$1" >/dev/null 2>&1; printf '%s' "${VORNIK_BENCH_DENY_DATABASES:-}" )
+  ( PATH="$STUB:$PATH"; unset VORNIK_BENCH_DENY_DATABASES
+    # shellcheck disable=SC1090 # the fragment under test, path built at runtime
+    . "$1" >/dev/null 2>&1; printf '%s' "${VORNIK_BENCH_DENY_DATABASES:-}" )
 }
 
 # --- placeholder database name, value in secrets/*.env --------------------
 echo "--- database.name is a \${VAR} placeholder, resolved from secrets/ ---"
 stub_systemctl 'exit 1'
+# shellcheck disable=SC2016 # intentional: the fixture carries the LITERAL "${...}" text
 d="$(fixture placeholder-secrets 'name: "${POSTGRES_DB}"')"
 printf 'POSTGRES_DB=acme_memories\nPOSTGRES_USER=acme\n' > "$d/secrets/database.env"
 got="$(deny_value "$(generate "$d")")"
@@ -81,6 +89,7 @@ fi
 # The stock layout puts POSTGRES_DB in vornik.env (an EnvironmentFile=), not
 # under secrets/. The generator must resolve that source too.
 echo "--- database.name placeholder, resolved from the unit's EnvironmentFile ---"
+# shellcheck disable=SC2016 # intentional: the fixture carries the LITERAL "${...}" text
 d="$(fixture placeholder-envfile 'name: "${POSTGRES_DB}"')"
 printf 'POSTGRES_DB=envfile_memories\n' > "$d/vornik.env"
 stub_systemctl "case \"\$*\" in
@@ -111,6 +120,7 @@ fi
 # reads like a configured protection while matching no database.
 echo "--- unresolvable placeholder ---"
 stub_systemctl 'exit 1'
+# shellcheck disable=SC2016 # intentional: the fixture carries the LITERAL "${...}" text
 d="$(fixture unresolvable 'name: "${POSTGRES_DB}"')"
 got="$(deny_value "$(generate "$d")")"
 case "$got" in
@@ -118,9 +128,67 @@ case "$got" in
   *)           ok "no unexpanded placeholder in the fragment ('$got')" ;;
 esac
 
+# --- database.name is selected by PATH, not by "the first name: in the file" ---
+# The generator used to take the FIRST `name:` at ANY indentation. That is
+# correct on the shipped config only because `database:` happens to be the
+# first block carrying one. A config with an earlier `name:` — an
+# mcp.servers[] entry whose `name:` is not its first key, say — emitted
+# the WRONG database as VORNIK_BENCH_DENY_DATABASES: the benchmark was denied
+# a database it would never have touched, and PERMITTED the real one.
+# (Filed 2026-08-26, found while reviewing the placeholder-resolution patch,
+# which fixed the expansion bug on the same line but not the selection bug.)
+echo "--- an earlier name: outside the database block must not win ---"
+stub_systemctl 'exit 1'
+d="$TMP/earlier-name"
+mkdir -p "$d/secrets" "$d/data"
+cat > "$d/config.yaml" <<'EOF'
+server:
+  address: "0.0.0.0:8080"
+mcp:
+  servers:
+    - command: mcp-server-filesystem
+      name: filesystem
+database:
+  host: 127.0.0.1
+  name: the_real_db
+  user: postgres
+  sslmode: disable
+EOF
+got="$(deny_value "$(generate "$d")")"
+if [ "$got" = "the_real_db" ]; then
+  ok "deny-list took database.name, not the first name: in the file"
+else
+  bad "deny-list is '$got', want 'the_real_db' — the WRONG database is denied and the real one permitted"
+fi
+
+# --- a deployment with no database.name must deny NOTHING -----------------
+# The sqlite driver has a path, not a name. Falling through to some later
+# block's name: would deny an unrelated string while still permitting the
+# real target — the same defect wearing the opposite mask.
+echo "--- no database.name means no deny-list entry ---"
+stub_systemctl 'exit 1'
+d="$TMP/no-db-name"
+mkdir -p "$d/secrets" "$d/data"
+cat > "$d/config.yaml" <<'EOF'
+database:
+  driver: sqlite
+  path: /var/lib/vornik/vornik.db
+mcp:
+  servers:
+    - command: mcp-server-filesystem
+      name: filesystem
+EOF
+got="$(deny_value "$(generate "$d")")"
+if [ -z "$got" ]; then
+  ok "no database.name -> no deny-list entry"
+else
+  bad "deny-list is '$got', want empty — a name from an unrelated block leaked in"
+fi
+
 # --- the fragment is world-readable, so it must hold no secret values -----
 echo "--- fragment carries no secrets ---"
 stub_systemctl 'exit 1'
+# shellcheck disable=SC2016 # intentional: the fixture carries the LITERAL "${...}" text
 d="$(fixture secrets-leak 'name: "${POSTGRES_DB}"')"
 printf 'POSTGRES_DB=leak_db\nVORNIK_DATABASE_PASSWORD=hunter2_do_not_emit\n' > "$d/secrets/database.env"
 frag="$(generate "$d")"

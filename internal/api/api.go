@@ -991,6 +991,7 @@ type Server struct {
 	// so minimal harnesses/tests keep working.
 	skillStore    persistence.SkillRepository
 	execSkillRepo persistence.ExecutionInjectedSkillRepository
+	ratingRepo    persistence.ExecutionRatingRepository
 	// skillEmbedder powers the skill_propose dedup preflight (§12.2).
 	// Nil-safe by design: the preflight falls back to its lexical metric
 	// rather than failing, because an embedder outage must never block an
@@ -1565,6 +1566,15 @@ func WithLiveAllowedOrigins(patterns []string) ServerOption {
 func WithExecutionHintRepository(repo persistence.ExecutionHintRepository) ServerOption {
 	return func(s *Server) {
 		s.hintRepo = repo
+	}
+}
+
+// WithExecutionRatingRepository wires the rating repo behind
+// /api/v1/executions/{id}/rating. nil keeps the endpoints at 503 —
+// "not wired on this deployment" is a different fact from "broke".
+func WithExecutionRatingRepository(repo persistence.ExecutionRatingRepository) ServerOption {
+	return func(s *Server) {
+		s.ratingRepo = repo
 	}
 }
 

@@ -400,8 +400,27 @@ func TestSideEffectingUpstreamSteps(t *testing.T) {
 // Backlog: "The UI's retry-from-step writes a state snapshot the executor
 // knows nothing about (2026-09-04)".
 func TestRetryFromStep_AcceptsCurrentStep(t *testing.T) {
-	e, _, er, _, tr := setup()
+	e, rt, er, _, tr := setup()
 	t.Cleanup(func() { _ = e.Stop(context.Background()) })
+
+	// PIN THE INTERLEAVING. RetryFromStep ends by calling recoverExecution,
+	// which SPAWNS the executor goroutine — so the moment it returns, a
+	// concurrent run is already re-executing "review", and on success the
+	// workflow advances to the "done" terminal.
+	//
+	// Without this gate the assertions below race that goroutine. They won
+	// locally and on the fork's CI and LOST on the parent repo's runner
+	// (grinco/vornik-ee run 34033978109, 2026-09-06: CurrentStepID was "done",
+	// not "review"). A 1-in-N stochastic failure is not a flaky test, it is a
+	// test with no synchronisation; the fix is a seam, not a retry or a sleep.
+	//
+	// waitGate blocks the relaunched step inside WaitForExit, so the execution
+	// is frozen exactly at "re-running review" while the reset state is read.
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	rt.waitGate = gate
+	rt.waitEntered = entered
+	t.Cleanup(func() { close(gate) })
 	e.SetWorkflowResolver(&MockWorkflowResolver{
 		projects: map[string]*registry.Project{
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
@@ -446,6 +465,15 @@ func TestRetryFromStep_AcceptsCurrentStep(t *testing.T) {
 	require.NoError(t, er.Create(context.Background(), exec))
 	require.NoError(t, e.RetryFromStep(context.Background(), "e1", "review"),
 		"the current (failed) step must be retryable — it was, via the UI's second writer")
+
+	// Block until the relaunched run is inside WaitForExit. Past this point the
+	// execution cannot advance until the gate is closed, so everything below
+	// reads a fixed state rather than a moving one.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retried step never reached WaitForExit — RetryFromStep did not relaunch the execution")
+	}
 
 	got, err := er.Get(context.Background(), "e1")
 	require.NoError(t, err)

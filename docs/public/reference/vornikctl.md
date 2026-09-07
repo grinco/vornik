@@ -762,6 +762,28 @@ vornikctl execution prompt <executionId> <stepId> [flags]
 |---|---|---|
 | `--part` |  | Print one part only: system, user or tools |
 
+## vornikctl execution rate
+
+Record your verdict on what an execution produced
+
+Record, change or withdraw YOUR rating of an execution.
+
+Re-rating replaces your previous verdict — an operator's first reaction
+to a digest is not their considered one. A second operator's rating is a
+separate row, never an overwrite.
+
+The rater is resolved from your credentials, so the deployment needs
+per-operator API keys; one shared service key has no identity to record.
+
+```
+vornikctl execution rate <execution-id> [up|down] [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--clear` | `false` | Withdraw your rating of this execution |
+| `--reason` |  | Optional one-line reason (max 500 chars). A down-vote never requires one. |
+
 ## vornikctl execution result
 
 Print the result.json the step's container handed back

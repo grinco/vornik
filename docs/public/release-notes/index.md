@@ -17,6 +17,54 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
 
 ---
 
+## 2026.9.3
+
+**If `vornik-update.sh` has ever reported "Checkout already at target commit.
+Nothing to do." after a failed run, read this first.** The updater checked out
+the new release while bash was still reading the script file, so on any upgrade
+where the script changed size the run died just after the checkout — with a
+confusing error like `line 200: F: command not found` — and everything after it
+silently never ran: the binary build, the image refresh, the sidecar recreate,
+the restart. Because the checkout had already moved, running it again reported
+"Nothing to do" and exited successfully. An install that was never updated,
+reporting success.
+
+Check whether yours is affected:
+
+```bash
+vornik --version                    # the installed binary
+git -C ~/vornik describe --tags     # what the checkout claims
+```
+
+If they disagree, or `vornikctl doctor` reports `image_freshness` drift, run
+`./vornik-update.sh --force`. `--force` is needed precisely because the checkout
+already matches, which is what made the failure invisible.
+
+**Note that the fix cannot repair the update that delivers it** — your host runs
+its own copy of the old script. Expect the first update to 2026.9.3 to fail on an
+affected host, then run it again; the second run works. From then on the script
+runs from a private copy, so the file it reads cannot change underneath it.
+
+**The agent image is now pulled instead of built.** It is published to
+`ghcr.io/grinco/vornik-agent`, and the updater fetches it **by digest** rather
+than building a container on every host, so an ordinary update no longer spends
+several minutes on it. Images that are not published — the cluster pair, and the
+sidecar images — are still built locally, exactly as before.
+
+**Air-gapped and offline installs are unaffected.** With no reachable registry
+the updater builds locally as it always did. And a host that already pulled an
+image and later loses its network **keeps that image** rather than rebuilding
+over it: it cannot know the target, so it changes nothing and says so, and
+`vornikctl doctor` continues to report the real state.
+
+**`vornikctl doctor` now says how you obtained each image** — for example
+`Obtained: 1 pulled, 6 built locally`. Neither an image's digest nor its build
+label can tell you this after the fact, so the update path records it at the
+moment it knows.
+
+**Also fixed:** `vornik-update.sh --no-build` failed with
+`VERSION: unbound variable` whenever an image needed refreshing.
+
 ## 2026.9.2
 
 **The agent's file and git tools moved from bash into a small Go helper inside

@@ -732,6 +732,22 @@ func (s *Server) apiV1ExecutionsHandler(w http.ResponseWriter, r *http.Request) 
 			s.ExecutionLive(w, r, executionID)
 			return
 		}
+	case "/rating", "/rating/":
+		// The human verdict on this run (execution-ratings design §5, phase 1).
+		// POST records or replaces the caller's own, GET reads it, DELETE
+		// withdraws it — all three keyed on the RESOLVED identity, never a
+		// request parameter.
+		switch r.Method {
+		case http.MethodPost:
+			s.ExecutionRatingUpsert(w, r, executionID)
+			return
+		case http.MethodGet:
+			s.ExecutionRatingGet(w, r, executionID)
+			return
+		case http.MethodDelete:
+			s.ExecutionRatingDelete(w, r, executionID)
+			return
+		}
 	case "/hints", "/hints/":
 		// POST /executions/{executionId}/hints — operator-
 		// injected mid-execution hint (Feature #3 Phase C).

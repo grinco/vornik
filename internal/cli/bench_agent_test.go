@@ -715,3 +715,53 @@ func TestPreflightGoldWrite_AcceptsAndLeavesNothingBehind(t *testing.T) {
 		t.Errorf("preflight left %v behind; it must probe without creating anything", names)
 	}
 }
+
+// A gold pass that recorded fewer runs for some tasks than it declares must SAY
+// so, and name the tasks — they are the exact argument list for the refill.
+//
+// Observed 2026-08-21 at --runs 4: three of fifteen entries held paths=3 and
+// nothing in gold.log mentioned it; the shortfall was found by reading the JSON.
+func TestShortGoldReport_NamesEveryShortEntryAndTheRefillCommand(t *testing.T) {
+	m, err := agentbench.BuildGold(strings.Repeat("a", 64), []agentbench.UnrestrictedRun{
+		{TaskID: "dp-02-parser-hardening", Passed: true, Invoked: []string{"x"}},
+		{TaskID: "dp-02-parser-hardening", Passed: true, Invoked: []string{"y"}},
+		{TaskID: "dp-02-parser-hardening", Passed: false, ErrorText: "the model gave up"},
+		{TaskID: "dp-01-complete", Passed: true, Invoked: []string{"x"}},
+		{TaskID: "dp-01-complete", Passed: true, Invoked: []string{"y"}},
+		{TaskID: "dp-01-complete", Passed: true, Invoked: []string{"z"}},
+	}, 3)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+
+	got := shortGoldReport(m)
+	for _, want := range []string{
+		"dp-02-parser-hardening",
+		"2 of 3",
+		// The shipped refill is the script's top-up mode, which is idempotent
+		// and recomputes the deficit itself — not a hand-rolled gold+merge.
+		"agentbench-reproduce.sh --topup",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("short-entry report does not mention %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "dp-01-complete") {
+		t.Fatalf("report names a COMPLETE entry as short:\n%s", got)
+	}
+}
+
+// Silence is correct only when there is nothing to say. A report printed on
+// every pass trains the reader to skip it.
+func TestShortGoldReport_SaysNothingWhenEveryEntryIsComplete(t *testing.T) {
+	m, err := agentbench.BuildGold(strings.Repeat("a", 64), []agentbench.UnrestrictedRun{
+		{TaskID: "t1", Passed: true, Invoked: []string{"x"}},
+		{TaskID: "t2", Passed: false, ErrorText: "the model gave up"},
+	}, 1)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	if got := shortGoldReport(m); got != "" {
+		t.Fatalf("shortGoldReport() = %q, want empty — t1 is complete and t2 is excluded", got)
+	}
+}

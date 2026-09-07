@@ -203,6 +203,7 @@ type Server struct {
 
 	taskRepo             persistence.TaskRepository
 	execRepo             persistence.ExecutionRepository
+	ratingRepo           persistence.ExecutionRatingRepository
 	executionQualityRepo persistence.ExecutionQualityScoreRepository
 	artifactRepo         persistence.ArtifactRepository
 	// artifactReader (optional) routes blob reads through the
@@ -825,6 +826,15 @@ func WithTaskRepository(repo persistence.TaskRepository) ServerOption {
 func WithExecutionRepository(repo persistence.ExecutionRepository) ServerOption {
 	return func(s *Server) {
 		s.execRepo = repo
+	}
+}
+
+// WithUIExecutionRatingRepository wires the human up/down verdict on an
+// execution behind the control on /ui/tasks/<id>. nil hides the control — a
+// deployment without it renders an ordinary task page rather than a broken one.
+func WithUIExecutionRatingRepository(repo persistence.ExecutionRatingRepository) ServerOption {
+	return func(s *Server) {
+		s.ratingRepo = repo
 	}
 }
 
@@ -2785,6 +2795,9 @@ func (s *Server) taskRouter(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/status"):
 		taskID := strings.TrimSuffix(path, "/status")
 		s.TaskStatusPartial(w, r, taskID)
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/rate"):
+		taskID := strings.TrimSuffix(path, "/rate")
+		s.TaskRate(w, r, taskID)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/post-mortem"):
 		taskID := strings.TrimSuffix(path, "/post-mortem")
 		s.TaskPostMortemGenerate(w, r, taskID)

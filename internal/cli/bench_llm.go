@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -129,4 +130,72 @@ func (l *benchLLM) Complete(ctx context.Context, prompt string) (string, error) 
 		return "", fmt.Errorf("chat completion returned no choices")
 	}
 	return out.Choices[0].Message.Content, nil
+}
+
+// preflightBenchLLM proves the answer and judge models are actually servable by
+// the resolved endpoint, before the run spends anything.
+//
+// WHY THIS IS A REFUSAL AND NOT A NOTE. --answer-model / --judge-model name a
+// MODEL; the endpoint comes from VORNIK_BENCH_LLM_URL, falling back to
+// OLLAMA_HOST and then to a local default. Nothing correlates the two, so naming
+// a model the default endpoint cannot serve is a configuration error that
+// produces a FULL-LENGTH run in which every item errors:
+//
+//	answer: answer generation: chat completion: http 404 from http://127.0.0.1:11434/v1
+//
+// Measured 2026-08-21: 120/120 items errored that way, ~20 minutes of ingest and
+// recall wasted, and the failure surfaced only in the final scoreboard —
+// retrieval had scored perfectly, so the run read as half-successful rather than
+// misconfigured. Same class as the agent bench's --smoke and its model-window
+// probe: prove the pipeline before spending on the pass.
+//
+// The refusal names BOTH values. Either alone leaves the operator guessing which
+// half is wrong, and the usual cause is a model named without its endpoint.
+//
+// BOTH models are probed. A judged run uses the judge exactly as it uses the
+// answerer, and a wrong judge model wastes the same pass. When they are the same
+// model it is one call — the second would prove nothing.
+//
+// Nothing at all runs under --tier2-only, which constructs no client by design:
+// a gate that required a judge could not run on a fork PR, so the flag must
+// remove the dependency, not merely the traffic.
+func preflightBenchLLM(ctx context.Context, progress io.Writer) error {
+	if benchTier2Only {
+		return nil
+	}
+	llm, err := newBenchLLM()
+	if err != nil {
+		return err
+	}
+
+	models := []string{llm.model}
+	if benchJudgeModel != "" && benchJudgeModel != llm.model {
+		models = append(models, benchJudgeModel)
+	}
+	for _, model := range models {
+		// Say what is being waited on. This is the first call of the run, so it
+		// pays any cold model load — up to the client's 10-minute ceiling — and
+		// silence for that long reads as a hang. The ceiling is deliberately NOT
+		// shortened here: turning a slow-but-working endpoint into a refusal
+		// would block legitimate runs to catch a misconfiguration that the
+		// error below already names.
+		_, _ = fmt.Fprintf(progress, "  ..  preflight: asking %s for %s\n", llm.baseURL, model)
+
+		// Short and answerable by anything: this proves the endpoint serves the
+		// model, not that the model is any good.
+		if _, err := llm.withModel(model).Complete(ctx, "Reply with the word: ok"); err != nil {
+			// The remedy goes to the progress stream, not into the error string:
+			// it is several lines of guidance, and an error value is one line.
+			_, _ = fmt.Fprint(progress,
+				"  !!  A model is named by --answer-model / --judge-model; the ENDPOINT comes\n"+
+					"      from VORNIK_BENCH_LLM_URL (then OLLAMA_HOST, then\n"+
+					"      http://127.0.0.1:11434/v1). Nothing correlates the two, so a model\n"+
+					"      named without its endpoint runs the whole pass and errors on every\n"+
+					"      item. Set VORNIK_BENCH_LLM_URL, or name a model this endpoint serves.\n")
+			return fmt.Errorf("preflight: the endpoint %s cannot serve model %q: %w",
+				llm.baseURL, model, err)
+		}
+	}
+	_, _ = fmt.Fprintf(progress, "  ok  preflight: %s serves %s\n", llm.baseURL, strings.Join(models, ", "))
+	return nil
 }

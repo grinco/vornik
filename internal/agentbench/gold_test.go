@@ -359,3 +359,157 @@ func TestValidateTaskSetDigest_ExportedForPreflight(t *testing.T) {
 		}
 	}
 }
+
+// An entry with FEWER paths than --runs used to fall through to `default` and
+// be written as an ordinary entry, while the manifest header still declared
+// `runs: 4`. The artifact then asserted a depth the entry did not have.
+//
+// Observed 2026-08-21, gold pass at --runs 4, first three batches:
+// dp-02-parser-hardening, dp-03-metric and dp-05-retry-backoff each recorded
+// paths=3 while 12 of 15 recorded 4. Nothing in gold.log mentioned the
+// shortfall; it was found by reading the JSON. Same shape as the
+// --i-know-this-wipes defect: an artifact asserting work that was not done.
+func TestBuildGold_ShortEntryRecordsTheDepthItActuallyAchieved(t *testing.T) {
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
+		{TaskID: "short", Passed: true, Invoked: []string{"a"}},
+		{TaskID: "short", Passed: true, Invoked: []string{"b"}},
+		{TaskID: "short", Passed: false, ErrorText: "the model gave up"},
+		{TaskID: "full", Passed: true, Invoked: []string{"a"}},
+		{TaskID: "full", Passed: true, Invoked: []string{"b"}},
+		{TaskID: "full", Passed: true, Invoked: []string{"c"}},
+	}, 3)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	if m.Runs != 3 {
+		t.Fatalf("manifest runs = %d, want 3", m.Runs)
+	}
+
+	short, ok := m.Lookup("short")
+	if !ok {
+		t.Fatal("short missing from gold")
+	}
+	if short.ObservedRuns != 2 {
+		t.Fatalf("short.ObservedRuns = %d, want 2 — the entry declares the header's "+
+			"depth (%d) while holding %d path(s)", short.ObservedRuns, m.Runs, len(short.Paths))
+	}
+
+	full, _ := m.Lookup("full")
+	if full.ObservedRuns != 3 {
+		t.Fatalf("full.ObservedRuns = %d, want 3", full.ObservedRuns)
+	}
+}
+
+// The short entries ARE the argument list for --topup, which exists precisely
+// to refill them. What was missing is anything that says which they are.
+func TestGoldManifest_ShortEntries_AreTheTopupArgumentList(t *testing.T) {
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
+		{TaskID: "short-a", Passed: true, Invoked: []string{"a"}},
+		{TaskID: "short-b", Passed: true, Invoked: []string{"b"}},
+		{TaskID: "short-b", Passed: true, Invoked: []string{"c"}},
+		{TaskID: "full", Passed: true, Invoked: []string{"a"}},
+		{TaskID: "full", Passed: true, Invoked: []string{"b"}},
+		{TaskID: "full", Passed: true, Invoked: []string{"c"}},
+		{TaskID: "never-passed", Passed: false, ErrorText: "the model gave up"},
+	}, 3)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+
+	got := m.ShortEntries()
+	want := []string{"short-a", "short-b"}
+	if len(got) != len(want) {
+		t.Fatalf("ShortEntries() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i].TaskID != want[i] {
+			t.Fatalf("ShortEntries()[%d] = %q, want %q", i, got[i].TaskID, want[i])
+		}
+	}
+	if got[0].ObservedRuns != 1 || got[1].ObservedRuns != 2 {
+		t.Fatalf("short depths = %d, %d; want 1, 2", got[0].ObservedRuns, got[1].ObservedRuns)
+	}
+}
+
+// An EXCLUDED entry is not short — it has no ground truth at all, and --topup
+// would be the wrong instrument. Reporting it as short would send the operator
+// on a second long pass for a task the arm cannot pass.
+func TestGoldManifest_ShortEntries_ExcludesTheExcluded(t *testing.T) {
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
+		{TaskID: "never-passed", Passed: false, ErrorText: "the model gave up"},
+		{TaskID: "harness-only", Passed: false, ErrorText: "workspace lease not found"},
+		{TaskID: "no-tools", Passed: true, Invoked: nil},
+	}, 3)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	if got := m.ShortEntries(); len(got) != 0 {
+		t.Fatalf("ShortEntries() = %v, want none — every entry here is excluded", got)
+	}
+}
+
+// Merging batches is how --topup refills a short entry, so the recorded depth
+// must follow the merge rather than the batch it came from.
+func TestMergeGold_TopupLiftsTheRecordedDepth(t *testing.T) {
+	first, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
+		{TaskID: "t1", Passed: true, Invoked: []string{"a"}},
+	}, 2)
+	if err != nil {
+		t.Fatalf("build first: %v", err)
+	}
+	if got := goldDepth(t, first, "t1"); got != 1 {
+		t.Fatalf("first batch depth = %d, want 1", got)
+	}
+
+	topup, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
+		{TaskID: "t1", Passed: true, Invoked: []string{"b"}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("build topup: %v", err)
+	}
+
+	merged, err := MergeGold(first, topup)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if merged.Runs != 3 {
+		t.Fatalf("merged runs = %d, want 3", merged.Runs)
+	}
+	if got := goldDepth(t, merged, "t1"); got != 2 {
+		t.Fatalf("merged depth = %d, want 2 — the topup path did not lift it", got)
+	}
+	if got := merged.ShortEntries(); len(got) != 1 || got[0].TaskID != "t1" {
+		t.Fatalf("ShortEntries() = %v, want t1 still short (2 of 3)", got)
+	}
+}
+
+// goldDepth is a test helper: the recorded depth of one entry.
+func goldDepth(t *testing.T, m GoldManifest, taskID string) int {
+	t.Helper()
+	g, ok := m.Lookup(taskID)
+	if !ok {
+		t.Fatalf("%s missing from gold", taskID)
+	}
+	return g.ObservedRuns
+}
+
+// A manifest read from a file written before observedRuns existed carries a
+// zero in that field. ShortEntries must derive the depth from the paths beside
+// it rather than trusting the field, or every entry in every pre-existing gold
+// file reads as short.
+func TestGoldManifest_ShortEntries_IgnoresAMissingObservedRunsField(t *testing.T) {
+	m := GoldManifest{
+		TaskSetSHA256: testTaskSetDigest,
+		Runs:          2,
+		Entries: []Gold{
+			// As unmarshalled from a manifest with no "observedRuns" key.
+			{TaskID: "complete", Paths: [][]string{{"a"}, {"b"}}},
+			{TaskID: "short", Paths: [][]string{{"a"}}},
+		},
+	}
+	got := m.ShortEntries()
+	if len(got) != 1 || got[0].TaskID != "short" {
+		t.Fatalf("ShortEntries() = %v, want only 'short' — a zero observedRuns "+
+			"must not make a complete entry look short", got)
+	}
+}

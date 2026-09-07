@@ -79,6 +79,21 @@ type Gold struct {
 	// result as a policy finding.
 	Excluded       bool   `json:"excluded,omitempty"`
 	ExcludedReason string `json:"excludedReason,omitempty"`
+
+	// ObservedRuns is how many passing runs this entry actually recorded — the
+	// depth it has, as opposed to the depth GoldManifest.Runs declares for the
+	// pass as a whole.
+	//
+	// The two can differ. A task that passed 3 times in a --runs 4 pass used to
+	// be written as an ordinary entry, so the artifact asserted a depth three
+	// of its entries did not have (observed 2026-08-21: dp-02-parser-hardening,
+	// dp-03-metric and dp-05-retry-backoff at paths=3 while 12 of 15 recorded
+	// 4, with nothing in gold.log saying so).
+	//
+	// DERIVED, never assigned by a caller: canonical() sets it from len(Paths),
+	// which every construction path runs through, so it cannot drift from the
+	// paths it counts.
+	ObservedRuns int `json:"observedRuns,omitempty"`
 }
 
 // Core is the set of tools every observed path needed. Missing one is a hard

@@ -18,6 +18,16 @@ Description=Vornik Community Edition daemon
 Documentation=https://docs.vornik.io
 After=network-online.target
 Wants=network-online.target
+# The daemon's Postgres is a `restart: always` compose container. On a
+# rootless host it is podman-restart.service that brings those back after a
+# reboot, so the daemon must be ordered behind it. Both directives are no-ops
+# on a host that does not ship podman-restart, so this stays portable.
+After=podman-restart.service
+Wants=podman-restart.service
+# A dependency outage is a WAIT, not a failure (see ExecStartPre below).
+# systemd's default start rate limit (5 starts / 10s) would otherwise wedge
+# the unit permanently into `failed` and require a manual `reset-failed`.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -25,14 +35,31 @@ ExecStart=%h/.local/bin/vornik
 Environment=VORNIK_CONFIG=%h/.config/vornik/config.yaml
 Environment=VORNIK_CONFIGS_DIR=%h/.config/vornik/configs
 Environment=VORNIK_DATA_DIR=%h/.local/share/vornik
+# Where the readiness gate below probes for Postgres, and how long it waits.
+# These drive ONLY the gate — they deliberately do not alias
+# VORNIK_DATABASE_HOST/PORT, so setting them can never silently re-point the
+# daemon itself. Override in vornik.env if Postgres is not on loopback.
+Environment=VORNIK_DB_WAIT_HOST=127.0.0.1
+Environment=VORNIK_DB_WAIT_PORT=5432
+Environment=VORNIK_DB_WAIT_SECONDS=120
 # Secrets + DB + LLM settings (see vornik.env.example). The leading '-'
-# makes the file optional so the unit still starts if it is absent.
+# makes the file optional so the unit still starts if it is absent. Listed
+# after the Environment= lines above so vornik.env wins on conflict.
 EnvironmentFile=-%h/.config/vornik/vornik.env
+# Boot-ordering gate (incident 2026-09-06): the daemon treats a database
+# connect failure at startup as fatal, so without this it exited in under a
+# second on every boot where Postgres was not listening yet — 324 restarts in
+# a row, each logging `dial tcp [::1]:5432: connect: connection refused`.
+# Blocking here turns a slow dependency into a bounded wait, and a genuinely
+# absent one into a single failure that names the cause. `$$` is systemd's
+# escape for a literal `$`, so the shell — not systemd — expands these.
+ExecStartPre=/bin/bash -c 'for _ in $$(seq 1 "$$VORNIK_DB_WAIT_SECONDS"); do (exec 3<>"/dev/tcp/$$VORNIK_DB_WAIT_HOST/$$VORNIK_DB_WAIT_PORT") 2>/dev/null && exit 0; sleep 1; done; echo "vornik: database $$VORNIK_DB_WAIT_HOST:$$VORNIK_DB_WAIT_PORT unreachable after $${VORNIK_DB_WAIT_SECONDS}s - is the deps stack up? (podman compose -f deps.compose.yaml up -d)" >&2; exit 1'
 Restart=on-failure
 RestartSec=3
-# Give first-boot DB migrations room before systemd considers a slow start
-# a failure.
-TimeoutStartSec=120
+# Must exceed VORNIK_DB_WAIT_SECONDS: TimeoutStartSec covers ExecStartPre and
+# ExecStart together, so a short value would kill the gate mid-wait and leave
+# first-boot DB migrations no room either.
+TimeoutStartSec=300
 
 [Install]
 WantedBy=default.target

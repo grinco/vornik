@@ -388,18 +388,74 @@ func runBenchAgentGold(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("write gold manifest: %w", err)
 	}
 
-	excluded := 0
-	for _, e := range manifest.Entries {
-		if e.Excluded {
-			excluded++
+	excluded := countExcluded(manifest)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+		"wrote %s: %d task(s), %d excluded.\n",
+		benchAgentGoldPath, len(manifest.Entries), excluded)
+	if short := shortGoldReport(manifest); short != "" {
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), short)
+	}
+	_, _ = fmt.Fprint(cmd.OutOrStdout(),
+		"OPERATOR REVIEW REQUIRED before this gates anything: gold defines what "+
+			"\"correct\" means, so it is not self-certifiable by the harness that "+
+			"produced it.\n")
+	return nil
+}
+
+// shortGoldReport names the entries that recorded fewer passing runs than the
+// pass declares, and the command that refills them. Empty when there are none.
+//
+// A pass at --runs 4 can leave an entry holding 3 paths while the manifest
+// header still says 4, and until 2026-09-07 it was written like any other entry:
+// the shortfall existed in the JSON and in nothing anyone reads. Observed
+// 2026-08-21 on dp-02-parser-hardening, dp-03-metric and dp-05-retry-backoff,
+// found only by reading the manifest.
+//
+// The refill already exists and is the SHIPPED tool: `--topup` is a mode of
+// scripts/agentbench-reproduce.sh, which recomputes the deficit from the merged
+// manifest, re-runs only the short tasks one run at a time, and merges. Note it
+// is a mode of that script, NOT a flag of `bench agent gold` — the phrasing
+// "`--topup` run" in this file, in gold.go and in the design reads like the
+// latter. This prints the script, rather than the hand-rolled two-step it
+// wraps, so the operator lands on the path that is idempotent and safely
+// repeatable.
+//
+// That script computes the same "short" rule against the TASK SET (it needs the
+// task objects to write topup-tasks.json, which this side does not have). The
+// two must stay in agreement; this is the advisory half, that one is the actor.
+func shortGoldReport(m agentbench.GoldManifest) string {
+	shortEntries := m.ShortEntries()
+	if len(shortEntries) == 0 {
+		return ""
+	}
+	width := 0
+	for _, e := range shortEntries {
+		if len(e.TaskID) > width {
+			width = len(e.TaskID)
 		}
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-		"wrote %s: %d task(s), %d excluded.\nOPERATOR REVIEW REQUIRED before this gates "+
-			"anything: gold defines what \"correct\" means, so it is not self-certifiable "+
-			"by the harness that produced it.\n",
-		benchAgentGoldPath, len(manifest.Entries), excluded)
-	return nil
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d of %d entries recorded FEWER passing runs than the %d this pass "+
+		"declares:\n", len(shortEntries), len(m.Entries)-countExcluded(m), m.Runs)
+	for _, e := range shortEntries {
+		fmt.Fprintf(&b, "  %-*s  %d of %d\n", width, e.TaskID, e.ObservedRuns, m.Runs)
+	}
+	b.WriteString("Refill them with the top-up mode, which recomputes the deficit from " +
+		"the merged manifest and re-runs only these, one run each:\n")
+	fmt.Fprintf(&b, "  scripts/agentbench-reproduce.sh --topup --runs %d\n", m.Runs)
+	b.WriteString("It is idempotent: if a top-up run fails, run it again and only the " +
+		"still-short tasks are retried.\n")
+	return b.String()
+}
+
+func countExcluded(m agentbench.GoldManifest) int {
+	n := 0
+	for _, e := range m.Entries {
+		if e.Excluded {
+			n++
+		}
+	}
+	return n
 }
 
 // collectInvoked gathers the tools an unrestricted execution actually used.
@@ -1027,15 +1083,15 @@ func runBenchAgentGoldMerge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write merged manifest: %w", err)
 	}
 
-	excluded := 0
-	for _, e := range merged.Entries {
-		if e.Excluded {
-			excluded++
-		}
-	}
+	excluded := countExcluded(merged)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"merged %d batch(es) -> %s: %d task(s), %d excluded, %d run(s) total\n",
 		len(manifests), benchAgentGoldPath, len(merged.Entries), excluded, merged.Runs)
+	// The MERGED manifest is the one that gates, so a shortfall that survived a
+	// top-up matters more here than in any single batch.
+	if short := shortGoldReport(merged); short != "" {
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), short)
+	}
 	return nil
 }
 

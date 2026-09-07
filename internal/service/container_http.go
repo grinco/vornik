@@ -243,6 +243,9 @@ func (c *Container) initHTTPServer() error {
 		api.WithAPIKeyRepository(c.repos.APIKeys),
 		api.WithSkillStore(c.repos.Skills),
 		api.WithExecutionSkillRepository(c.repos.ExecInjectedSkills),
+		// The rating endpoints under /api/v1/executions/{id}/rating. Without
+		// this they answer 503, which is the honest "not wired" state.
+		api.WithExecutionRatingRepository(c.repos.ExecutionRatings),
 		api.WithProposalStore(c.repos.Proposals),
 		api.WithProposalApplier(c.newProposalApplier()),
 		api.WithDiagnoser(c.newDiagnoser()),
@@ -1532,6 +1535,10 @@ func (c *Container) initHTTPServer() error {
 		// Metrics(nil) is a harmless no-op, same "TWO-PASS TRAP" contract.
 		ui.WithIntegrationsMetrics(c.integrationsMetrics),
 		ui.WithExecutionRepository(c.repos.Executions),
+		// The rating control on /ui/tasks/<id>. Without this the page renders
+		// without it, which is the honest "not wired" state rather than a
+		// broken control.
+		ui.WithUIExecutionRatingRepository(c.repos.ExecutionRatings),
 		ui.WithExecutionQualityScoreRepository(c.repos.ExecutionQualityScores),
 		ui.WithArtifactRepository(c.repos.Artifacts),
 		ui.WithTaskCredentialRepository(c.repos.TaskCredentials),

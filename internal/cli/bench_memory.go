@@ -250,6 +250,16 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// BEFORE the dataset is fetched, the store is cleared, or a single item is
+	// ingested. A model the resolved endpoint cannot serve is a configuration
+	// error that otherwise runs the pass to completion and errors on every item
+	// (120/120 on 2026-08-21, ~20 minutes, visible only in the final
+	// scoreboard). Everything it needs — profile applied, models resolved — is
+	// known here, which makes this the earliest point it can refuse.
+	if err := preflightBenchLLM(cmd.Context(), cmd.ErrOrStderr()); err != nil {
+		return err
+	}
+
 	ds, path, err := resolveDataset()
 	if err != nil {
 		return err

@@ -2749,6 +2749,14 @@ func (r *Repository) ChunkIDsByArtifact(ctx context.Context, projectID, artifact
 	return out, rows.Err()
 }
 
+// cacheKeyQuerier is the read half of a transaction. Widened from *sql.Tx on
+// 2026-09-07 so the project wipe — which runs in persistence's transaction, not
+// one this package opened — can use the same seam rather than a fifth copy of
+// the key derivation.
+type cacheKeyQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // chunkCacheKeys runs a query selecting (source_name, content, content_hash) over the
 // chunks about to be deleted and returns every embedding_cache key that could hold a
 // vector derived from them, de-duplicated.
@@ -2763,7 +2771,7 @@ func (r *Repository) ChunkIDsByArtifact(ctx context.Context, projectID, artifact
 // review of the §4.4 retro-fit asked for the guarantee to be asserted at the seam
 // rather than re-implemented per call site; this is that seam, and it exists because
 // per-site duplication is exactly how the WRONG key ended up in all four of them.
-func chunkCacheKeys(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+func chunkCacheKeys(ctx context.Context, tx cacheKeyQuerier, query string, args ...any) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

@@ -175,11 +175,45 @@ func (m GoldManifest) canonical() GoldManifest {
 			Paths:          paths,
 			Excluded:       e.Excluded,
 			ExcludedReason: e.ExcludedReason,
+			// Derived here and nowhere else. Every manifest — built, merged or
+			// topped up — passes through canonical(), so the recorded depth is
+			// always the depth of the paths beside it.
+			ObservedRuns: len(paths),
 		})
 	}
 	sort.Slice(out.Entries, func(i, j int) bool {
 		return out.Entries[i].TaskID < out.Entries[j].TaskID
 	})
+	return out
+}
+
+// ShortEntries returns the entries that recorded FEWER passing runs than the
+// manifest declares, in task order.
+//
+// These are exactly what the top-up path refills — `--topup`, a mode of
+// scripts/agentbench-reproduce.sh (not a flag of `bench agent gold`, which is
+// what the phrasing "a `--topup` run" elsewhere in this file suggests). The gap
+// this closes is not that partial recording happens: the authors knew it does,
+// which is why the mode exists. It is that nothing SAID it had — a short entry
+// was written like any other and was found only by reading the JSON.
+//
+// An excluded entry is never short: it has no ground truth at all, and --topup
+// is the wrong instrument for a task the unrestricted arm cannot pass.
+func (m GoldManifest) ShortEntries() []Gold {
+	var out []Gold
+	for _, e := range m.Entries {
+		if e.Excluded {
+			continue
+		}
+		// len(Paths), not ObservedRuns: a manifest read from a file written
+		// before that field existed carries a zero there, and would report
+		// every entry as short. The depth is derivable at the point of use, so
+		// derive it — ObservedRuns exists to make the ARTIFACT self-describing,
+		// not to be the only place the count lives.
+		if len(e.Paths) < m.Runs {
+			out = append(out, e)
+		}
+	}
 	return out
 }
 

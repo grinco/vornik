@@ -77,6 +77,7 @@ var Contract = map[string]MissBehavior{
 	// first push look like a failure at the one moment it is most normal.
 	"ForgePRReviewStateRepository.Get":               MissNilNil,      // *ForgePRReviewState
 	"ExecutionQualityScoreRepository.GetByExecution": MissErrNotFound, // *ExecutionQualityScore
+	"ExecutionRatingRepository.Get":                  MissErrNotFound, // *ExecutionRating
 	"ExecutionRepository.GetByTaskID":                MissErrNotFound, // *Execution
 	"StepPromptRepository.Get":                       MissErrNotFound, // *StepPrompt — a pruned or never-landed part
 	"ExecutionRepository.Get":                        MissErrNotFound, // *Execution

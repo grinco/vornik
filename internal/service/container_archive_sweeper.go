@@ -13,6 +13,7 @@ import (
 	"os"
 
 	"vornik.io/vornik/internal/leaderelection"
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/projectarchive"
 )
@@ -88,7 +89,13 @@ func (c *Container) initArchiveSweeper() *projectarchive.Sweeper {
 		c.Logger.Warn().Msg("archive-sweeper: DB not wired; skipping")
 		return nil
 	}
-	deleter := postgres.NewProjectDataCleanupRepository(c.DB)
+	// The cache evictor is supplied here because this is the layer that can
+	// import both: the key derivation lives in internal/memory, which imports
+	// internal/persistence, so persistence cannot reach it. Without it the wipe
+	// leaves behind the vectors computed from the project's text —
+	// embedding_cache has no project_id column, so ProjectDataTables cannot
+	// reach those rows.
+	deleter := postgres.NewProjectDataCleanupRepository(c.DB, memory.EvictProjectEmbeddingCache)
 	cfg := projectarchive.Config{
 		Registry:    c.Registry,
 		DataDeleter: deleter,

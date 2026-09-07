@@ -17,6 +17,14 @@
 # Usage: gen-shell-env.sh <config-dir> <data-dir> <out-file>
 set -euo pipefail
 
+# The `database.name` parser lives with the benchmark write-target guard, which
+# is the safety check this file's output feeds. Sourced rather than duplicated.
+# A missing sibling aborts: an empty deny-list would be a protection silently
+# absent, which is the exact failure this whole line of work removed.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/bench-write-target-guard.sh
+. "$SCRIPT_DIR/bench-write-target-guard.sh"
+
 CONFIG_DIR="${1:?config dir required}"
 DATA_DIR="${2:?data dir required}"
 OUT="${3:?output path required}"
@@ -47,7 +55,19 @@ secrets_dir="${CONFIG_DIR}/secrets"
 
 # The database THIS deployment writes, read out of its own config so the value is
 # never hardcoded in shipped source. Used only to DENY it as a benchmark target.
-resolved_db="$(sed -n 's/^[[:space:]]*name:[[:space:]]*\(.*\)$/\1/p' "$resolved_config" 2>/dev/null | head -1 | tr -d '"'"'"' ')"
+# database.name, read from the `database:` BLOCK. This used to be a `sed` for
+# the first `name:` at ANY indentation, which is correct on the shipped config
+# only because `database:` happens to be the first block carrying one. A
+# sequence item whose `name:` is not its first key emits an ordinary
+# `  name: x` line, so an mcp.servers[] entry above the database block emitted
+# the WRONG database here — denying one the benchmark would never touch while
+# PERMITTING the real one (fixed 2026-09-07).
+#
+# The parser is the guard's, not a second copy: a safety check with two
+# implementations has one that is wrong. Its diagnostics are silenced here
+# because a sqlite deployment legitimately has no database.name, and this runs
+# on the install path where that is not a finding.
+resolved_db="$(bench_config_database "$resolved_config" 2>/dev/null)"
 
 # config.yaml's `name:` is frequently a ${VAR} PLACEHOLDER, not a literal — the
 # shipped deployments/podman/config/vornik.host.yaml ships

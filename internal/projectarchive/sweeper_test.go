@@ -2,6 +2,7 @@ package projectarchive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +22,11 @@ type stubDeleter struct {
 	mu     sync.Mutex
 	called []string
 	err    error
+	// What the deleter reports about the derived-cache eviction. Default zero
+	// value is the "not wired" state, which is what the audit row must be able
+	// to distinguish from "nothing to evict".
+	cacheEvictionRan        bool
+	cachedEmbeddingsEvicted int
 }
 
 func (s *stubDeleter) DeleteProjectData(_ context.Context, projectID string) (persistence.ProjectDataStats, error) {
@@ -30,7 +36,12 @@ func (s *stubDeleter) DeleteProjectData(_ context.Context, projectID string) (pe
 	if s.err != nil {
 		return persistence.ProjectDataStats{}, s.err
 	}
-	return persistence.ProjectDataStats{TablesCleared: 3, RowsDeleted: 42}, nil
+	return persistence.ProjectDataStats{
+		TablesCleared:           3,
+		RowsDeleted:             42,
+		CacheEvictionRan:        s.cacheEvictionRan,
+		CachedEmbeddingsEvicted: s.cachedEmbeddingsEvicted,
+	}, nil
 }
 
 // stubAudit collects rows so tests can assert the
@@ -424,5 +435,146 @@ func TestSweeper_SweepNowKick(t *testing.T) {
 	sw.SweepNow(context.Background())
 	if len(sw.kickCh) != 1 {
 		t.Errorf("kick channel len: want 1, got %d", len(sw.kickCh))
+	}
+}
+
+// The wipe now evicts embedding_cache rows a project-scoped DELETE cannot
+// reach, and the audit row is where an operator looks for what a deletion
+// actually did. Reporting tables and rows while staying silent about the
+// derived vectors would make the row look complete when it is not — the same
+// defect one layer up from the leak itself.
+func TestDeleteProject_AuditRowRecordsTheCacheEviction(t *testing.T) {
+	del := &stubDeleter{cacheEvictionRan: true, cachedEmbeddingsEvicted: 9}
+	audit := &stubAudit{}
+	s := newSweeperForDeleteTest(t, del, audit)
+
+	if err := s.deleteProject(context.Background(), testDeletableProject()); err != nil {
+		t.Fatalf("deleteProject: %v", err)
+	}
+	if len(audit.rows) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(audit.rows))
+	}
+	got := auditPayload(t, audit.rows[0])
+	if got["cached_embeddings_evicted"] != float64(9) {
+		t.Errorf("cached_embeddings_evicted = %v, want 9", got["cached_embeddings_evicted"])
+	}
+	if got["cache_eviction_ran"] != true {
+		t.Errorf("cache_eviction_ran = %v, want true", got["cache_eviction_ran"])
+	}
+}
+
+// A deployment whose deleter has no evictor wired reports zero evicted. The row
+// must say the eviction did not RUN, or that zero reads as "there was nothing
+// derived from this project", which is a claim nobody checked.
+func TestDeleteProject_AuditRowSaysWhenEvictionNeverRan(t *testing.T) {
+	del := &stubDeleter{} // cacheEvictionRan false — the unwired state
+	audit := &stubAudit{}
+	s := newSweeperForDeleteTest(t, del, audit)
+
+	if err := s.deleteProject(context.Background(), testDeletableProject()); err != nil {
+		t.Fatalf("deleteProject: %v", err)
+	}
+	got := auditPayload(t, audit.rows[0])
+	ran, present := got["cache_eviction_ran"]
+	if !present {
+		t.Fatal("the audit row does not mention the cache eviction at all")
+	}
+	if ran != false {
+		t.Errorf("cache_eviction_ran = %v, want false", ran)
+	}
+	if got["cached_embeddings_evicted"] != float64(0) {
+		t.Errorf("cached_embeddings_evicted = %v, want 0", got["cached_embeddings_evicted"])
+	}
+}
+
+// newSweeperForDeleteTest builds a sweeper wired only with what deleteProject
+// touches: the deleter, the audit sink, and a config dir with the project's
+// files in place so removeProjectFiles has something to unlink.
+//
+// The stubDeleter is the only field these tests actually vary — everything else
+// exists so deleteProject reaches the audit call without erroring on a missing
+// dependency. ArtifactBasePath gets an empty temp dir on purpose: the legacy
+// direct-disk wipe branch then succeeds against nothing, which keeps artifact
+// handling out of assertions about the eviction fields.
+func newSweeperForDeleteTest(t *testing.T, deleter *stubDeleter, audit *stubAudit) *Sweeper {
+	t.Helper()
+	configDir := t.TempDir()
+	projectsDir := filepath.Join(configDir, "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("mkdir projects: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectsDir, "doomed.yaml"), []byte("id: doomed\n"), 0o644); err != nil {
+		t.Fatalf("write project yaml: %v", err)
+	}
+	return NewSweeper(Config{
+		Registry:         newTestRegistry(map[string]*registry.Project{"doomed": testDeletableProject()}),
+		DataDeleter:      deleter,
+		ConfigDir:        configDir,
+		ArtifactBasePath: t.TempDir(),
+		AuditRepo:        audit,
+		Logger:           zerolog.Nop(),
+	})
+}
+
+func testDeletableProject() *registry.Project {
+	return &registry.Project{ID: "doomed", Lifecycle: registry.ProjectLifecycle{
+		Status: "archived", ScheduledDeleteAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}}
+}
+
+// auditPayload decodes the sweeper's JSON-marshalled extras.
+func auditPayload(t *testing.T, e *persistence.AdminAuditEntry) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal([]byte(e.After), &out); err != nil {
+		t.Fatalf("decode audit payload %q: %v", e.After, err)
+	}
+	return out
+}
+
+// A deployment with no memory data still has the evictor WIRED — it runs, finds
+// nothing, and evicts zero. The warning must not fire there, or it becomes
+// noise on every deletion and trains operators to ignore it.
+//
+// Raised as a spuriosity risk by the 2026-09-07 follow-up review, which read the
+// warning as keyed on "nothing was evicted". It is keyed on whether the eviction
+// RAN: runCacheEviction sets CacheEvictionRan after a successful call regardless
+// of the count, so the only way to reach the warning is a nil evictor — which,
+// since the constructor split, a caller has to ask for by name. This pins that
+// distinction so the next reader does not "fix" it into counting rows.
+func TestDeleteProject_NoWarningWhenTheEvictionRanAndFoundNothing(t *testing.T) {
+	del := &stubDeleter{cacheEvictionRan: true, cachedEmbeddingsEvicted: 0}
+	audit := &stubAudit{}
+	var logs strings.Builder
+	s := newSweeperForDeleteTest(t, del, audit)
+	s.cfg.Logger = zerolog.New(&logs)
+
+	if err := s.deleteProject(context.Background(), testDeletableProject()); err != nil {
+		t.Fatalf("deleteProject: %v", err)
+	}
+	if strings.Contains(logs.String(), "NO embedding-cache eviction") {
+		t.Errorf("warned about a missing eviction that actually ran and found nothing:\n%s", logs.String())
+	}
+	got := auditPayload(t, audit.rows[0])
+	if got["cache_eviction_ran"] != true || got["cached_embeddings_evicted"] != float64(0) {
+		t.Errorf("audit row = %v, want ran=true evicted=0", got)
+	}
+}
+
+// The converse: a wipe with NO evictor wired must warn. That is the state the
+// warning exists for, and since the constructor split it is only reachable by
+// asking for it by name.
+func TestDeleteProject_WarnsWhenTheEvictionNeverRan(t *testing.T) {
+	del := &stubDeleter{} // cacheEvictionRan false
+	audit := &stubAudit{}
+	var logs strings.Builder
+	s := newSweeperForDeleteTest(t, del, audit)
+	s.cfg.Logger = zerolog.New(&logs)
+
+	if err := s.deleteProject(context.Background(), testDeletableProject()); err != nil {
+		t.Fatalf("deleteProject: %v", err)
+	}
+	if !strings.Contains(logs.String(), "NO embedding-cache eviction") {
+		t.Errorf("a wipe with no eviction was silent in the log:\n%s", logs.String())
 	}
 }

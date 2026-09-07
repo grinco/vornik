@@ -1541,6 +1541,38 @@ CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill
     ON execution_injected_skills (skill_id);
 
 -- ============================================================
+-- execution_ratings — the human up/down verdict on what an
+-- execution produced (LLD 2026-09-04-execution-ratings-design
+-- §3). Postgres parity: migration 179.
+--
+-- An editable SIDECAR: its own table, so a rating cannot change
+-- the history a later step derives from, and upserted per
+-- (execution, rater) so re-rating replaces a verdict while a
+-- second person's opinion is a second row.
+--
+-- NO FOREIGN KEY to executions, deliberately — a rating outlives
+-- the run it judges. A cascade would destroy the only human
+-- signal in the system; a RESTRICT would block execution pruning.
+-- Retention prunes ratings on their own horizon.
+--
+-- created_at/updated_at are ordered and compared here (the prune
+-- and the "preserved across edits" contract), so they carry the
+-- RFC3339Nano text convention rather than being write-only
+-- provenance like injected_at above.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS execution_ratings (
+    execution_id TEXT NOT NULL,
+    rater_id     TEXT NOT NULL,
+    verdict      TEXT NOT NULL CHECK (verdict IN ('up', 'down')),
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (execution_id, rater_id)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_ratings_created
+    ON execution_ratings (created_at);
+
+-- ============================================================
 -- execution_narration — the narrator worker's persisted plain-
 -- language story per execution (Narrated Execution Phase 2.1,
 -- narrated-execution-design.md §5.3). Postgres parity: migration

@@ -657,6 +657,13 @@ type ProjectWebhookSource struct {
 	// flow — while issues use WorkflowID. Empty = every delivery uses WorkflowID.
 	// Provider-neutral: keys off the classified forge_job, not an event name.
 	ChangeRequestWorkflowID string `yaml:"change_request_workflow_id"`
+
+	// CIWorkflowID routes a completed CI run
+	// (2026-09-08-forge-ci-outcomes-design.md §3.2). Without it a CI job falls
+	// to WorkflowID — the ISSUE workflow — because a CI run is not a change
+	// request, which is the same silent misrouting the App-channel path's
+	// routeOf exists to prevent.
+	CIWorkflowID string `yaml:"ci_workflow_id,omitempty"`
 	// RequireForgeEvent drops (filters) a verified delivery that the forge
 	// classifier does NOT recognise as an actionable forge job — issues.closed,
 	// pull_request.synchronize, an unlabeled issue, etc. — so they never create

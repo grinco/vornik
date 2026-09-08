@@ -36,6 +36,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/forgeci"
 	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/github"
 	"vornik.io/vornik/internal/persistence"
@@ -83,9 +84,10 @@ type githubTaskCreator struct {
 	review *forgereview.Coordinator
 
 	// ci carries CI-outcome ingestion (2026-09-08-forge-ci-outcomes-design.md).
-	// NIL when the project has not enabled it, which is the default and is
-	// exactly the pre-feature behaviour.
-	ci *ciIngest
+	// The SAME type the generic webhook ingress uses, so a rule change cannot
+	// reach one path and miss the other. NIL when the project has not enabled
+	// it, which is the default and exactly the pre-feature behaviour.
+	ci *forgeci.Ingest
 }
 
 // newGitHubTaskCreator builds an adapter pinned to a single

@@ -268,7 +268,19 @@ forge:
     max_excerpt_bytes: 65536    # store at most this, and say when it truncated
     review_on_failure: true     # a failed run triggers a coalesced review
     success_workflow_id: ""     # a green run fires this workflow; empty is off
-    workflow_names: []          # limit to these workflow files; empty means all
+    workflow_paths: []          # limit to these workflow files; empty means all
+```
+
+If your events arrive on the generic signed webhook rather than the App
+channel, give the source a `ci_workflow_id` as well — a CI run is not a change
+request, so without one it would fall to the source's default (issue) workflow:
+
+```yaml
+webhooks:
+  sources:
+    - name: github
+      change_request_workflow_id: github-review
+      ci_workflow_id: github-review   # or a workflow of its own
 ```
 
 **One limitation worth knowing before you rely on it.** GitHub does not tell

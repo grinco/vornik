@@ -993,6 +993,8 @@ type Server struct {
 	execSkillRepo    persistence.ExecutionInjectedSkillRepository
 	ratingRepo       persistence.ExecutionRatingRepository
 	ratingRollupRepo persistence.RatingRollupRepository
+	// forgeCI resolves CI-outcome ingestion per project. Nil = off.
+	forgeCI func(projectID string) ForgeCIIngest
 	// skillEmbedder powers the skill_propose dedup preflight (§12.2).
 	// Nil-safe by design: the preflight falls back to its lexical metric
 	// rather than failing, because an embedder outage must never block an

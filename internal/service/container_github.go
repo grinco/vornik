@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/forgeci"
 	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/github"
 	"vornik.io/vornik/internal/persistence"
@@ -58,7 +59,7 @@ func taskCreatorFromRepo(
 	review *forgereview.Coordinator,
 	labelMap map[string]string,
 	logger zerolog.Logger,
-	ciFor func(*registry.Project) *ciIngest,
+	ciFor func(*registry.Project) *forgeci.Ingest,
 ) func(*registry.Project) github.TaskCreator {
 	return func(p *registry.Project) github.TaskCreator {
 		if taskRepo == nil || p == nil {

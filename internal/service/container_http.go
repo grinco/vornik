@@ -243,6 +243,21 @@ func (c *Container) initHTTPServer() error {
 		api.WithAPIKeyRepository(c.repos.APIKeys),
 		api.WithSkillStore(c.repos.Skills),
 		api.WithExecutionSkillRepository(c.repos.ExecInjectedSkills),
+		// CI ingestion on the generic ingress, resolved per project so a
+		// project that has not enabled it gets nil and the path behaves
+		// exactly as it did before the feature.
+		api.WithForgeCIIngest(func(projectID string) api.ForgeCIIngest {
+			if c.Registry == nil {
+				return nil
+			}
+			ing := c.ciIngestForProject(c.Registry.GetProject(projectID))
+			if ing == nil {
+				// A typed nil inside a non-nil interface would pass the
+				// caller's nil check and then panic. Return the untyped nil.
+				return nil
+			}
+			return ing
+		}),
 		// The rating endpoints under /api/v1/executions/{id}/rating. Without
 		// this they answer 503, which is the honest "not wired" state.
 		api.WithExecutionRatingRepository(c.repos.ExecutionRatings),

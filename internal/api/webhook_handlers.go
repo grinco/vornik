@@ -216,13 +216,26 @@ func (s *Server) enqueueVerifiedWebhook(ctx context.Context, w http.ResponseWrit
 			}
 			// Route change requests (opened PR/MR) to the review workflow when
 			// configured; issues keep the source's default workflow.
-			if source.ChangeRequestWorkflowID != "" {
-				var f struct {
-					IsChangeRequest bool `json:"is_change_request"`
-				}
-				if json.Unmarshal(fj, &f) == nil && f.IsChangeRequest {
+			var f struct {
+				IsChangeRequest bool         `json:"is_change_request"`
+				CI              *forge.CIRef `json:"ci"`
+			}
+			_ = json.Unmarshal(fj, &f)
+			switch {
+			case f.CI != nil:
+				// A CI run is NOT a change request, so without its own override
+				// it would fall to the source's default — the ISSUE workflow.
+				// That is the same silent misrouting the App-channel path's
+				// routeOf exists to prevent, on the other ingress.
+				if source.CIWorkflowID != "" {
+					workflowOverride = source.CIWorkflowID
+				} else if source.ChangeRequestWorkflowID != "" {
+					// A CI outcome is about code: the review workflow is a far
+					// better fallback than the issue router.
 					workflowOverride = source.ChangeRequestWorkflowID
 				}
+			case f.IsChangeRequest && source.ChangeRequestWorkflowID != "":
+				workflowOverride = source.ChangeRequestWorkflowID
 			}
 		}
 	}
@@ -234,6 +247,20 @@ func (s *Server) enqueueVerifiedWebhook(ctx context.Context, w http.ResponseWrit
 		var job forge.ForgeJob
 		if json.Unmarshal(forgeJob, &job) == nil && job.IsChangeRequest {
 			if done := s.applyForgeReviewRules(ctx, w, project, source, body, deliveryID, event, job); done {
+				return
+			}
+		}
+	}
+
+	// CI OUTCOMES (design §4, §5). Recorded on THIS ingress too, through the
+	// same forgeci.Ingest the App channel uses — the review coordinator above
+	// is shared for exactly this reason, and a CI rule that reached one door
+	// and not the other would repeat the bug that shipped re-review to an
+	// ingress nobody used.
+	if len(forgeJob) > 0 && s.forgeCI != nil {
+		var job forge.ForgeJob
+		if json.Unmarshal(forgeJob, &job) == nil && job.CI != nil {
+			if done := s.applyForgeCIRules(ctx, w, project, deliveryID, job); done {
 				return
 			}
 		}

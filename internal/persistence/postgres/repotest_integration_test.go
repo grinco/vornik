@@ -383,6 +383,51 @@ func TestCostTuningCanaries_PartialIndex_Postgres(t *testing.T) {
 	}
 }
 
+// pgRollupSeeder writes the three tables the rollup reads, satisfying the
+// executions->tasks foreign key the schema declares.
+type pgRollupSeeder struct{ db *sql.DB }
+
+func (s pgRollupSeeder) SeedExecution(ctx context.Context, id, projectID, workflowID string, createdAt time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO tasks (id, project_id, workflow_id, status, created_at, updated_at)
+		VALUES ($1, $2, $3, 'COMPLETED', $4, $4) ON CONFLICT (id) DO NOTHING`,
+		"task-"+id, projectID, workflowID, createdAt.UTC()); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO executions (id, task_id, project_id, workflow_id, workflow_revision,
+		                        status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, '1', 'COMPLETED', $5, $5) ON CONFLICT (id) DO NOTHING`,
+		id, "task-"+id, projectID, workflowID, createdAt.UTC())
+	return err
+}
+
+func (s pgRollupSeeder) SeedInjectedSkill(ctx context.Context, executionID, skillID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_injected_skills (execution_id, skill_id)
+		VALUES ($1, $2) ON CONFLICT DO NOTHING`, executionID, skillID)
+	return err
+}
+
+func (s pgRollupSeeder) SeedRating(ctx context.Context, executionID, raterID, verdict string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_ratings (execution_id, rater_id, verdict)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (execution_id, rater_id) DO UPDATE SET verdict = EXCLUDED.verdict`,
+		executionID, raterID, verdict)
+	return err
+}
+
+// TestRatingRollupRepository_PostgresContract — the same suite the SQLite side
+// runs. The grain rule (a contested execution enters neither arm) is the part
+// worth running on both: the query is shared text, but only a real database
+// proves the SUM/CASE collapse behaves identically under each planner.
+func TestRatingRollupRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunRatingRollupSuite(t,
+		NewRatingRollupRepository(db.DB), pgRollupSeeder{db: db.DB})
+}
+
 // TestExecutionRatingRepository_PostgresContract — the human verdict on an
 // execution, the same suite the SQLite side runs.
 //

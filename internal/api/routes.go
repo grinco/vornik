@@ -361,7 +361,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// /api/v1/admin/ (that prefix carries the EE admin-gate invariant)
 		// — the handler gates on requireOperatorScope. See LLD 2026-07-07-
 		// cross-project-global-skills-design.
-		mux.HandleFunc("/api/v1/skills/", server.SkillSetGlobal)
+		mux.HandleFunc("/api/v1/skills/", server.apiV1SkillsHandler)
 
 		// Control-plane proposal ledger — operator surface (vornikctl
 		// operator). Human-gated change proposals; Phase 1 is propose/list/

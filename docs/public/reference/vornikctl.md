@@ -1102,6 +1102,28 @@ companion session becomes available to the janka and assistant autonomy
 roles. Promotion does not change a skill's maturity; an approved skill
 stays approved.
 
+## vornikctl knowledge rollup
+
+Show whether a knowledge skill's outputs are rated worse than comparable ones
+
+Compare how operators rated executions this skill was injected into
+against comparable executions in the same project and workflow that it was not.
+
+Reported per (project, workflow), never pooled: a digest and a code review are
+not comparable outputs. Every figure is printed beside its baseline and the
+coverage of both arms — a rating exists only where someone chose to write one,
+so a difference between two differently-watched arms measures who was watching.
+
+Advisory only. Nothing retires a skill on this.
+
+```
+vornikctl knowledge rollup <skill-id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--window-hours` | `0` | Measurement window in hours (0 = the daemon's default of one week) |
+
 ## vornikctl knowledge set-global
 
 Promote a knowledge skill to GLOBAL (injects into ALL projects)

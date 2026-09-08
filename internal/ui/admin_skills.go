@@ -48,9 +48,28 @@ type AdminSkillRow struct {
 	UsageFired     int64
 	UsageWorked    int64
 	UsageCorrected int64
+	// Rating is the human verdict on this skill's output, when a rollup could
+	// be computed. Distinct from the usage counters above, which are the
+	// APPLIED side only — half of a comparison, and the gap the rollup exists
+	// to close. nil when no rollup repo is wired, or when it failed: an
+	// optional advisory column must not take the browser down.
+	Rating *AdminSkillRating
 	// CanApprove/CanReject gate the action buttons by maturity.
 	CanApprove bool
 	CanReject  bool
+}
+
+// AdminSkillRating is the rollup badge for one skill.
+//
+// It carries the ARMS, not only the verdict, because the design refuses an
+// aggregate without its counterfactual on every surface — and a badge is the
+// easiest place to lose one.
+type AdminSkillRating struct {
+	Verdict string
+	// Detail is the per-context line, one entry per (project, workflow),
+	// pre-rendered because a template is the wrong place to decide when a
+	// number may be shown.
+	Detail []string
 }
 
 // AdminSkillTab is one maturity filter link with its live count.
@@ -139,6 +158,7 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 			// no-op-to-show on an already-retired skill.
 			CanApprove: sk.Maturity != persistence.SkillMaturityActive && sk.Maturity != persistence.SkillMaturityTrusted,
 			CanReject:  sk.Maturity != persistence.SkillMaturityRetired,
+			Rating:     s.skillRatingBadge(r.Context(), sk.ID),
 		})
 	}
 	s.render(w, "admin_skills.html", data)

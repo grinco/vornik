@@ -70,6 +70,30 @@
                                     · worked <span class="text-gray-300">{{.UsageWorked}}</span>
                                     · corrected <span class="text-gray-300">{{.UsageCorrected}}</span>
                                 </div>
+                                {{/* Human verdict on this skill's OUTPUT, against comparable
+                                     work it was not injected into. The counters above are the
+                                     applied side only — half of a comparison — which is the
+                                     gap this closes: a skill that "worked" 80% of the time
+                                     looks good until comparable work nobody injected it into
+                                     also worked 80%.
+
+                                     Every line carries both arms and their coverage. The
+                                     difference is rendered server-side ONLY for verdicts that
+                                     stand behind it, so the rule cannot be lost to a template
+                                     edit. Absent when no rollup repo is wired. */}}
+                                {{if .Rating}}
+                                <div class="text-[11px] mt-1">
+                                    <span class="text-gray-500">ratings:</span>
+                                    <span class="{{if eq .Rating.Verdict "low_lift"}}text-rose-400{{else if eq .Rating.Verdict "helping"}}text-emerald-400{{else}}text-gray-400{{end}}">{{.Rating.Verdict}}</span>
+                                    {{if .Rating.Detail}}
+                                    <ul class="mt-0.5 ml-3 list-disc text-gray-500">
+                                        {{range .Rating.Detail}}<li>{{.}}</li>{{end}}
+                                    </ul>
+                                    {{else}}
+                                    <span class="text-gray-600">— not injected into any execution this week, so there is nothing to compare</span>
+                                    {{end}}
+                                </div>
+                                {{end}}
                                 {{/* Full skill document — collapsed to a teaser so the
                                      list stays scannable, expandable so the operator
                                      reads the WHOLE thing before approving (truncated

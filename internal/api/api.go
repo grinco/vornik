@@ -989,9 +989,10 @@ type Server struct {
 	// (skill_propose/search/get/list/approve/reject). Nil-safe: those
 	// tools return "skill store not wired on this daemon" when unset,
 	// so minimal harnesses/tests keep working.
-	skillStore    persistence.SkillRepository
-	execSkillRepo persistence.ExecutionInjectedSkillRepository
-	ratingRepo    persistence.ExecutionRatingRepository
+	skillStore       persistence.SkillRepository
+	execSkillRepo    persistence.ExecutionInjectedSkillRepository
+	ratingRepo       persistence.ExecutionRatingRepository
+	ratingRollupRepo persistence.RatingRollupRepository
 	// skillEmbedder powers the skill_propose dedup preflight (§12.2).
 	// Nil-safe by design: the preflight falls back to its lexical metric
 	// rather than failing, because an embedder outage must never block an
@@ -1575,6 +1576,14 @@ func WithExecutionHintRepository(repo persistence.ExecutionHintRepository) Serve
 func WithExecutionRatingRepository(repo persistence.ExecutionRatingRepository) ServerOption {
 	return func(s *Server) {
 		s.ratingRepo = repo
+	}
+}
+
+// WithRatingRollupRepository wires the rating rollup behind
+// GET /api/v1/skills/{id}/rating-rollup. nil keeps it at 503.
+func WithRatingRollupRepository(repo persistence.RatingRollupRepository) ServerOption {
+	return func(s *Server) {
+		s.ratingRollupRepo = repo
 	}
 }
 

@@ -50,6 +50,7 @@ type Repositories struct {
 	Skills                 persistence.SkillRepository
 	ExecInjectedSkills     persistence.ExecutionInjectedSkillRepository
 	ExecutionRatings       persistence.ExecutionRatingRepository
+	RatingRollup           persistence.RatingRollupRepository
 	Proposals              persistence.ProposalRepository
 	// CostTuningCanaries backs the cost/quality canary + regression
 	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D).
@@ -366,7 +367,7 @@ func openSQLite(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error
 // the connect/migrate/construct function under the funlen budget —
 // no behaviour change.
 func buildSQLiteRepositories(db *sql.DB) *Repositories {
-	return &Repositories{
+	r := &Repositories{
 		Tasks:                          sqlite.NewTaskRepository(db),
 		Executions:                     sqlite.NewExecutionRepository(db),
 		Artifacts:                      sqlite.NewArtifactRepository(db),
@@ -378,6 +379,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		Skills:                         sqlite.NewSkillRepository(db),
 		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
 		ExecutionRatings:               sqlite.NewExecutionRatingRepository(db),
+		RatingRollup:                   sqlite.NewRatingRollupRepository(db),
 		Proposals:                      sqlite.NewProposalRepository(db),
 		CostTuningCanaries:             sqlite.NewCostTuningCanaryRepository(db),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
@@ -415,10 +417,6 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		LLMUsage:                sqlite.NewTaskLLMUsageRepository(db),
 		BudgetReservations:      sqlite.NewBudgetReservationRepository(db),
 		A2APushConfigs:          sqlite.NewA2APushConfigRepository(db),
-		TradingOrders:           sqlite.NewTradingOrderRepository(db),
-		TradingFills:            sqlite.NewTradingFillRepository(db),
-		TradingSafetyEvents:     sqlite.NewTradingSafetyEventRepository(db),
-		TradingSnapshots:        sqlite.NewTradingSnapshotRepository(db),
 		ExtractedDocuments:      sqlite.NewExtractedDocumentRepository(db),
 		Reminders:               sqlite.NewReminderRepository(db),
 		HealingTriggers:         sqlite.NewWorkflowHealingTriggerRepository(db),
@@ -450,6 +448,20 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		// Scratchpads already wired above; TaskScratchpadRepository
 		// is the only remaining piece (see persistence interfaces).
 	}
+	withSQLiteTradingStores(r, db)
+	return r
+}
+
+// withSQLiteTradingStores attaches the trading-domain repositories.
+//
+// Split out for length (funlen), and mirroring withPostgresTradingStores so the
+// two builders keep the same shape — a reader comparing them for backend drift
+// should not have to also account for a structural difference.
+func withSQLiteTradingStores(r *Repositories, db *sql.DB) {
+	r.TradingOrders = sqlite.NewTradingOrderRepository(db)
+	r.TradingFills = sqlite.NewTradingFillRepository(db)
+	r.TradingSafetyEvents = sqlite.NewTradingSafetyEventRepository(db)
+	r.TradingSnapshots = sqlite.NewTradingSnapshotRepository(db)
 }
 
 func openPostgres(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error) {
@@ -499,6 +511,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Skills:                         postgres.NewSkillRepository(dbtx),
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
 		ExecutionRatings:               postgres.NewExecutionRatingRepository(dbtx),
+		RatingRollup:                   postgres.NewRatingRollupRepository(dbtx),
 		Proposals:                      postgres.NewProposalRepository(dbtx),
 		CostTuningCanaries:             postgres.NewCostTuningCanaryRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),

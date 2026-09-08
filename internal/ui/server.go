@@ -204,6 +204,7 @@ type Server struct {
 	taskRepo             persistence.TaskRepository
 	execRepo             persistence.ExecutionRepository
 	ratingRepo           persistence.ExecutionRatingRepository
+	ratingRollupRepo     persistence.RatingRollupRepository
 	executionQualityRepo persistence.ExecutionQualityScoreRepository
 	artifactRepo         persistence.ArtifactRepository
 	// artifactReader (optional) routes blob reads through the
@@ -826,6 +827,15 @@ func WithTaskRepository(repo persistence.TaskRepository) ServerOption {
 func WithExecutionRepository(repo persistence.ExecutionRepository) ServerOption {
 	return func(s *Server) {
 		s.execRepo = repo
+	}
+}
+
+// WithUIRatingRollupRepository wires the rating rollup column on
+// /ui/admin/skills. nil hides the column — an advisory surface that is not
+// wired renders an ordinary skill browser, not a broken one.
+func WithUIRatingRollupRepository(repo persistence.RatingRollupRepository) ServerOption {
+	return func(s *Server) {
+		s.ratingRollupRepo = repo
 	}
 }
 

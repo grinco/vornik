@@ -246,6 +246,8 @@ func (c *Container) initHTTPServer() error {
 		// The rating endpoints under /api/v1/executions/{id}/rating. Without
 		// this they answer 503, which is the honest "not wired" state.
 		api.WithExecutionRatingRepository(c.repos.ExecutionRatings),
+		// GET /api/v1/skills/{id}/rating-rollup — the counterfactual half.
+		api.WithRatingRollupRepository(c.repos.RatingRollup),
 		api.WithProposalStore(c.repos.Proposals),
 		api.WithProposalApplier(c.newProposalApplier()),
 		api.WithDiagnoser(c.newDiagnoser()),
@@ -1539,6 +1541,9 @@ func (c *Container) initHTTPServer() error {
 		// without it, which is the honest "not wired" state rather than a
 		// broken control.
 		ui.WithUIExecutionRatingRepository(c.repos.ExecutionRatings),
+		// The rollup column on /ui/admin/skills, beside the applied-side
+		// counters it exists to complete.
+		ui.WithUIRatingRollupRepository(c.repos.RatingRollup),
 		ui.WithExecutionQualityScoreRepository(c.repos.ExecutionQualityScores),
 		ui.WithArtifactRepository(c.repos.Artifacts),
 		ui.WithTaskCredentialRepository(c.repos.TaskCredentials),

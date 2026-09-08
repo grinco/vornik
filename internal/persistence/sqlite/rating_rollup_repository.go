@@ -24,9 +24,16 @@ func NewRatingRollupRepository(db DBTX) *RatingRollupRepository {
 	return &RatingRollupRepository{db: db}
 }
 
-// SkillRatingArms returns both arms per (project, workflow) context.
+// SkillRatingArms returns both arms per (project, workflow) context, over
+// every body of the skill.
 func (r *RatingRollupRepository) SkillRatingArms(ctx context.Context, skillID string, since time.Time) ([]persistence.SkillRatingArms, error) {
-	rows, err := r.db.QueryContext(ctx, ratingrollupsql.ToQuestionMarks(ratingrollupsql.SkillArms, 2), skillID, sqliteTime(since))
+	return r.SkillRatingArmsForBody(ctx, skillID, "", since)
+}
+
+// SkillRatingArmsForBody scopes the arms to executions that ran ONE body of
+// the skill. An empty bodySHA256 disables the filter.
+func (r *RatingRollupRepository) SkillRatingArmsForBody(ctx context.Context, skillID, bodySHA256 string, since time.Time) ([]persistence.SkillRatingArms, error) {
+	rows, err := r.db.QueryContext(ctx, ratingrollupsql.ToNumberedPlaceholders(ratingrollupsql.SkillArms, 3), skillID, sqliteTime(since), bodySHA256)
 	if err != nil {
 		return nil, err
 	}

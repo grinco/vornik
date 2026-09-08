@@ -49,6 +49,7 @@ type Repositories struct {
 	RecoveryEvents         persistence.RecoveryEventRepository
 	Skills                 persistence.SkillRepository
 	ExecInjectedSkills     persistence.ExecutionInjectedSkillRepository
+	InstinctRatingRollup   persistence.InstinctRatingRollupRepository
 	ExecutionRatings       persistence.ExecutionRatingRepository
 	RatingRollup           persistence.RatingRollupRepository
 	Proposals              persistence.ProposalRepository
@@ -378,6 +379,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db),
 		Skills:                         sqlite.NewSkillRepository(db),
 		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
+		InstinctRatingRollup:           sqlite.NewInstinctRatingRollupRepository(db),
 		ExecutionRatings:               sqlite.NewExecutionRatingRepository(db),
 		RatingRollup:                   sqlite.NewRatingRollupRepository(db),
 		Proposals:                      sqlite.NewProposalRepository(db),
@@ -510,6 +512,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		RecoveryEvents:                 postgres.NewRecoveryEventRepository(dbtx),
 		Skills:                         postgres.NewSkillRepository(dbtx),
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
+		InstinctRatingRollup:           postgres.NewInstinctRatingRollupRepository(dbtx),
 		ExecutionRatings:               postgres.NewExecutionRatingRepository(dbtx),
 		RatingRollup:                   postgres.NewRatingRollupRepository(dbtx),
 		Proposals:                      postgres.NewProposalRepository(dbtx),

@@ -179,6 +179,12 @@ var sqliteAdditiveColumns = []additiveColumn{
 	{"execution_step_outcomes", "prompt_system_hash", `TEXT NOT NULL DEFAULT ''`},
 	{"execution_step_outcomes", "prompt_user_hash", `TEXT NOT NULL DEFAULT ''`},
 	{"execution_step_outcomes", "prompt_tools_hash", `TEXT NOT NULL DEFAULT ''`},
+	// Postgres migration 180 — which BODY of a skill an execution ran with
+	// (LLD 2026-09-08-execution-ratings-approval-paths-design §4). NULLABLE on
+	// purpose: a row written before this has an unknowable body, and a
+	// non-null default would make every historical row look like a match for
+	// whatever body is being approved today.
+	{"execution_injected_skills", "body_sha256", `TEXT`},
 }
 
 // applyAdditiveColumns adds any registered column missing from an existing

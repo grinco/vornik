@@ -56,4 +56,16 @@ type RatingRollupRepository interface {
 	// the baseline may contain other skills, exactly as instinct lift defines
 	// it. Empty slice when the skill was never injected in the window.
 	SkillRatingArms(ctx context.Context, skillID string, since time.Time) ([]SkillRatingArms, error)
+
+	// SkillRatingArmsForBody is SkillRatingArms scoped to the executions that
+	// ran ONE body of the skill, identified by its sha256 (migration 180).
+	//
+	// This is the shape an approval prompt needs: approval binds to a body,
+	// and re-proposing a skill edits it in place under the same id, so the
+	// unscoped arms can describe the body being REPLACED. A row whose
+	// body_sha256 was never recorded satisfies no sha, so historical rows
+	// count as unknown provenance rather than as evidence about the body under
+	// review. An empty bodySHA256 disables the filter and returns the
+	// whole-history view.
+	SkillRatingArmsForBody(ctx context.Context, skillID, bodySHA256 string, since time.Time) ([]SkillRatingArms, error)
 }

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"vornik.io/vornik/internal/ratings"
@@ -47,24 +46,10 @@ func (s *Server) skillRatingBadge(ctx context.Context, skillID string) *AdminSki
 
 // renderRatingContext writes one context's line.
 //
-// The arms always appear. The DIFFERENCE appears only for the verdicts that
-// stand behind it: on not_comparable and unknown the number exists and does not
-// mean what it looks like, and the design's review made the point that
-// operators ignore the badge and quote the number. Deciding that here rather
-// than in the template keeps the rule in one place, testable, and out of reach
-// of a future template edit.
+// Delegates to ratings.RenderContext: the rule about which verdicts may show a
+// difference lives in ONE place (LLD 2026-09-08-execution-ratings-approval-
+// paths-design.md §2.1), because phase 3 adds three more surfaces that need
+// the same rule and the second copy of a safety rule is the one that is wrong.
 func renderRatingContext(c ratings.ContextResult) string {
-	line := fmt.Sprintf("%s / %s — %s: %d/%d up with, %d/%d without (coverage %.0f%% vs %.0f%%)",
-		c.ProjectID, c.WorkflowID, c.Result.Verdict,
-		c.Result.TreatmentUp, c.Result.TreatmentN,
-		c.Result.BaselineUp, c.Result.BaselineN,
-		c.Result.TreatmentCoverage*100, c.Result.BaselineCoverage*100)
-
-	if c.Result.Verdict == ratings.VerdictLowLift || c.Result.Verdict == ratings.VerdictHelping {
-		line += fmt.Sprintf(", %+.0f pp", c.Result.Lift*100)
-	}
-	if n := c.Result.TreatmentContested + c.Result.BaselineContested; n > 0 {
-		line += fmt.Sprintf(", %d contested and excluded", n)
-	}
-	return line
+	return ratings.RenderContext(c)
 }

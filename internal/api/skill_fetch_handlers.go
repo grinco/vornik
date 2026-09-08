@@ -96,7 +96,12 @@ func (s *Server) SkillFetch(w http.ResponseWriter, r *http.Request, projectID st
 				respondError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
 				return
 			}
-			_ = s.execSkillRepo.Record(r.Context(), eid, match.ID)
+			// The BODY is recorded alongside the id (migration 180): approval
+			// binds to a body sha while the rollup joins on skill id, and
+			// re-proposing a skill edits it in place. Without this the ratings
+			// on an edited skill's approval prompt would describe the body
+			// being replaced, with nothing able to say so.
+			_ = s.execSkillRepo.Record(r.Context(), eid, match.ID, match.BodySHA256)
 		}
 	}
 

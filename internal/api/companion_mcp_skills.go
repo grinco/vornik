@@ -11,6 +11,7 @@ import (
 
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/ratings"
 	"vornik.io/vornik/internal/skills"
 )
 
@@ -309,9 +310,19 @@ func (s *Server) companionToolSkillList(ctx context.Context, key *persistence.AP
 	if err != nil {
 		return "", fmt.Errorf("list failed: %w", err)
 	}
-	out := make([]skillSummary, 0, len(skills))
+	out := make([]map[string]any, 0, len(skills))
 	for _, sk := range skills {
-		out = append(out, toSkillSummary(sk))
+		row, merr := skillSummaryMap(toSkillSummary(sk))
+		if merr != nil {
+			return "", merr
+		}
+		// The rollup summary per row. Capped by the caller's own limit, and
+		// best-effort: a nil rollup omits the field rather than failing a
+		// listing an operator uses to approve and retire skills.
+		if line := s.skillRatingLine(ctx, sk); line != "" {
+			row["rating_rollup"] = line
+		}
+		out = append(out, row)
 	}
 	return marshalSkill(map[string]any{"skills": out, "count": len(out)})
 }
@@ -331,13 +342,20 @@ func (s *Server) companionToolSkillGet(ctx context.Context, key *persistence.API
 	if err != nil {
 		return "", err
 	}
-	return marshalSkill(map[string]any{
+	out := map[string]any{
 		"id": skill.ID, "name": skill.Name, "description": skill.Description,
 		"body": skill.Body, "domain": skill.Domain, "tags": skill.Tags,
 		"roles": skill.Roles, "repo_scope": skill.RepoScope,
 		"maturity": skill.Maturity, "version": skill.Version,
 		"is_global": skill.IsGlobal,
-	})
+	}
+	// What the people who saw this skill's output thought of THIS body — the
+	// thing an agent with skill_admin would otherwise approve blind
+	// (LLD 2026-09-08-execution-ratings-approval-paths-design §2.3).
+	if line := s.skillRatingLine(ctx, skill); line != "" {
+		out["rating_rollup"] = line
+	}
+	return marshalSkill(out)
 }
 
 func (s *Server) companionToolSkillApprove(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
@@ -484,4 +502,31 @@ func taskIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// skillRatingLine is the rollup sentence for one skill body.
+//
+// Returns "" only when the rollup is not wired at all. It never returns an
+// empty string for a wired daemon: "no evidence" has its own sentence, because
+// an absent field reports "examined and clean" and means "never examined".
+func (s *Server) skillRatingLine(ctx context.Context, sk *persistence.Skill) string {
+	if s.ratingRollupRepo == nil || s.execSkillRepo == nil || sk == nil {
+		return ""
+	}
+	return ratings.SkillApprovalLine(ctx, s.ratingRollupRepo, s.execSkillRepo, sk.ID, sk.BodySHA256)
+}
+
+// skillSummaryMap re-encodes a skillSummary as a map so the rollup can be
+// added beside it without a second struct that would have to be kept in sync
+// with the first.
+func skillSummaryMap(sum skillSummary) (map[string]any, error) {
+	b, err := json.Marshal(sum)
+	if err != nil {
+		return nil, fmt.Errorf("encode skill summary: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("decode skill summary: %w", err)
+	}
+	return m, nil
 }

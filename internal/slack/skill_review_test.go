@@ -50,3 +50,36 @@ func TestBuildSkillReviewBlocks(t *testing.T) {
 		t.Fatalf("wrong action_ids: %v / %v", actions[0]["action_id"], actions[1]["action_id"])
 	}
 }
+
+// The rollup line on the Slack review card
+// (LLD 2026-09-08-execution-ratings-approval-paths-design §2.3).
+func TestSkillReviewBlocksCarryTheRatingLine(t *testing.T) {
+	blocks := BuildSkillReviewBlocks([]SkillReviewDraft{{
+		ID: "s1", Name: "n", Description: "d",
+		RatingLine: "never injected in this window — no rating evidence",
+	}})
+	var found bool
+	for _, b := range blocks {
+		if b["type"] != "context" {
+			continue
+		}
+		els, _ := b["elements"].([]map[string]any)
+		for _, e := range els {
+			if txt, _ := e["text"].(string); strings.Contains(txt, "never injected in this window") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the review blocks must carry the rollup line in a context block")
+	}
+
+	// Nothing wired: no empty context block, which would read as a rendered
+	// verdict that said nothing.
+	plain := BuildSkillReviewBlocks([]SkillReviewDraft{{ID: "s1", Name: "n", Description: "d"}})
+	for _, b := range plain {
+		if b["type"] == "context" {
+			t.Error("with no rating line there must be no context block at all")
+		}
+	}
+}

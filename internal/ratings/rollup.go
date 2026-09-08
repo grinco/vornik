@@ -109,6 +109,13 @@ func DefaultConfig() Config {
 // Result is one rollup row.
 type Result struct {
 	Verdict string
+	// Cause explains a verdict that carries no number. Meaningful only for
+	// VerdictNotMeasurable, where four different facts share one verdict and
+	// imply four different operator actions (see render.go). Evaluate never
+	// sets it: Evaluate is only reached once there IS an attribution surface
+	// to measure, so every cause is a property of the caller's subject rather
+	// than of the arms.
+	Cause Cause
 	// Lift is upRate(treatment) − upRate(baseline). NEGATIVE means worse under
 	// treatment — instinct lift's sign convention, kept so the two surfaces
 	// compute the same thing the same way.

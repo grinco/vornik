@@ -13,7 +13,10 @@ import (
 // execution_ratings together, which no single repository owns.
 type RatingRollupSeeder interface {
 	SeedExecution(ctx context.Context, id, projectID, workflowID string, createdAt time.Time) error
-	SeedInjectedSkill(ctx context.Context, executionID, skillID string) error
+	// SeedInjectedSkill records an injection. An empty bodySHA256 must land as
+	// NULL, so the suite can assert the pre-migration-180 row behaves as
+	// unknown provenance rather than as a match.
+	SeedInjectedSkill(ctx context.Context, executionID, skillID, bodySHA256 string) error
 	SeedRating(ctx context.Context, executionID, raterID, verdict string) error
 }
 
@@ -71,7 +74,7 @@ func ratingRollupTreatmentAndBaseline(ctx context.Context, t *testing.T,
 	mustSeedExec(ctx, t, seed, "exec-rr-other", proj, "review", now)
 
 	for _, id := range []string{"exec-rr-t1", "exec-rr-t2", "exec-rr-other"} {
-		if err := seed.SeedInjectedSkill(ctx, id, skill); err != nil {
+		if err := seed.SeedInjectedSkill(ctx, id, skill, ""); err != nil {
 			t.Fatalf("seed injected skill %s: %v", id, err)
 		}
 	}
@@ -103,7 +106,7 @@ func ratingRollupAgreeingRatersCountOnce(ctx context.Context, t *testing.T,
 	)
 	mustSeedExec(ctx, t, seed, "exec-rr-twice", proj, wf, now)
 	mustSeedExec(ctx, t, seed, "exec-rr-base-b", proj, wf, now)
-	if err := seed.SeedInjectedSkill(ctx, "exec-rr-twice", skill); err != nil {
+	if err := seed.SeedInjectedSkill(ctx, "exec-rr-twice", skill, ""); err != nil {
 		t.Fatalf("seed injected skill: %v", err)
 	}
 	// Two operators, same verdict. One execution.
@@ -133,7 +136,7 @@ func ratingRollupDisagreementIsContested(ctx context.Context, t *testing.T,
 	)
 	mustSeedExec(ctx, t, seed, "exec-rr-split", proj, wf, now)
 	mustSeedExec(ctx, t, seed, "exec-rr-base-c", proj, wf, now)
-	if err := seed.SeedInjectedSkill(ctx, "exec-rr-split", skill); err != nil {
+	if err := seed.SeedInjectedSkill(ctx, "exec-rr-split", skill, ""); err != nil {
 		t.Fatalf("seed injected skill: %v", err)
 	}
 	mustSeedRating(ctx, t, seed, "exec-rr-split", "op-a", "up")

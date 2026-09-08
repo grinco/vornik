@@ -26,11 +26,15 @@ func (s sqliteRollupSeeder) SeedExecution(ctx context.Context, id, projectID, wo
 	return err
 }
 
-func (s sqliteRollupSeeder) SeedInjectedSkill(ctx context.Context, executionID, skillID string) error {
+func (s sqliteRollupSeeder) SeedInjectedSkill(ctx context.Context, executionID, skillID, bodySHA256 string) error {
+	var sha any
+	if bodySHA256 != "" {
+		sha = bodySHA256
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO execution_injected_skills (execution_id, skill_id, injected_at)
-		 VALUES (?, ?, ?)`,
-		executionID, skillID, time.Now().UTC().Format(time.RFC3339Nano))
+		`INSERT OR IGNORE INTO execution_injected_skills (execution_id, skill_id, injected_at, body_sha256)
+		 VALUES (?, ?, ?, ?)`,
+		executionID, skillID, time.Now().UTC().Format(time.RFC3339Nano), sha)
 	return err
 }
 
@@ -50,6 +54,16 @@ func TestRatingRollupRepository_SQLite(t *testing.T) {
 	seeder := sqliteRollupSeeder{db: db}
 	repotest.RunRatingRollupSuite(t,
 		persistence.RatingRollupRepository(sqlite.NewRatingRollupRepository(db)),
+		seedWithTasks{seeder, db})
+}
+
+// The SQLite half of the body-provenance contract (migration 180). The
+// Postgres half runs the identical suite under -tags=integration.
+func TestSkillInjectionProvenance_SQLite(t *testing.T) {
+	db := newTestDB(t)
+	seeder := sqliteRollupSeeder{db: db}
+	repotest.RunSkillInjectionProvenanceSuite(t,
+		sqlite.NewExecutionInjectedSkillRepository(db.DB),
 		seedWithTasks{seeder, db})
 }
 

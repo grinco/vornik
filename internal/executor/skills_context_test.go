@@ -218,7 +218,7 @@ func TestCreditSkillsWorked(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := execSkillRepo.Record(ctx, "exec-1", "s1"); err != nil {
+	if err := execSkillRepo.Record(ctx, "exec-1", "s1", ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	e := &Executor{

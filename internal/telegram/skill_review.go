@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/ratings"
 	"vornik.io/vornik/internal/skills"
 )
 
@@ -82,7 +83,15 @@ func (b *Bot) handleSkillCallback(ctx context.Context, callbackID string, userID
 // the given drafts (already capped by the caller). Buttons whose
 // callback data would exceed Telegram's limit are silently dropped from
 // the keyboard (the skill still shows in the text).
-func buildSkillReviewDigest(drafts []*persistence.Skill) (string, InlineKeyboardMarkup) {
+// buildSkillReviewDigest renders the review card.
+//
+// ratingLines maps skill id → what the ratings rollup says about the body
+// being approved (LLD 2026-09-08-execution-ratings-approval-paths-design
+// §2.3). A missing entry renders no line, which happens only when the caller
+// has no rollup wired: "no evidence" has its own sentence and arrives as a
+// value, because a blank reports "examined and clean" and means "never
+// examined".
+func buildSkillReviewDigest(drafts []*persistence.Skill, ratingLines map[string]string) (string, InlineKeyboardMarkup) {
 	var text strings.Builder
 	fmt.Fprintf(&text, "🧠 %d skill(s) awaiting your review:\n", len(drafts))
 	var buttons []Button
@@ -92,6 +101,9 @@ func buildSkillReviewDigest(drafts []*persistence.Skill) (string, InlineKeyboard
 			// Blast-radius label: an approved global skill fires in every
 			// project, so the approver must see the scope before deciding.
 			text.WriteString("\n   ⚠ GLOBAL — affects ALL projects once approved")
+		}
+		if line := ratingLines[s.ID]; line != "" {
+			fmt.Fprintf(&text, "\n   📊 %s", line)
 		}
 		if approve, err := EncodeCallback("skill", "approve", s.ID); err == nil {
 			buttons = append(buttons, Button{Text: fmt.Sprintf("✅ %d", i+1), Data: approve})
@@ -121,7 +133,7 @@ func (b *Bot) sendSkillReviewDigest(ctx context.Context) {
 	if len(b.skillDigestSeen.freshOnly(ids)) == 0 {
 		return // nothing new since last digest
 	}
-	text, markup := buildSkillReviewDigest(drafts)
+	text, markup := buildSkillReviewDigest(drafts, b.skillRatingLines(ctx, drafts))
 	for chatID, ua := range b.config.AllowedUsers {
 		if !ua.Allowed {
 			continue
@@ -130,4 +142,21 @@ func (b *Bot) sendSkillReviewDigest(ctx context.Context) {
 			b.logger.Warn().Err(err).Int64("chat_id", chatID).Msg("skill review: digest send failed")
 		}
 	}
+}
+
+// skillRatingLines composes the rollup line for each draft on the card.
+//
+// One call per draft, and the digest is capped at skillReviewDigestCap, so the
+// cost is bounded. Best-effort throughout: SkillApprovalLine never returns an
+// empty string for a wired repository, so a draft either gets a real sentence
+// or the card omits the line entirely because nothing is wired.
+func (b *Bot) skillRatingLines(ctx context.Context, drafts []*persistence.Skill) map[string]string {
+	if b.ratingArms == nil || b.ratingProvenance == nil {
+		return nil
+	}
+	out := make(map[string]string, len(drafts))
+	for _, s := range drafts {
+		out[s.ID] = ratings.SkillApprovalLine(ctx, b.ratingArms, b.ratingProvenance, s.ID, s.BodySHA256)
+	}
+	return out
 }

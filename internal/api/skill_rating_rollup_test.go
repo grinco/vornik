@@ -14,10 +14,20 @@ import (
 type stubArmRepo struct {
 	rows  []persistence.SkillRatingArms
 	since time.Time
+	sha   string
 }
 
 func (s *stubArmRepo) SkillRatingArms(_ context.Context, _ string, since time.Time) ([]persistence.SkillRatingArms, error) {
 	s.since = since
+	return s.rows, nil
+}
+
+// The body-scoped variant (migration 180). This endpoint serves the
+// whole-history view, so it never passes a sha; the stub records what it was
+// given so a future caller that starts scoping cannot do so unnoticed.
+func (s *stubArmRepo) SkillRatingArmsForBody(_ context.Context, _, sha string, since time.Time) ([]persistence.SkillRatingArms, error) {
+	s.since = since
+	s.sha = sha
 	return s.rows, nil
 }
 

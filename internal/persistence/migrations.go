@@ -7701,4 +7701,34 @@ DROP INDEX IF EXISTS idx_execution_ratings_created;
 DROP TABLE IF EXISTS execution_ratings;
 `,
 	},
+	{
+		Version: 180,
+		Name:    "execution_injected_skills_body_sha256",
+		// Which BODY of a skill an execution actually ran with
+		// (2026-09-08-execution-ratings-approval-paths-design.md §4).
+		//
+		// skill_approve binds an operator's decision to a body_sha256, while
+		// the ratings rollup joins on skill_id — and re-proposing a skill edits
+		// it in place, keeping the id and bumping the version. So on the one
+		// decision the rollup exists to inform, re-approving an EDITED skill,
+		// the ratings on offer described the body being replaced and nothing in
+		// the data could say so.
+		//
+		// NULLABLE with no backfill, deliberately. A row written before this
+		// migration has an unknowable body, and inventing one — defaulting to
+		// the skill's current sha — would make every historical row look like a
+		// match for whatever is being approved today. Unknown provenance must
+		// stay distinguishable from known-matching provenance, so the arm query
+		// counts a NULL as unknown rather than as a hit.
+		Up: `
+ALTER TABLE execution_injected_skills ADD COLUMN IF NOT EXISTS body_sha256 TEXT;
+CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill_sha
+    ON execution_injected_skills (skill_id, body_sha256);
+COMMENT ON COLUMN execution_injected_skills.body_sha256 IS 'sha256 of the skill body actually injected. NULL for rows predating migration 180: unknowable, never assumed to match.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_exec_injected_skills_skill_sha;
+ALTER TABLE execution_injected_skills DROP COLUMN IF EXISTS body_sha256;
+`,
+	},
 }

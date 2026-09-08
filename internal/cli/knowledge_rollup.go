@@ -9,6 +9,8 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
+
+	"vornik.io/vornik/internal/ratings"
 )
 
 // `vornikctl knowledge rollup` — did this skill make things worse?
@@ -101,49 +103,23 @@ func runKnowledgeRollup(out io.Writer, skillID string, windowHours int) error {
 		// arm is the easiest place to reintroduce it.
 		_, _ = fmt.Fprintf(out, "    with this skill:    %d/%d rated up   (coverage %.0f%%%s)\n",
 			c.Treatment.UpN, c.Treatment.RatedN, c.Treatment.Coverage*100,
-			contestedNote(c.Treatment.ContestedN))
+			ratings.ContestedNote(c.Treatment.ContestedN))
 		_, _ = fmt.Fprintf(out, "    without it:         %d/%d rated up   (coverage %.0f%%%s)\n",
 			c.Baseline.UpN, c.Baseline.RatedN, c.Baseline.Coverage*100,
-			contestedNote(c.Baseline.ContestedN))
+			ratings.ContestedNote(c.Baseline.ContestedN))
 		// The difference is printed ONLY for verdicts that earned it. On
 		// not_comparable and unknown the number exists and does not mean what
 		// it looks like, and the review of this design made the point exactly:
 		// "operators will ignore the badge and quote the number". Refusing to
 		// print it is the same move the verdict itself makes.
-		if c.Verdict == "low_lift" || c.Verdict == "helping" {
+		if ratings.ShowsDifference(c.Verdict) {
 			_, _ = fmt.Fprintf(out, "    difference:         %+.0f percentage points\n", c.Lift*100)
 		}
-		if note := verdictNote(c.Verdict); note != "" {
+		if note := ratings.VerdictSentence(c.Verdict, ratings.CauseNone); note != "" {
 			_, _ = fmt.Fprintf(out, "    %s\n", note)
 		}
 	}
 	return nil
-}
-
-// contestedNote surfaces excluded executions rather than letting them vanish.
-func contestedNote(n int) string {
-	if n == 0 {
-		return ""
-	}
-	return fmt.Sprintf(", %d contested and excluded", n)
-}
-
-// verdictNote says what a verdict means in the terms an operator acts on.
-// `helping` gets the weakest wording it can: with this signal the ceiling is
-// silence, so it can only ever mean nothing wrong was detected.
-func verdictNote(verdict string) string {
-	switch verdict {
-	case "not_comparable":
-		return "the two groups were watched at very different rates, so this " +
-			"comparison would measure attention rather than quality"
-	case "unknown":
-		return "too few ratings in this context to say anything"
-	case "low_lift":
-		return "rated materially worse than comparable work — worth a look"
-	case "helping":
-		return "no sign it is hurting (this cannot show a benefit, only the absence of harm)"
-	}
-	return ""
 }
 
 func init() {

@@ -2,6 +2,9 @@ package postgres
 
 import (
 	"context"
+	"time"
+
+	"vornik.io/vornik/internal/persistence"
 )
 
 // ExecutionInjectedSkillRepository is the PostgreSQL implementation of
@@ -17,14 +20,44 @@ func NewExecutionInjectedSkillRepository(db DBTX) *ExecutionInjectedSkillReposit
 }
 
 // Record inserts one association; ON CONFLICT keeps it idempotent.
-func (r *ExecutionInjectedSkillRepository) Record(ctx context.Context, executionID, skillID string) error {
+//
+// An empty bodySHA256 lands as NULL rather than as the empty string, so
+// "we never recorded which body ran" stays distinguishable from any real
+// sha in the arm queries (migration 180).
+func (r *ExecutionInjectedSkillRepository) Record(ctx context.Context, executionID, skillID, bodySHA256 string) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO execution_injected_skills (execution_id, skill_id)
-		VALUES ($1, $2)
+		INSERT INTO execution_injected_skills (execution_id, skill_id, body_sha256)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (execution_id, skill_id) DO NOTHING`,
-		executionID, skillID,
+		executionID, skillID, pgNullStr(bodySHA256),
 	)
 	return mapDBError(err)
+}
+
+// SkillInjectionProvenance splits this skill's injections by body.
+//
+// The join to executions is what applies the window: the association row
+// carries an injected_at, but the rollup's window is over execution
+// created_at, and two different clocks over the same window is how the
+// provenance counts and the arms come to describe different sets of runs.
+func (r *ExecutionInjectedSkillRepository) SkillInjectionProvenance(
+	ctx context.Context, skillID, bodySHA256 string, since time.Time,
+) (persistence.InjectionProvenance, error) {
+	var out persistence.InjectionProvenance
+	err := r.db.QueryRowContext(ctx, `
+		SELECT
+		  COALESCE(SUM(CASE WHEN i.body_sha256 = $2 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN i.body_sha256 IS NOT NULL AND i.body_sha256 <> $2 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN i.body_sha256 IS NULL THEN 1 ELSE 0 END), 0)
+		  FROM execution_injected_skills i
+		  JOIN executions e ON e.id = i.execution_id
+		 WHERE i.skill_id = $1 AND e.created_at >= $3`,
+		skillID, bodySHA256, since,
+	).Scan(&out.MatchingN, &out.OtherBodyN, &out.UnknownBodyN)
+	if err != nil {
+		return persistence.InjectionProvenance{}, mapDBError(err)
+	}
+	return out, nil
 }
 
 // ListByExecution returns the skill IDs injected into an execution.

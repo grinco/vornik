@@ -19,10 +19,10 @@ func RunExecutionInjectedSkillSuite(t *testing.T, repo persistence.ExecutionInje
 	ctx := context.Background()
 
 	t.Run("Record_then_ListByExecution_round_trips", func(t *testing.T) {
-		if err := repo.Record(ctx, "exec-1", "skill-a"); err != nil {
+		if err := repo.Record(ctx, "exec-1", "skill-a", ""); err != nil {
 			t.Fatalf("Record a: %v", err)
 		}
-		if err := repo.Record(ctx, "exec-1", "skill-b"); err != nil {
+		if err := repo.Record(ctx, "exec-1", "skill-b", ""); err != nil {
 			t.Fatalf("Record b: %v", err)
 		}
 		got, err := repo.ListByExecution(ctx, "exec-1")
@@ -42,10 +42,10 @@ func RunExecutionInjectedSkillSuite(t *testing.T, repo persistence.ExecutionInje
 	})
 
 	t.Run("Record_is_idempotent_on_duplicate_pair", func(t *testing.T) {
-		if err := repo.Record(ctx, "exec-2", "skill-x"); err != nil {
+		if err := repo.Record(ctx, "exec-2", "skill-x", ""); err != nil {
 			t.Fatalf("Record 1: %v", err)
 		}
-		if err := repo.Record(ctx, "exec-2", "skill-x"); err != nil {
+		if err := repo.Record(ctx, "exec-2", "skill-x", ""); err != nil {
 			t.Fatalf("Record 2 (idempotent): %v", err)
 		}
 		got, _ := repo.ListByExecution(ctx, "exec-2")
@@ -65,10 +65,10 @@ func RunExecutionInjectedSkillSuite(t *testing.T, repo persistence.ExecutionInje
 	})
 
 	t.Run("distinct_executions_are_isolated", func(t *testing.T) {
-		if err := repo.Record(ctx, "exec-3a", "skill-only-3a"); err != nil {
+		if err := repo.Record(ctx, "exec-3a", "skill-only-3a", ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
-		if err := repo.Record(ctx, "exec-3b", "skill-only-3b"); err != nil {
+		if err := repo.Record(ctx, "exec-3b", "skill-only-3b", ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 		got, _ := repo.ListByExecution(ctx, "exec-3a")

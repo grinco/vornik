@@ -25,6 +25,15 @@ type SkillReviewDraft struct {
 	ID          string
 	Name        string
 	Description string
+	// RatingLine is what the ratings rollup says about the body being
+	// approved (LLD 2026-09-08-execution-ratings-approval-paths-design §2.3).
+	// Composed by the caller, which holds the repositories; rendered verbatim
+	// here so no surface decides for itself what a verdict means.
+	//
+	// Empty only when the caller has no rollup wired at all. It is NOT a
+	// stand-in for "no evidence" — that has its own sentence, because a blank
+	// reports "examined and clean" and means "never examined".
+	RatingLine string
 }
 
 // BuildSkillReviewBlocks renders a Block Kit message: a header + one
@@ -42,7 +51,16 @@ func BuildSkillReviewBlocks(drafts []SkillReviewDraft) []map[string]any {
 			map[string]any{
 				"type": "section",
 				"text": map[string]any{"type": "mrkdwn", "text": "*" + slackEscape(d.Name) + "* — " + slackEscape(d.Description)},
-			},
+			})
+		if d.RatingLine != "" {
+			blocks = append(blocks, map[string]any{
+				"type": "context",
+				"elements": []map[string]any{
+					{"type": "mrkdwn", "text": "📊 " + slackEscape(d.RatingLine)},
+				},
+			})
+		}
+		blocks = append(blocks,
 			map[string]any{
 				"type": "actions",
 				"elements": []map[string]any{

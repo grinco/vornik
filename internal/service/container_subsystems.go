@@ -550,6 +550,7 @@ func (c *Container) initTelegram() error {
 		telegram.WithLogger(c.Logger),
 		telegram.WithTaskRepository(c.repos.Tasks),
 		telegram.WithSkillRepository(c.repos.Skills),
+		telegram.WithSkillRatingRollup(c.repos.RatingRollup, c.repos.ExecInjectedSkills),
 		telegram.WithExecutionRepository(c.repos.Executions),
 		telegram.WithArtifactRepository(c.repos.Artifacts),
 		telegram.WithTaskCredentialRepository(c.repos.TaskCredentials),

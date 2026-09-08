@@ -402,10 +402,14 @@ func (s pgRollupSeeder) SeedExecution(ctx context.Context, id, projectID, workfl
 	return err
 }
 
-func (s pgRollupSeeder) SeedInjectedSkill(ctx context.Context, executionID, skillID string) error {
+func (s pgRollupSeeder) SeedInjectedSkill(ctx context.Context, executionID, skillID, bodySHA256 string) error {
+	var sha any
+	if bodySHA256 != "" {
+		sha = bodySHA256
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO execution_injected_skills (execution_id, skill_id)
-		VALUES ($1, $2) ON CONFLICT DO NOTHING`, executionID, skillID)
+		INSERT INTO execution_injected_skills (execution_id, skill_id, body_sha256)
+		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, executionID, skillID, sha)
 	return err
 }
 
@@ -426,6 +430,74 @@ func TestRatingRollupRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunRatingRollupSuite(t,
 		NewRatingRollupRepository(db.DB), pgRollupSeeder{db: db.DB})
+}
+
+// TestSkillInjectionProvenance_PostgresContract — the body-provenance split
+// (migration 180), the same suite the SQLite side runs. The NULL row is the
+// reason it runs on both: the two backends write "no recorded body"
+// differently, and a row counted as a match on one of them would put ratings
+// of a replaced body behind an approval prompt.
+// TestInstinctRatingRollupRepository_PostgresContract — the REPORTED half of
+// instinct lift, the same suite the SQLite side runs. The per-execution grain
+// collapse is the part worth running on both: the query is shared text, but
+// only a real database proves the SUM/CASE behaves identically under each
+// planner, and a divergence would put a miscounted human signal beside a
+// retire proposal.
+func TestInstinctRatingRollupRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunInstinctRatingRollupSuite(t,
+		NewInstinctRatingRollupRepository(db.DB), pgInstinctRollupSeeder{db: db.DB, seen: map[string]bool{}})
+}
+
+type pgInstinctRollupSeeder struct {
+	db   DBTX
+	seen map[string]bool
+}
+
+func (s pgInstinctRollupSeeder) SeedStepOutcome(ctx context.Context,
+	executionID, stepID, projectID, role, errorClass, outcome string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_step_outcomes
+		  (id, project_id, task_id, execution_id, step_id, role, outcome, error_class, recorded_at)
+		VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+		executionID+"/"+stepID, projectID, executionID, stepID, role, outcome, errorClass, at.UTC())
+	return err
+}
+
+func (s pgInstinctRollupSeeder) SeedInstinctApplication(ctx context.Context,
+	instinctID, executionID, stepID, result string, at time.Time) error {
+	if !s.seen[instinctID] {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO instincts
+			  (id, scope, project_id, domain, trigger_key, action, status,
+			   created_at, updated_at, last_seen_at)
+			VALUES ($1, 'project', 'proj-inst', 'recovery', $2, 'retry', 'active', now(), now(), now())
+			ON CONFLICT DO NOTHING`, instinctID, "trigger-"+instinctID); err != nil {
+			return err
+		}
+		s.seen[instinctID] = true
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO instinct_applications
+		  (id, instinct_id, task_id, surface, result, applied_at, execution_id, step_id)
+		VALUES ($1, $2, '', 'lead_recovery', $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+		instinctID+"/"+executionID+"/"+stepID, instinctID, result, at.UTC(), executionID, stepID)
+	return err
+}
+
+func (s pgInstinctRollupSeeder) SeedRating(ctx context.Context, executionID, raterID, verdict string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_ratings (execution_id, rater_id, verdict)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (execution_id, rater_id) DO UPDATE SET verdict = EXCLUDED.verdict`,
+		executionID, raterID, verdict)
+	return err
+}
+
+func TestSkillInjectionProvenance_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunSkillInjectionProvenanceSuite(t,
+		NewExecutionInjectedSkillRepository(db.DB), pgRollupSeeder{db: db.DB})
 }
 
 // TestExecutionRatingRepository_PostgresContract — the human verdict on an

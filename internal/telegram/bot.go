@@ -483,6 +483,12 @@ type Bot struct {
 	// loop §approval). Nil disables skill approve/reject callbacks +
 	// the review digest.
 	skillRepo persistence.SkillRepository
+	// ratingArms / ratingProvenance back the rollup line on the review
+	// card (LLD 2026-09-08-execution-ratings-approval-paths-design §2.3).
+	// Either being nil renders the card without the line, which is what a
+	// deployment with no rollup wired sees.
+	ratingArms       persistence.RatingRollupRepository
+	ratingProvenance persistence.ExecutionInjectedSkillRepository
 	// skillDigestSeen dedupes the periodic review digest so each draft
 	// is surfaced once, not re-pinged every tick.
 	skillDigestSeen  notifiedSkillDrafts
@@ -588,6 +594,17 @@ func WithHTTPClient(hc *http.Client) BotOption {
 func WithSkillRepository(repo persistence.SkillRepository) BotOption {
 	return func(b *Bot) {
 		b.skillRepo = repo
+	}
+}
+
+// WithSkillRatingRollup wires the ratings rollup so the review card can say
+// what the people who saw this skill's output thought of it. Nil-safe: without
+// it the card renders exactly as it did before phase 3.
+func WithSkillRatingRollup(arms persistence.RatingRollupRepository,
+	prov persistence.ExecutionInjectedSkillRepository) BotOption {
+	return func(b *Bot) {
+		b.ratingArms = arms
+		b.ratingProvenance = prov
 	}
 }
 

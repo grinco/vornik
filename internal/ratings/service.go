@@ -33,6 +33,10 @@ type SkillRollupResult struct {
 	Contexts []ContextResult
 	// Summary is the WORST verdict across the contexts — see summarise.
 	Summary string
+	// Cause explains a not_measurable Summary. Empty whenever the summary
+	// stands on measured arms: a verdict with evidence behind it has nothing
+	// to explain (see body_rollup.go).
+	Cause Cause
 }
 
 // SkillRollup measures one skill over one window.

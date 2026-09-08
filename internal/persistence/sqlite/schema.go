@@ -1531,14 +1531,22 @@ CREATE INDEX IF NOT EXISTS idx_cost_tuning_canaries_swarm_role
 -- credit a "worked" signal. Postgres parity: migration 115.
 -- injected_at is write-only provenance (never ordered cross-backend).
 -- ============================================================
+-- body_sha256: WHICH body of the skill this execution ran with.
+-- Nullable, no backfill — a row predating Postgres migration 180 has
+-- an unknowable body, and the arm query counts a NULL as unknown
+-- provenance rather than as a match for the body being approved
+-- (LLD 2026-09-08-execution-ratings-approval-paths-design §4).
 CREATE TABLE IF NOT EXISTS execution_injected_skills (
     execution_id TEXT NOT NULL,
     skill_id     TEXT NOT NULL,
     injected_at  TEXT NOT NULL,
+    body_sha256  TEXT,
     PRIMARY KEY (execution_id, skill_id)
 );
 CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill
     ON execution_injected_skills (skill_id);
+CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill_sha
+    ON execution_injected_skills (skill_id, body_sha256);
 
 -- ============================================================
 -- execution_ratings — the human up/down verdict on what an

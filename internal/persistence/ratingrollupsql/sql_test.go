@@ -15,11 +15,29 @@ func TestToQuestionMarks_RewritesHighestFirst(t *testing.T) {
 }
 
 func TestToQuestionMarks_LeavesTheQueryOtherwiseIntact(t *testing.T) {
-	got := ToQuestionMarks(SkillArms, 2)
+	got := ToNumberedPlaceholders(SkillArms, 3)
 	if strings.Contains(got, "$") {
 		t.Error("a $N placeholder survived the rewrite")
 	}
 	if !strings.Contains(got, "execution_injected_skills") {
 		t.Error("the rewrite damaged the query body")
+	}
+}
+
+// SkillArms references its sha filter twice, so it must be rewritten with
+// NUMBERED placeholders: the positional form would turn one argument into two
+// and shift every later parameter, which is how this first failed.
+func TestSkillArmsNeedsNumberedPlaceholders(t *testing.T) {
+	if strings.Count(SkillArms, "$3") != 2 {
+		t.Fatal("SkillArms no longer references $3 twice; re-check whether the " +
+			"numbered rewrite is still required")
+	}
+	got := ToNumberedPlaceholders(SkillArms, 3)
+	if strings.Count(got, "?3") != 2 {
+		t.Error("both references to the sha filter must survive as ?3, so one " +
+			"argument serves both")
+	}
+	if strings.Contains(got, "$") {
+		t.Error("a $N placeholder survived the rewrite")
 	}
 }

@@ -746,7 +746,10 @@ func (c *Container) initScheduler() error {
 		}
 		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure).WithReviewState(forgeReviewState))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver).WithReviewState(forgeReviewState))
-		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")
+		if c.repos != nil && c.repos.ForgeCIOutcomes != nil {
+			sysHandlers.Register(forgeh.NewFetchCIHandler(c.repos.ForgeCIOutcomes))
+		}
+		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff, forge.fetch_ci)")
 		// Boot-time push-permission check for every forge-configured project
 		// (channel + generic-webhook paths). Non-blocking: a network probe per
 		// project shouldn't gate daemon start.

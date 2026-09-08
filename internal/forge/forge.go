@@ -60,6 +60,10 @@ type ForgeJob struct {
 	// baseline. Set by the explicit "full review" command.
 	FullReview bool `json:"full_review,omitempty"`
 
+	// CI carries a completed CI run, set only on a ci_run.completed job
+	// (2026-09-08-forge-ci-outcomes-design.md §3). Nil on every other kind.
+	CI *CIRef `json:"ci,omitempty"`
+
 	// OnDemand marks a job a HUMAN explicitly asked for rather than one an
 	// event produced. Never paused away and never coalesced away: asking a
 	// second time is asking for a fresh answer.

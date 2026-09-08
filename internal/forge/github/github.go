@@ -128,23 +128,7 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 	if pl.Repository.FullName == "" {
 		return forge.ForgeJob{}, false
 	}
-	event := strings.TrimSpace(h.Get("X-GitHub-Event"))
-	if event == "" {
-		// Header-less path (e.g. a relay-forwarded body): infer the event type
-		// from the payload shape. A pull_request object means a PR event; an
-		// issue object means an issues event.
-		switch {
-		case pl.Comment != nil && pl.Issue != nil:
-			// Ordered BEFORE the issue arm: an issue_comment payload carries
-			// both an issue and a comment, and testing `Issue != nil` first
-			// would classify every comment as an issues event.
-			event = "issue_comment"
-		case pl.PullRequest != nil:
-			event = "pull_request"
-		case pl.Issue != nil:
-			event = "issues"
-		}
-	}
+	event := resolveEventType(h, pl)
 	job := forge.ForgeJob{
 		Provider:      forge.ProviderGitHub,
 		Repo:          pl.Repository.FullName,
@@ -165,6 +149,8 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		job.Body = pl.Issue.Body
 		job.IsChangeRequest = false
 		return job, true
+	case "workflow_run":
+		return classifyWorkflowRun(pl, job)
 	case "pull_request":
 		if pl.PullRequest == nil || !isReviewAction(pl.Action) {
 			return forge.ForgeJob{}, false
@@ -532,6 +518,20 @@ type ghEventPayload struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
 	} `json:"pull_request,omitempty"`
+	// WorkflowRun is populated on workflow_run. pull_requests is EMPTY for a
+	// fork PR — GitHub's documented behaviour — so Number falls back to 0 and
+	// only the PR-scoped paths skip the run (design §3.3).
+	WorkflowRun *struct {
+		ID           int64  `json:"id"`
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		HeadSHA      string `json:"head_sha"`
+		Conclusion   string `json:"conclusion"`
+		Status       string `json:"status"`
+		PullRequests []struct {
+			Number int `json:"number"`
+		} `json:"pull_requests"`
+	} `json:"workflow_run,omitempty"`
 	// Comment is populated on issue_comment. A comment on a PR thread is how a
 	// human asks for a review on demand.
 	Comment *struct {
@@ -585,4 +585,61 @@ func (p *Provider) mentionHandle() string {
 		return forgereview.DefaultHandle
 	}
 	return p.mention
+}
+
+// classifyWorkflowRun is the workflow_run arm of ClassifyEvent, lifted out to
+// keep that switch readable as the vocabulary grows.
+//
+// Only a COMPLETED run is actionable: `requested` and `in_progress` are acked
+// and dropped like every other non-actionable delivery, because there is no
+// outcome to record until the run finishes.
+func classifyWorkflowRun(pl ghEventPayload, job forge.ForgeJob) (forge.ForgeJob, bool) {
+	if pl.WorkflowRun == nil || pl.Action != "completed" {
+		return forge.ForgeJob{}, false
+	}
+	job.Action = "completed"
+	// NOT a change request, even when the run belongs to a pull request. The
+	// forge handlers read IsChangeRequest to decide whether they are looking at
+	// a PR, and a CI run that claimed to be one would reach fetch_diff and
+	// post_review as though it were.
+	job.IsChangeRequest = false
+	job.HeadSHA = pl.WorkflowRun.HeadSHA
+	// EMPTY FOR A FORK PR — GitHub's documented behaviour. Number stays 0, the
+	// run is still classified, and only the PR-scoped paths skip it (§3.3).
+	if len(pl.WorkflowRun.PullRequests) > 0 {
+		job.Number = pl.WorkflowRun.PullRequests[0].Number
+	}
+	job.CI = &forge.CIRef{
+		RunID:        pl.WorkflowRun.ID,
+		HeadSHA:      pl.WorkflowRun.HeadSHA,
+		Conclusion:   pl.WorkflowRun.Conclusion,
+		WorkflowName: pl.WorkflowRun.Name,
+		WorkflowPath: pl.WorkflowRun.Path,
+	}
+	return job, true
+}
+
+// resolveEventType reads the event type from the header, falling back to the
+// payload's SHAPE when there is none.
+//
+// The header-less path is real: the relay forwards a verified body without the
+// original headers, and that is the ingress this deployment actually uses.
+func resolveEventType(h http.Header, pl ghEventPayload) string {
+	if event := strings.TrimSpace(h.Get("X-GitHub-Event")); event != "" {
+		return event
+	}
+	switch {
+	case pl.Comment != nil && pl.Issue != nil:
+		// Ordered BEFORE the issue arm: an issue_comment payload carries both
+		// an issue and a comment, and testing `Issue != nil` first would
+		// classify every comment as an issues event.
+		return "issue_comment"
+	case pl.WorkflowRun != nil:
+		return "workflow_run"
+	case pl.PullRequest != nil:
+		return "pull_request"
+	case pl.Issue != nil:
+		return "issues"
+	}
+	return ""
 }

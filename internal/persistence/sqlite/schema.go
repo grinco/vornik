@@ -1549,6 +1549,39 @@ CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill_sha
     ON execution_injected_skills (skill_id, body_sha256);
 
 -- ============================================================
+-- forge_ci_outcomes — what a completed CI run concluded, read
+-- back as review context (LLD 2026-09-08-forge-ci-outcomes-
+-- design §4.1). Postgres parity: migration 181.
+-- head_sha is the read index, NOT number: a review is about a
+-- commit, and a fork PR's workflow_run carries no pull request
+-- at all. number = 0 is a real value meaning "no PR".
+-- artifact_excerpt is ATTACKER-CONTROLLED.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS forge_ci_outcomes (
+    project_id         TEXT NOT NULL,
+    repo               TEXT NOT NULL,
+    run_id             INTEGER NOT NULL,
+    head_sha           TEXT NOT NULL,
+    number             INTEGER NOT NULL DEFAULT 0,
+    workflow_name      TEXT NOT NULL DEFAULT '',
+    workflow_path      TEXT NOT NULL DEFAULT '',
+    run_attempt        INTEGER NOT NULL DEFAULT 1,
+    conclusion         TEXT NOT NULL,
+    started_at         TEXT,
+    completed_at       TEXT NOT NULL,
+    jobs_json          TEXT NOT NULL DEFAULT '[]',
+    artifact_excerpt   TEXT NOT NULL DEFAULT '',
+    artifact_bytes     INTEGER NOT NULL DEFAULT 0,
+    artifact_truncated INTEGER NOT NULL DEFAULT 0,
+    recorded_at        TEXT NOT NULL,
+    PRIMARY KEY (project_id, repo, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forge_ci_outcomes_head
+    ON forge_ci_outcomes (project_id, repo, head_sha, completed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_forge_ci_outcomes_completed
+    ON forge_ci_outcomes (completed_at);
+
+-- ============================================================
 -- execution_ratings — the human up/down verdict on what an
 -- execution produced (LLD 2026-09-04-execution-ratings-design
 -- §3). Postgres parity: migration 179.

@@ -202,48 +202,69 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 // installationPermissions models the `permissions` map GitHub returns alongside
 // a minted installation token. Only the keys vornik cares about are listed;
 // json.Unmarshal drops the rest.
+// installationPermissions reads the permission set GitHub returns on the
+// token exchange.
+//
+// A MAP rather than named fields: this started as contents+pull_requests, CI
+// ingestion added `actions`, and check-status gating will add `checks`. Each
+// new permission was going to be another field, another struct, and another
+// near-copy of the request below — so the shape that stops that is a map and
+// one parameterised check.
 type installationPermissions struct {
-	Permissions struct {
-		Contents     string `json:"contents"`
-		PullRequests string `json:"pull_requests"`
-	} `json:"permissions"`
+	Permissions map[string]string `json:"permissions"`
 }
 
-// CheckContentsWrite mints an installation token and reports whether the
-// installation grants `contents: write` — the permission forge.PushBranch needs
-// to push a branch. Returns the granted contents level for an actionable log.
-// Standalone (no *Channel) so the service container can call it at boot. Errors
-// are surfaced so the caller can log; a false result with nil error means the
-// App is installed but under-permissioned (likely issues:write only).
+// CheckContentsWrite reports whether the installation grants
+// `contents: write` — the permission forge.PushBranch needs to push a branch.
+//
+// A thin wrapper over CheckInstallationPermission, kept because its callers
+// read better for it and because "contents write" is the one permission whose
+// absence has a specific remedy worth naming in the error.
 func CheckContentsWrite(ctx context.Context, httpClient *http.Client, apiBaseURL string, appID, installationID int64, key *rsa.PrivateKey) (ok bool, contents string, err error) {
+	level, err := CheckInstallationPermission(ctx, httpClient, apiBaseURL, appID, installationID, key, "contents")
+	if err != nil {
+		return false, "", err
+	}
+	return level == "write", level, nil
+}
+
+// CheckInstallationPermission mints an installation token and returns the level
+// granted for one permission — "read", "write", or "" when it is not granted at
+// all.
+//
+// Standalone (no *Channel) so the service container can call it at boot. Errors
+// are surfaced so the caller can log; an empty level with a nil error means the
+// App is installed but under-permissioned, which is a different fact from being
+// unreachable and has a different remedy (re-accept the installation).
+func CheckInstallationPermission(ctx context.Context, httpClient *http.Client, apiBaseURL string, appID, installationID int64, key *rsa.PrivateKey, permission string) (level string, err error) {
 	if appID == 0 || key == nil || installationID == 0 {
-		return false, "", ErrOutboundNotConfigured
+		return "", ErrOutboundNotConfigured
 	}
 	jwt, err := signJWT(appID, key, time.Now())
 	if err != nil {
-		return false, "", err
+		return "", err
 	}
 	url := apiBaseURL + fmt.Sprintf("/app/installations/%d/access_tokens", installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return false, "", fmt.Errorf("github-app: build permission-check request: %w", err)
+		return "", fmt.Errorf("github-app: build permission-check request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false, "", fmt.Errorf("github-app: permission-check request failed: %w", err)
+		return "", fmt.Errorf("github-app: permission-check request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxOutboundResponseBytes))
 	if resp.StatusCode != http.StatusCreated {
-		return false, "", fmt.Errorf("github-app: permission-check HTTP %d: %s", resp.StatusCode, truncateErrorBody(string(body)))
+		return "", fmt.Errorf("github-app: permission-check HTTP %d: %s", resp.StatusCode, truncateErrorBody(string(body)))
 	}
 	var perms installationPermissions
 	if err := json.Unmarshal(body, &perms); err != nil {
-		return false, "", fmt.Errorf("github-app: permission-check parse: %w", err)
+		return "", fmt.Errorf("github-app: permission-check parse: %w", err)
 	}
-	return perms.Permissions.Contents == "write", perms.Permissions.Contents, nil
+	return perms.Permissions[permission], nil
 }
 
 // sendIssueComment posts an issue or PR comment via the GitHub

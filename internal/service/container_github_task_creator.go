@@ -53,6 +53,11 @@ const githubTaskCreatorSource = "github_app"
 // config; the type string here is the lookup key.
 const pullRequestReviewTaskType = "review"
 
+// ciOutcomeTaskType is the task type a completed CI run produces. Distinct from
+// "review" so an operator filtering the task list can tell a review a human or
+// a push asked for from one CI triggered.
+const ciOutcomeTaskType = "ci-outcome"
+
 // githubTaskCreator implements github.TaskCreator. It converts a
 // TaskCreationEvent into a persistence.Task and inserts it via the
 // shared TaskRepository — the scheduler picks up the QUEUED row on
@@ -76,6 +81,11 @@ type githubTaskCreator struct {
 	//
 	// NIL IS SUPPORTED and degrades to always-enqueue rather than to silence.
 	review *forgereview.Coordinator
+
+	// ci carries CI-outcome ingestion (2026-09-08-forge-ci-outcomes-design.md).
+	// NIL when the project has not enabled it, which is the default and is
+	// exactly the pre-feature behaviour.
+	ci *ciIngest
 }
 
 // newGitHubTaskCreator builds an adapter pinned to a single
@@ -106,6 +116,12 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 	}
 	if g.taskRepo == nil {
 		return errors.New("github task creator: task repository is not configured")
+	}
+	// A completed CI run is recorded first and only sometimes enqueues work
+	// (design §5). Handled before the common path because "record and enqueue
+	// nothing" is not something that path can express.
+	if isCIKind(ev.Kind) {
+		return g.createFromCIOutcome(ctx, ev)
 	}
 	if g.project == nil {
 		return errors.New("github task creator: no project pinned to the github channel")
@@ -142,9 +158,17 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 	// the project default when not separately configured.
 	// See https://docs.vornik.io (Config Surface).
 	var workflowID string
-	if isPullRequestReviewKind(ev.Kind) {
+	switch routeOf(ev.Kind) {
+	case routeReview:
 		workflowID = g.project.GitHubApp.EffectivePRReviewWorkflowID(g.project.DefaultWorkflowID)
-	} else {
+	case routeCI:
+		// A CI completion runs the CI workflow when one is configured. With
+		// none, it runs the review workflow rather than the reply one: a CI
+		// outcome is about code, and answering it conversationally is the
+		// exact failure routeOf exists to prevent.
+		workflowID = g.project.GitHubApp.EffectiveCIWorkflowID(
+			g.project.GitHubApp.EffectivePRReviewWorkflowID(g.project.DefaultWorkflowID))
+	default:
 		workflowID = g.project.GitHubApp.EffectiveReplyWorkflowID(g.project.DefaultWorkflowID)
 	}
 	// PAUSE + COALESCING, from the shared coordinator (§13.3).
@@ -228,33 +252,65 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 //     event (the matched label, per the
 //     channel's issueLabels helper)
 //
-// isPullRequestReviewKind reports whether a TaskCreationEvent kind means "review
-// this pull request". It is the SINGLE definition consulted by both the task-type
-// resolution and the workflow routing below, deliberately.
+// kindRoute is what a TaskCreationEvent kind MEANS. One classifier, and the
+// four sites below derive from it rather than each testing the kind themselves.
 //
-// Those two were separate literal comparisons against "pull_request.opened"
-// until 2026-09-01, and the else-branch of the routing one is the REPLY
-// workflow. So adding a re-review trigger to the GitHub channel without
-// touching this file would not have failed loudly — it would have routed a code
-// review into the conversational workflow and produced a chat answer on the PR.
-// One predicate means a new trigger cannot be half-wired.
-// https://docs.vornik.io §1.3.
-func isPullRequestReviewKind(kind string) bool {
+// WHY A CLASSIFIER RATHER THAN PREDICATES. Task-type resolution and workflow
+// routing were separate literal comparisons against "pull_request.opened" until
+// 2026-09-01, and the else-branch of the routing one is the REPLY workflow — so
+// a re-review trigger added to the channel alone would not have failed loudly,
+// it would have routed a code review into the conversational workflow and
+// answered a review request with chat. That was fixed with one predicate; then
+// forgeJobFromEvent turned out to be a THIRD site with the same shape, building
+// jobs with an empty action.
+//
+// A second predicate for CI kinds would have re-created the problem in a new
+// place: two functions partition the space by convention, and a ninth kind can
+// fall between them. An enum cannot be fallen between — routeReply is a value
+// someone chose, not a fallthrough.
+// https://docs.vornik.io §3.2.
+type kindRoute int
+
+const (
+	// routeNone is a kind this file does not know. It is an ERROR at task-type
+	// resolution, never a silent default.
+	routeNone kindRoute = iota
+	// routeReview starts a code review.
+	routeReview
+	// routeCI records a completed CI run.
+	routeCI
+	// routeReply answers conversationally.
+	routeReply
+)
+
+// routeOf classifies a kind. The single switch a new kind is added to.
+func routeOf(kind string) kindRoute {
 	switch kind {
 	case "pull_request.opened",
 		"pull_request.reopened",
 		"pull_request.ready_for_review",
 		"pull_request.synchronize",
 		// An explicit request from a PR comment. Listed here so it routes to
-		// the REVIEW workflow: omitted, it would fall to the else-branch and
-		// be answered conversationally — a chat reply where the human asked
-		// for a code review.
+		// the REVIEW workflow: omitted, it would fall to the reply arm and be
+		// answered conversationally — a chat reply where the human asked for a
+		// code review.
 		"pull_request.comment_command":
-		return true
+		return routeReview
+	case "workflow_run.completed":
+		return routeCI
+	case "issues.labeled":
+		return routeReply
 	default:
-		return false
+		return routeNone
 	}
 }
+
+// isPullRequestReviewKind is routeOf's review arm under the name its call sites
+// read better with.
+func isPullRequestReviewKind(kind string) bool { return routeOf(kind) == routeReview }
+
+// isCIKind reports whether a kind records a completed CI run.
+func isCIKind(kind string) bool { return routeOf(kind) == routeCI }
 
 // Returns an error when the event carries neither a usable label
 // nor a mapping. The channel logs the error; HTTP response stays
@@ -262,6 +318,9 @@ func isPullRequestReviewKind(kind string) bool {
 func (g *githubTaskCreator) resolveTaskType(ev github.TaskCreationEvent) (string, error) {
 	if isPullRequestReviewKind(ev.Kind) {
 		return pullRequestReviewTaskType, nil
+	}
+	if isCIKind(ev.Kind) {
+		return ciOutcomeTaskType, nil
 	}
 	switch ev.Kind {
 	case "issues.labeled":
@@ -360,6 +419,13 @@ func forgeJobFromEvent(ev github.TaskCreationEvent) *forge.ForgeJob {
 	switch {
 	case ev.Kind == "issues.labeled":
 		action = "labeled"
+	case isCIKind(ev.Kind):
+		// The action is the kind's suffix, as for the review kinds, so a CI
+		// kind cannot arrive here with the empty action the pre-2026-09-01
+		// switch allowed. IsChangeRequest stays FALSE: a CI run is not a
+		// change request even when it belongs to a pull request, and the forge
+		// handlers read that flag to decide they are looking at one.
+		action = strings.TrimPrefix(ev.Kind, "workflow_run.")
 	case isPullRequestReviewKind(ev.Kind):
 		// EVERY review kind is a change request, not just "opened". This read
 		// `case "pull_request.opened"` until 2026-09-01, so each re-review

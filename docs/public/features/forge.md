@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/forge/forge.go
-      sha256: ea94efec75e13324c1377118a9f67a924532f41f4ad93bcdd876518678842eba
+      sha256: 263bbdd37ed88e6c3ca7fc1725638febcdcd39b1cf52b341ba0682042820dafa
     - path: internal/forge/github/github.go
-      sha256: 001ce4a269f397658788e9c9b67e9b317e3094c66ab6f3ded5aba4a37d6e2ceb
+      sha256: 2b9ea217e7455fa9e9e072e5a8bf98e9fa031211fafbdce3536bfc5f17ec4dbd
 ---
 # Forge — GitHub automation
 
@@ -143,8 +143,14 @@ write credentials, because it never has them.
 1. **Create a GitHub App** and download its private key (PEM). Note the App ID.
 2. **Grant permissions:** Contents (read & write — verified at daemon startup),
    Issues (read & write), Pull requests (read & write), and Metadata (read).
+   Add **Actions (read)** only if you want CI outcomes — see *Reading CI
+   outcomes* below. It is a separate, later grant on purpose: adding a
+   permission to an existing App requires each repository owner to **re-accept
+   the installation**, so Forge does not ask for it unless you turn the feature
+   on.
 3. **Subscribe to webhook events:** `issues`, `pull_request`, and (for PR review
-   commands and `@<bot>` mention replies) `issue_comment`.
+   commands and `@<bot>` mention replies) `issue_comment`. Add `workflow_run`
+   for CI outcomes.
 4. **Point the webhook** at your daemon's signed webhook endpoint,
    `POST /api/v1/webhooks/{projectId}/{source}`, and set a webhook secret. Forge
    verifies every delivery's `X-Hub-Signature-256` HMAC; the secret is supplied
@@ -219,6 +225,57 @@ A separate GitHub App *channel* handles `@<bot>` mentions in issue comments:
 an allowlisted user mentioning the bot routes through vornik and gets a reply
 posted as an issue comment. This is the chat surface; the deterministic flows
 above are the automation surface.
+
+## Reading CI outcomes
+
+Forge can read what your CI concluded and put it in front of the review, so a
+reviewer is not looking at a diff while the pipeline that tested it is invisible.
+
+**What it records.** When a workflow run completes, Forge stores its conclusion,
+its per-job conclusions and its timing, against the **commit** the run tested.
+That happens for every run it watches — including runs with no pull request,
+such as a push to your default branch.
+
+**What it does with it.**
+
+- A **failed** run triggers a review, coalesced through the same machinery that
+  collapses a push burst, so six workflows finishing together produce one review
+  rather than six.
+- A **green** run is recorded quietly. If you set `ci.success_workflow_id` it
+  also starts that workflow once per run — useful for depositing a merged build's
+  output somewhere, and off unless you configure it.
+- Any review that runs later reads the outcomes for the commit it is reviewing.
+
+**Getting the actual output in.** Conclusions come free. Content — a
+`terraform plan`, a test report, a scan result — has to be **uploaded by your
+pipeline as an artifact**, and you name it in `ci.artifact_name`. Forge reads
+artifacts, never job logs: a log has no format contract and is where secrets get
+printed, whereas an upload is a deliberate act by whoever wrote the pipeline.
+There is no tool-specific parsing anywhere — Terraform is simply a repository
+that uploads a plan, and the same setup works for anything else.
+
+Uploaded content is treated as **untrusted**: anyone who can push a branch can
+make CI print anything, so it reaches a model marked as data rather than
+instructions, and it is size-capped with any truncation stated rather than
+silent.
+
+```yaml
+forge:
+  ci:
+    enabled: false              # master switch; false is today's behaviour exactly
+    artifact_name: ""           # opt in to content; empty records conclusions only
+    max_artifact_bytes: 1048576 # refuse a download above this
+    max_excerpt_bytes: 65536    # store at most this, and say when it truncated
+    review_on_failure: true     # a failed run triggers a coalesced review
+    success_workflow_id: ""     # a green run fires this workflow; empty is off
+    workflow_names: []          # limit to these workflow files; empty means all
+```
+
+**One limitation worth knowing before you rely on it.** GitHub does not tell
+Forge which pull request a run belongs to when the PR comes from a **fork** —
+the event arrives with no pull request attached. Such a run is still recorded
+and still visible to a review of that commit, but a CI failure on a fork PR will
+not *start* a review on its own.
 
 ## Notes and limits
 

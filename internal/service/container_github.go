@@ -58,12 +58,18 @@ func taskCreatorFromRepo(
 	review *forgereview.Coordinator,
 	labelMap map[string]string,
 	logger zerolog.Logger,
+	ciFor func(*registry.Project) *ciIngest,
 ) func(*registry.Project) github.TaskCreator {
 	return func(p *registry.Project) github.TaskCreator {
 		if taskRepo == nil || p == nil {
 			return nil
 		}
 		g := newGitHubTaskCreator(taskRepo, p, labelMap, logger)
+		// CI-outcome ingestion, when the project enables it. Nil leaves the
+		// creator exactly as it behaved before the feature existed.
+		if ciFor != nil {
+			g.ci = ciFor(p)
+		}
 		// The SAME coordinator instance the generic webhook ingress uses, so
 		// the two paths cannot diverge on the pause or coalescing rules. May be
 		// nil, in which case both degrade to always-enqueue.

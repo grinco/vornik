@@ -250,6 +250,19 @@ type InstallationConfig struct {
 	// explicitly; per-PR there is also the pause command (phase 3).
 	AutoReviewOnPush *bool
 
+	// CIEnabled turns on reading completed CI runs
+	// (2026-09-08-forge-ci-outcomes-design.md §8). Default FALSE — the feature
+	// needs a NEW App permission (actions:read), and a daemon that upgrades
+	// must not start 403ing against an installation whose owner has not
+	// re-accepted it.
+	CIEnabled bool
+
+	// CIWorkflowPaths, when non-empty, limits CI ingestion to these workflow
+	// FILES (e.g. ".github/workflows/terraform-plan.yml"). Matched on path
+	// rather than display name: a name is text an author can change without
+	// noticing anything depends on it. Empty records every workflow.
+	CIWorkflowPaths []string
+
 	// ReviewDraftPRs opts INTO auto-reviewing draft pull requests. Default
 	// false: a draft is work in progress, and ready_for_review is the
 	// transition that starts review. An explicit on-demand command still
@@ -370,6 +383,13 @@ type TaskCreationEvent struct {
 	// head commit.
 	HeadSHA string
 
+	// CI carries the completed CI run, set only on workflow_run.completed
+	// (2026-09-08-forge-ci-outcomes-design.md §3). Nil on every other kind.
+	//
+	// A REFERENCE, never content: the artifact excerpt is read later through
+	// forge.fetch_ci, which is the one place that untrusted-wraps it.
+	CI *CIRunRef
+
 	// InstallationID is the GitHub App installation that received
 	// the event.
 	InstallationID int64
@@ -448,6 +468,11 @@ type installation struct {
 	// pointer and this one is not).
 	autoReviewOnPush bool
 	reviewDraftPRs   bool
+
+	// ciEnabled / ciWorkflowPaths are the resolved forms of the same-named
+	// InstallationConfig fields.
+	ciEnabled       bool
+	ciWorkflowPaths []string
 
 	// tokenMu guards the installation-access-token cache. Held
 	// across the JWT exchange so two concurrent Sends after expiry
@@ -587,6 +612,8 @@ func buildInstallation(ic InstallationConfig) *installation {
 		mentionHandle:    resolveMentionHandle(ic.MentionHandle),
 		// nil == unset == ON. See InstallationConfig.AutoReviewOnPush.
 		autoReviewOnPush: ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush,
+		ciEnabled:        ic.CIEnabled,
+		ciWorkflowPaths:  append([]string(nil), ic.CIWorkflowPaths...),
 		reviewDraftPRs:   ic.ReviewDraftPRs,
 	}
 }
@@ -986,6 +1013,13 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		if kind, ok := reviewKindForAction(payload.Action); ok {
 			c.handlePullRequestReview(r.Context(), event, delivery, payload, inst, kind)
 		}
+	case "workflow_run":
+		// Only a COMPLETED run carries an outcome; `requested` and
+		// `in_progress` fall through to the default arm and are acked, as
+		// every other non-actionable delivery is.
+		if payload.Action == "completed" {
+			c.handleWorkflowRunCompleted(r.Context(), event, delivery, payload, inst)
+		}
 	default:
 		c.logger.Debug().Str("event", event).Str("action", payload.Action).
 			Msg("github-app: event type not handled, acking")
@@ -1043,6 +1077,21 @@ type eventPayload struct {
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
+
+	// WorkflowRun is populated on `workflow_run`. pull_requests is EMPTY for
+	// a fork PR — GitHub's documented behaviour — so Number falls back to 0
+	// and only the PR-scoped paths skip the run.
+	WorkflowRun *struct {
+		ID           int64  `json:"id"`
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		HeadSHA      string `json:"head_sha"`
+		Conclusion   string `json:"conclusion"`
+		Status       string `json:"status"`
+		PullRequests []struct {
+			Number int `json:"number"`
+		} `json:"pull_requests"`
+	} `json:"workflow_run,omitempty"`
 
 	// Issue is populated on `issues` and `issue_comment` events.
 	Issue *struct {
@@ -1539,4 +1588,87 @@ func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery strin
 	}
 	log.Info().Msg("github-app: review requested from a PR comment")
 	return true
+}
+
+// CIRunRef identifies a completed CI run on a TaskCreationEvent.
+type CIRunRef struct {
+	RunID        int64
+	HeadSHA      string
+	Conclusion   string
+	WorkflowName string
+	WorkflowPath string
+}
+
+// handleWorkflowRunCompleted turns a completed CI run into a task-creation
+// event (2026-09-08-forge-ci-outcomes-design.md §3, §5).
+//
+// The RUN is always recorded; whether it also starts a review is the task
+// creator's decision, made through the shared coordinator so a CI storm
+// coalesces exactly like a push burst.
+func (c *Channel) handleWorkflowRunCompleted(ctx context.Context, event, delivery string, p eventPayload, inst *installation) {
+	if p.WorkflowRun == nil {
+		return
+	}
+	if !inst.ciEnabled {
+		c.logger.Debug().
+			Str("event", event).Str("delivery", delivery).
+			Str("repo", p.Repository.FullName).
+			Msg("github-app: forge CI ingestion disabled; acking")
+		return
+	}
+	// A workflow filter, when configured, matches on the workflow PATH rather
+	// than its display name: a name is text an author can change without
+	// noticing anything depends on it.
+	if len(inst.ciWorkflowPaths) > 0 && !containsString(inst.ciWorkflowPaths, p.WorkflowRun.Path) {
+		c.logger.Debug().
+			Str("workflow_path", p.WorkflowRun.Path).
+			Msg("github-app: workflow not watched; acking")
+		return
+	}
+
+	number := 0
+	if len(p.WorkflowRun.PullRequests) > 0 {
+		number = p.WorkflowRun.PullRequests[0].Number
+	}
+
+	ev := TaskCreationEvent{
+		Kind:           "workflow_run.completed",
+		Repo:           p.Repository.FullName,
+		Number:         number,
+		Title:          p.WorkflowRun.Name,
+		SenderLogin:    p.Sender.Login,
+		DefaultBranch:  p.Repository.DefaultBranch,
+		HeadSHA:        p.WorkflowRun.HeadSHA,
+		InstallationID: p.Installation.ID,
+		IdempotencyKey: "github-app:" + delivery,
+		CI: &CIRunRef{
+			RunID:        p.WorkflowRun.ID,
+			HeadSHA:      p.WorkflowRun.HeadSHA,
+			Conclusion:   p.WorkflowRun.Conclusion,
+			WorkflowName: p.WorkflowRun.Name,
+			WorkflowPath: p.WorkflowRun.Path,
+		},
+	}
+	if number > 0 {
+		ev.SessionID = p.Repository.FullName + "#pulls/" + strconv.Itoa(number)
+	}
+	if inst.taskCreator == nil {
+		return
+	}
+	if err := inst.taskCreator.Create(ctx, ev); err != nil {
+		c.logger.Warn().Err(err).
+			Str("repo", ev.Repo).Int64("run_id", ev.CI.RunID).
+			Msg("github-app: CI outcome task creation failed")
+	}
+}
+
+// containsString is a tiny membership helper; the workflow filter is the only
+// caller and a map would cost more than it saves at this size.
+func containsString(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

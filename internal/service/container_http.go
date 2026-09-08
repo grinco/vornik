@@ -1270,7 +1270,9 @@ func (c *Container) initHTTPServer() error {
 	ghReview := c.forgeReviewCoordinator()
 	ghChannel, ghEnabledProjects, err := buildGitHubChannelWithTaskCreator(
 		ghProjects,
-		taskCreatorFromRepo(ghTaskRepo, ghReview, nil, c.Logger.With().Str("component", "github_task_creator").Logger()),
+		taskCreatorFromRepo(ghTaskRepo, ghReview, nil,
+			c.Logger.With().Str("component", "github_task_creator").Logger(),
+			c.ciIngestForProject),
 		c.Logger,
 	)
 	if err != nil {

@@ -50,6 +50,7 @@ type Repositories struct {
 	Skills                 persistence.SkillRepository
 	ExecInjectedSkills     persistence.ExecutionInjectedSkillRepository
 	InstinctRatingRollup   persistence.InstinctRatingRollupRepository
+	ForgeCIOutcomes        persistence.ForgeCIOutcomeRepository
 	ExecutionRatings       persistence.ExecutionRatingRepository
 	RatingRollup           persistence.RatingRollupRepository
 	Proposals              persistence.ProposalRepository
@@ -389,7 +390,6 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		ChannelDisclosure:              sqlite.NewChannelDisclosureRepository(db),
-		ForgePRReviewState:             sqlite.NewForgePRReviewStateRepository(db),
 		ProjectFirstSeen:               sqlite.NewProjectFirstSeenRepository(db),
 		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
 		MCPOAuthTokens:                 sqlite.NewMCPOAuthTokenRepository(db),
@@ -451,7 +451,18 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		// is the only remaining piece (see persistence interfaces).
 	}
 	withSQLiteTradingStores(r, db)
+	withSQLiteForgeStores(r, db)
 	return r
+}
+
+// withSQLiteForgeStores attaches the forge-domain repositories.
+//
+// Grouped out of the literal for the same reason the trading stores are:
+// the builder is a flat list that only grows, and a domain that has more
+// than one store reads better named than buried among eighty siblings.
+func withSQLiteForgeStores(r *Repositories, db *sql.DB) {
+	r.ForgePRReviewState = sqlite.NewForgePRReviewStateRepository(db)
+	r.ForgeCIOutcomes = sqlite.NewForgeCIOutcomeRepository(db)
 }
 
 // withSQLiteTradingStores attaches the trading-domain repositories.
@@ -522,7 +533,6 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		ChannelDisclosure:              postgres.NewChannelDisclosureRepository(dbtx),
-		ForgePRReviewState:             postgres.NewForgePRReviewStateRepository(dbtx),
 		ProjectFirstSeen:               postgres.NewProjectFirstSeenRepository(dbtx),
 		ChatMemoryWriteConfirmations:   postgres.NewChatMemoryWriteConfirmationRepository(dbtx),
 		MCPOAuthTokens:                 postgres.NewMCPOAuthTokenRepository(dbtx),
@@ -581,7 +591,15 @@ func Build(dbtx persistence.DBTX) *Repositories {
 	}
 	withPostgresTradingStores(r, dbtx)
 	withPostgresRedactedStores(r, dbtx)
+	withPostgresForgeStores(r, dbtx)
 	return r
+}
+
+// withPostgresForgeStores attaches the forge-domain repositories, mirroring
+// withSQLiteForgeStores so the two builders stay diffable by eye.
+func withPostgresForgeStores(r *Repositories, dbtx persistence.DBTX) {
+	r.ForgePRReviewState = postgres.NewForgePRReviewStateRepository(dbtx)
+	r.ForgeCIOutcomes = postgres.NewForgeCIOutcomeRepository(dbtx)
 }
 
 // withPostgresTradingStores attaches the trading-domain repositories.

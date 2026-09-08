@@ -7731,4 +7731,58 @@ DROP INDEX IF EXISTS idx_exec_injected_skills_skill_sha;
 ALTER TABLE execution_injected_skills DROP COLUMN IF EXISTS body_sha256;
 `,
 	},
+	{
+		Version: 181,
+		Name:    "forge_ci_outcomes",
+		// What a completed CI run concluded
+		// (2026-09-08-forge-ci-outcomes-design.md §4.1).
+		//
+		// Keyed (project_id, repo, run_id): project-scoped for the same reason
+		// forge_pr_review_state is — two projects may watch one repository under
+		// different config — and run-keyed so a webhook redelivery of the same
+		// completed run updates the row rather than appending a second.
+		//
+		// head_sha carries the read index, not pr_number. A review is about a
+		// COMMIT, and GitHub leaves workflow_run.pull_requests[] empty for a
+		// pull request opened from a fork, so the SHA is the only join key that
+		// works for every run.
+		//
+		// number = 0 means "no pull request", which is a real value here (a
+		// push to the default branch, or that fork case) rather than a missing
+		// one. No FK to anything: an outcome is evidence about a run and
+		// outlives whatever it referred to.
+		Up: `
+CREATE TABLE IF NOT EXISTS forge_ci_outcomes (
+    project_id         TEXT NOT NULL,
+    repo               TEXT NOT NULL,
+    run_id             BIGINT NOT NULL,
+    head_sha           TEXT NOT NULL,
+    number             INTEGER NOT NULL DEFAULT 0,
+    workflow_name      TEXT NOT NULL DEFAULT '',
+    workflow_path      TEXT NOT NULL DEFAULT '',
+    run_attempt        INTEGER NOT NULL DEFAULT 1,
+    conclusion         TEXT NOT NULL,
+    started_at         TIMESTAMPTZ,
+    completed_at       TIMESTAMPTZ NOT NULL,
+    jobs_json          TEXT NOT NULL DEFAULT '[]',
+    artifact_excerpt   TEXT NOT NULL DEFAULT '',
+    artifact_bytes     INTEGER NOT NULL DEFAULT 0,
+    artifact_truncated BOOLEAN NOT NULL DEFAULT false,
+    recorded_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, repo, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forge_ci_outcomes_head
+    ON forge_ci_outcomes (project_id, repo, head_sha, completed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_forge_ci_outcomes_completed
+    ON forge_ci_outcomes (completed_at);
+COMMENT ON TABLE forge_ci_outcomes IS 'Completed CI run outcomes Forge reads as review context. artifact_excerpt is ATTACKER-CONTROLLED: it reaches a prompt only through untrusted.WrapLabeled, via forge.fetch_ci.';
+COMMENT ON COLUMN forge_ci_outcomes.number IS 'Pull request number, or 0 for a run with none — a default-branch push, or a fork PR whose event carries no pull_requests[].';
+COMMENT ON COLUMN forge_ci_outcomes.artifact_truncated IS 'The artifact was larger than the excerpt kept. Never silent: a truncated plan read as a complete one is a wrong answer presented as a right one.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_forge_ci_outcomes_completed;
+DROP INDEX IF EXISTS idx_forge_ci_outcomes_head;
+DROP TABLE IF EXISTS forge_ci_outcomes;
+`,
+	},
 }

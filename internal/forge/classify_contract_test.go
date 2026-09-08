@@ -56,6 +56,14 @@ type neutralPayload struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 	} `json:"issue,omitempty"`
+	WorkflowRun *struct {
+		ID           int64  `json:"id"`
+		HeadSHA      string `json:"head_sha"`
+		Conclusion   string `json:"conclusion"`
+		PullRequests []struct {
+			Number int `json:"number"`
+		} `json:"pull_requests"`
+	} `json:"workflow_run,omitempty"`
 	PullRequest *struct {
 		Number int `json:"number"`
 		Title  string
@@ -92,6 +100,8 @@ func (c classifyProvider) ClassifyEvent(h http.Header, body []byte) (ForgeJob, b
 	event := strings.TrimSpace(h.Get("X-Forge-Event"))
 	if event == "" {
 		switch {
+		case pl.WorkflowRun != nil:
+			event = "workflow_run"
 		case pl.PullRequest != nil:
 			event = "pull_request"
 		case pl.Issue != nil:
@@ -106,6 +116,26 @@ func (c classifyProvider) ClassifyEvent(h http.Header, body []byte) (ForgeJob, b
 		DefaultBranch: pl.Repository.DefaultBranch,
 	}
 	switch event {
+	case "workflow_run":
+		// Only `completed` carries an outcome. Every other action on this
+		// event is rejected, which is what keeps the vocabulary closed rather
+		// than merely widened.
+		if pl.WorkflowRun == nil || pl.Action != "completed" {
+			return ForgeJob{}, false
+		}
+		job.Action = "completed"
+		// A CI run is NOT a change request, even when it belongs to one.
+		job.IsChangeRequest = false
+		job.HeadSHA = pl.WorkflowRun.HeadSHA
+		if len(pl.WorkflowRun.PullRequests) > 0 {
+			job.Number = pl.WorkflowRun.PullRequests[0].Number
+		}
+		job.CI = &CIRef{
+			RunID:      pl.WorkflowRun.ID,
+			HeadSHA:    pl.WorkflowRun.HeadSHA,
+			Conclusion: pl.WorkflowRun.Conclusion,
+		}
+		return job, true
 	case "issues":
 		if pl.Issue == nil || pl.Action != "labeled" {
 			return ForgeJob{}, false
@@ -290,9 +320,16 @@ func TestClassify_AcceptsAllOpenLikePRActions(t *testing.T) {
 
 // TestClassify_NonForgeEventRejected: events outside the forge vocabulary (push,
 // star, ping, …) are not forge jobs.
+//
+// `workflow_run` LEFT this list on 2026-09-08. It was correct here while Forge
+// had no CI vocabulary, and it is now a first-class kind
+// (2026-09-08-forge-ci-outcomes-design.md §3.1). The assertion was not deleted
+// to accommodate the feature — it MOVED to
+// TestClassify_WorkflowRunOnlyCompleted below, which keeps the teeth by
+// rejecting every action on that event except `completed`.
 func TestClassify_NonForgeEventRejected(t *testing.T) {
 	p := classifyProvider{name: "neutral"}
-	for _, event := range []string{"push", "star", "ping", "workflow_run", ""} {
+	for _, event := range []string{"push", "star", "ping", ""} {
 		body := `{"action":"created","repository":{"full_name":"o/r"}}`
 		if _, ok := p.ClassifyEvent(hdr(event), []byte(body)); ok {
 			t.Errorf("non-forge event %q must be rejected", event)
@@ -546,3 +583,57 @@ var errBoom = errBoomT("constructor boom")
 type errBoomT string
 
 func (e errBoomT) Error() string { return string(e) }
+
+// TestClassify_WorkflowRunOnlyCompleted: a CI run is a forge job only once it
+// has finished, and it is never a change request.
+func TestClassify_WorkflowRunOnlyCompleted(t *testing.T) {
+	p := classifyProvider{name: "neutral"}
+	const run = `"workflow_run":{"id":77,"head_sha":"abc","conclusion":"failure",` +
+		`"pull_requests":[{"number":42}]}`
+
+	job, ok := p.ClassifyEvent(hdr("workflow_run"),
+		[]byte(`{"action":"completed","repository":{"full_name":"o/r"},`+run+`}`))
+	if !ok {
+		t.Fatal("a completed workflow_run must classify")
+	}
+	if job.Action != "completed" {
+		t.Errorf("Action = %q, want completed — an empty action is the bug this "+
+			"kind's own arm exists to prevent", job.Action)
+	}
+	if job.IsChangeRequest {
+		t.Error("a CI run must never be a change request: the forge handlers read " +
+			"that flag to decide they are looking at a pull request, and would " +
+			"take a run to fetch_diff and post_review")
+	}
+	if job.CI == nil || job.CI.RunID != 77 || job.CI.Conclusion != "failure" {
+		t.Errorf("CI ref did not classify: %+v", job.CI)
+	}
+	if job.Number != 42 {
+		t.Errorf("Number = %d, want 42", job.Number)
+	}
+
+	// Every other action on the event is still rejected.
+	for _, action := range []string{"requested", "in_progress", "", "deleted"} {
+		body := `{"action":"` + action + `","repository":{"full_name":"o/r"},` + run + `}`
+		if _, ok := p.ClassifyEvent(hdr("workflow_run"), []byte(body)); ok {
+			t.Errorf("workflow_run action %q must be rejected — there is no outcome "+
+				"to record until the run finishes", action)
+		}
+	}
+}
+
+// TestClassify_WorkflowRunWithoutPullRequest: a fork PR's run carries no pull
+// request at all. It must still classify, with Number 0 (design §3.3).
+func TestClassify_WorkflowRunWithoutPullRequest(t *testing.T) {
+	p := classifyProvider{name: "neutral"}
+	job, ok := p.ClassifyEvent(hdr("workflow_run"), []byte(
+		`{"action":"completed","repository":{"full_name":"o/r"},`+
+			`"workflow_run":{"id":78,"head_sha":"def","conclusion":"success","pull_requests":[]}}`))
+	if !ok {
+		t.Fatal("a run with no pull request must still classify — it is a real " +
+			"default-branch build, or a fork PR, and both are recordable")
+	}
+	if job.Number != 0 {
+		t.Errorf("Number = %d, want 0", job.Number)
+	}
+}

@@ -212,6 +212,17 @@ var ProjectDeferredPaths = []string{
 	// github_app block; both are per-installation review-policy switches rather
 	// than anything the project form edits.
 	"github_app.auto_review_on_push", "github_app.review_draft_prs",
+	// CI outcome ingestion (2026-09-08). YAML-only for the same reason as its
+	// neighbours: a per-installation policy switch, not a field the project
+	// form edits.
+	"github_app.ci_workflow_id",
+	// Forge CI-outcome ingestion (2026-09-08). YAML-only: a per-project
+	// ingestion policy with byte ceilings and a workflow-id reference, none of
+	// which the project form edits.
+	"forge.ci.enabled", "forge.ci.artifact_name",
+	"forge.ci.max_artifact_bytes", "forge.ci.max_excerpt_bytes",
+	"forge.ci.review_on_failure", "forge.ci.success_workflow_id",
+	"forge.ci.workflow_paths",
 	"github.app_id", "github.installation_id", "github.private_key_path", "github.api_base_url",
 	"github.repo",
 	// Forge automation. mention_handle joins the rest of the block as YAML-only:

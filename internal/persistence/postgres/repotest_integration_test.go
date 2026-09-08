@@ -388,16 +388,27 @@ func TestCostTuningCanaries_PartialIndex_Postgres(t *testing.T) {
 type pgRollupSeeder struct{ db *sql.DB }
 
 func (s pgRollupSeeder) SeedExecution(ctx context.Context, id, projectID, workflowID string, createdAt time.Time) error {
+	// DO UPDATE, not DO NOTHING. The integration database PERSISTS between
+	// runs and these fixtures use fixed ids, so DO NOTHING kept the FIRST
+	// run's created_at forever — and every suite here windows on
+	// `created_at >= since`. The effect was a suite that passed only within 24
+	// hours of a database's first use and then failed with empty arms,
+	// indistinguishable from a broken query. Refreshing the timestamp makes a
+	// re-run mean what a first run means.
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (id, project_id, workflow_id, status, created_at, updated_at)
-		VALUES ($1, $2, $3, 'COMPLETED', $4, $4) ON CONFLICT (id) DO NOTHING`,
+		VALUES ($1, $2, $3, 'COMPLETED', $4, $4)
+		ON CONFLICT (id) DO UPDATE SET created_at = EXCLUDED.created_at,
+		                               updated_at = EXCLUDED.updated_at`,
 		"task-"+id, projectID, workflowID, createdAt.UTC()); err != nil {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO executions (id, task_id, project_id, workflow_id, workflow_revision,
 		                        status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, '1', 'COMPLETED', $5, $5) ON CONFLICT (id) DO NOTHING`,
+		VALUES ($1, $2, $3, $4, '1', 'COMPLETED', $5, $5)
+		ON CONFLICT (id) DO UPDATE SET created_at = EXCLUDED.created_at,
+		                               updated_at = EXCLUDED.updated_at`,
 		id, "task-"+id, projectID, workflowID, createdAt.UTC())
 	return err
 }
@@ -459,7 +470,8 @@ func (s pgInstinctRollupSeeder) SeedStepOutcome(ctx context.Context,
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO execution_step_outcomes
 		  (id, project_id, task_id, execution_id, step_id, role, outcome, error_class, recorded_at)
-		VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
+		VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE SET recorded_at = EXCLUDED.recorded_at`,
 		executionID+"/"+stepID, projectID, executionID, stepID, role, outcome, errorClass, at.UTC())
 	return err
 }
@@ -480,7 +492,8 @@ func (s pgInstinctRollupSeeder) SeedInstinctApplication(ctx context.Context,
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO instinct_applications
 		  (id, instinct_id, task_id, surface, result, applied_at, execution_id, step_id)
-		VALUES ($1, $2, '', 'lead_recovery', $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+		VALUES ($1, $2, '', 'lead_recovery', $3, $4, $5, $6)
+		ON CONFLICT (id) DO UPDATE SET applied_at = EXCLUDED.applied_at`,
 		instinctID+"/"+executionID+"/"+stepID, instinctID, result, at.UTC(), executionID, stepID)
 	return err
 }
@@ -492,6 +505,16 @@ func (s pgInstinctRollupSeeder) SeedRating(ctx context.Context, executionID, rat
 		ON CONFLICT (execution_id, rater_id) DO UPDATE SET verdict = EXCLUDED.verdict`,
 		executionID, raterID, verdict)
 	return err
+}
+
+// TestForgeCIOutcomeRepository_PostgresContract — the CI outcome store, the
+// same suite the SQLite side runs. The upsert and the jobs JSON round-trip are
+// the parts worth running on both: the two backends spell the upsert
+// differently (ON CONFLICT versus INSERT OR REPLACE) and a JSON column is
+// exactly where a byte-exactness divergence has reached CI before.
+func TestForgeCIOutcomeRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunForgeCIOutcomeSuite(t, NewForgeCIOutcomeRepository(db.DB))
 }
 
 func TestSkillInjectionProvenance_PostgresContract(t *testing.T) {

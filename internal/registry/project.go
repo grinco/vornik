@@ -751,6 +751,12 @@ type ProjectGitHubApp struct {
 	// (fetch diff → review → post) and an issue→change-request flow can be
 	// separate workflows. Empty falls back to EffectiveReplyWorkflowID.
 	PRReviewWorkflowID string `yaml:"pr_review_workflow_id,omitempty"`
+
+	// CIWorkflowID names the workflow a completed CI run runs under
+	// (2026-09-08-forge-ci-outcomes-design.md). Empty falls back to the PR
+	// review workflow — a CI outcome is about code, so the reply workflow is
+	// the wrong default even when nothing is configured.
+	CIWorkflowID string `yaml:"ci_workflow_id,omitempty"`
 }
 
 // EffectiveReplyWorkflowID returns the workflow GitHub-App-driven
@@ -771,6 +777,19 @@ func (g ProjectGitHubApp) EffectivePRReviewWorkflowID(projectDefault string) str
 		return id
 	}
 	return g.EffectiveReplyWorkflowID(projectDefault)
+}
+
+// EffectiveCIWorkflowID resolves the workflow a completed CI run runs.
+//
+// The fallback is the CALLER's, not the reply workflow: a CI outcome is about
+// code, and the caller passes the review workflow so an unconfigured
+// deployment answers CI with a review rather than with chat
+// (2026-09-08-forge-ci-outcomes-design.md §3.2).
+func (g ProjectGitHubApp) EffectiveCIWorkflowID(fallback string) string {
+	if id := strings.TrimSpace(g.CIWorkflowID); id != "" {
+		return id
+	}
+	return fallback
 }
 
 // ProjectGitHub holds GitHub App credentials for minting short-lived
@@ -846,8 +865,63 @@ type ProjectForge struct {
 	// exist and every deployment ran on the default. Found by the 2026-09-03
 	// audit alongside the same handle being hardcoded on the App channel.
 	MentionHandle string `yaml:"mention_handle"`
+
+	// CI configures reading completed CI runs
+	// (2026-09-08-forge-ci-outcomes-design.md §8).
+	CI ProjectForgeCI `yaml:"ci"`
 	// GitLab ProjectGitLab `yaml:"gitlab"` // future sibling
 	// Gitea  ProjectGitea  `yaml:"gitea"`  // future sibling
+}
+
+// ProjectForgeCI configures CI-outcome ingestion.
+//
+// Enabled defaults FALSE and that is load-bearing: the feature needs a NEW
+// GitHub App permission (actions:read) which every repository owner must
+// re-accept, so a daemon that upgrades must behave exactly as before until
+// somebody asks for it.
+type ProjectForgeCI struct {
+	Enabled bool `yaml:"enabled"`
+
+	// ArtifactName opts INTO content. Empty records conclusions only, which is
+	// the whole trigger decision and needs no pipeline change. Naming an
+	// artifact is the pipeline author's deliberate act — the consent signal
+	// reading raw job logs would lack.
+	ArtifactName string `yaml:"artifact_name"`
+
+	// MaxArtifactBytes refuses a download above this size, BEFORE reading it.
+	MaxArtifactBytes int64 `yaml:"max_artifact_bytes"`
+	// MaxExcerptBytes is the most that is stored; anything longer is truncated
+	// with the fact recorded rather than silently.
+	MaxExcerptBytes int `yaml:"max_excerpt_bytes"`
+
+	// ReviewOnFailure lets a failed run trigger a review, coalesced through the
+	// same coordinator a push burst uses.
+	ReviewOnFailure bool `yaml:"review_on_failure"`
+
+	// SuccessWorkflowID fires on a GREEN run, once per run. Empty is off. Not
+	// coalesced: a deposit is about that run's output, and collapsing several
+	// would lose the thing being deposited.
+	SuccessWorkflowID string `yaml:"success_workflow_id"`
+
+	// WorkflowPaths limits ingestion to these workflow FILES. Matched on path
+	// rather than display name: a name is text an author can change without
+	// noticing anything depends on it. Empty records every workflow.
+	WorkflowPaths []string `yaml:"workflow_paths"`
+}
+
+// CIDefaults fills the zero values a partially-specified ci block leaves.
+//
+// Called after load so an operator who writes `ci: {enabled: true}` gets the
+// documented ceilings rather than zero ones — and a zero MaxArtifactBytes would
+// mean "no limit" at the provider, which is the opposite of what an unset
+// ceiling should mean.
+func (c *ProjectForgeCI) CIDefaults() {
+	if c.MaxArtifactBytes <= 0 {
+		c.MaxArtifactBytes = 1 << 20 // 1 MiB
+	}
+	if c.MaxExcerptBytes <= 0 {
+		c.MaxExcerptBytes = 64 << 10 // 64 KiB
+	}
 }
 
 // ProjectGit controls the git-over-HTTPS workspace-access feature.

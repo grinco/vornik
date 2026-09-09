@@ -12,11 +12,14 @@ package forgeci
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/persistence"
 )
@@ -42,6 +45,49 @@ type Ingest struct {
 	reader   forge.CIReader
 	cfg      Config
 	Logger   zerolog.Logger
+
+	// commenter posts the status comment; disclosure supplies the Art 50(1)
+	// notice it must carry. Both nil = no commenting, which is what a
+	// deployment without CI ingestion configured has.
+	commenter  Commenter
+	disclosure Discloser
+
+	// reviewState answers "has this head already been reviewed", the question
+	// that turns a failure into a comment. Nil = always answer no, i.e. always
+	// review.
+	reviewState persistence.ForgePRReviewStateRepository
+}
+
+// Commenter is the forge ability this needs: post a plain comment, never a
+// review state. Narrower than ForgeProvider so a caller can be tested without
+// one, and named for the capability rather than the vendor.
+type Commenter interface {
+	PostComment(ctx context.Context, repo string, number int, body string) error
+}
+
+// Discloser supplies the Art 50(1) publication notice. An interface here so
+// this package does not depend on internal/aidisclosure, matching how the forge
+// handlers take theirs.
+type Discloser interface {
+	PublicationNotice() aidisclosure.Notice
+}
+
+// WithCommenting attaches the comment sink and its disclosure. Both are
+// required together: a commenter without a discloser refuses to post.
+func (g *Ingest) WithCommenting(c Commenter, d Discloser) *Ingest {
+	if g != nil {
+		g.commenter, g.disclosure = c, d
+	}
+	return g
+}
+
+// WithReviewState attaches the per-PR review state, enabling the
+// already-reviewed test that turns a failure into a comment.
+func (g *Ingest) WithReviewState(r persistence.ForgePRReviewStateRepository) *Ingest {
+	if g != nil {
+		g.reviewState = r
+	}
+	return g
 }
 
 // New builds an Ingest. A nil outcome store yields a nil Ingest: the caller's
@@ -69,6 +115,11 @@ type Config struct {
 	MaxExcerptBytes   int
 	ReviewOnFailure   bool
 	SuccessWorkflowID string
+	// CommentOnFailure posts a factual status comment when a failure cannot
+	// produce a review. Defaults TRUE, unlike its siblings: their failure mode
+	// when enabled is an unwanted behaviour change, while this one's failure
+	// mode when disabled is silent signal loss (design §13.7).
+	CommentOnFailure bool
 }
 
 // Record fetches the run's full detail and stores it.
@@ -221,6 +272,15 @@ func capExcerpt(s string, limit int) (string, bool) {
 type Decision struct {
 	// Enqueue is false for the record-only cases.
 	Enqueue bool
+	// Comment asks for a factual CI-status comment instead of a review
+	// (design §13.3). Set when a failure lands on a head whose review has
+	// already been posted, where enqueuing a review would only produce one
+	// §16's guard then refuses.
+	//
+	// Never set together with Enqueue: they are alternatives, and a run that
+	// did both would comment AND spawn the review the comment exists to
+	// replace.
+	Comment bool
 	// WorkflowID names the workflow to run; empty means the caller's default.
 	WorkflowID string
 	// Reason is a short token for the log.
@@ -228,7 +288,7 @@ type Decision struct {
 }
 
 // Decide applies the design's §5 table.
-func Decide(out *persistence.ForgeCIOutcome, cfg Config) Decision {
+func Decide(out *persistence.ForgeCIOutcome, cfg Config, alreadyReviewed bool) Decision {
 	switch {
 	case out == nil:
 		return Decision{Reason: "no outcome recorded"}
@@ -243,6 +303,17 @@ func Decide(out *persistence.ForgeCIOutcome, cfg Config) Decision {
 		}
 		if !out.HasPullRequest() {
 			return Decision{Reason: "failed run has no pull request to review"}
+		}
+		// ALREADY REVIEWED → COMMENT, NOT REVIEW (design §13.3). Enqueuing here
+		// would run a reviewer against a no-change diff and produce a review
+		// that post_review's guard then refuses — a paid agent run for silence.
+		// The comment carries the same information for one API call.
+		//
+		// Optimistic, not a guarantee: this reads the baseline NOW, and a
+		// review completing before ours posts is still caught by the guard
+		// (§13.3). Uncertainty falls through to the review.
+		if alreadyReviewed && cfg.CommentOnFailure {
+			return Decision{Comment: true, Reason: "ci failed on an already-reviewed head"}
 		}
 		return Decision{Enqueue: true, Reason: "ci failed"}
 
@@ -275,4 +346,162 @@ func Context(out *persistence.ForgeCIOutcome) map[string]string {
 		"ci_workflow_name": out.WorkflowName,
 		"ci_workflow_path": out.WorkflowPath,
 	}
+}
+
+// Comment posts the factual CI-status comment for a run (design §13).
+//
+// NO MODEL IS IN THE LOOP. The body is assembled from what Forge already
+// recorded — the workflow, the conclusion, the failing jobs — which is the
+// whole reason this exists instead of letting a reviewer run on an empty diff:
+// there is nothing here to invent.
+//
+// Returns whether a comment was posted. Not posting is the normal outcome for a
+// run already commented on, and is not an error.
+func (g *Ingest) Comment(ctx context.Context, out *persistence.ForgeCIOutcome) (bool, error) {
+	if g == nil || g.commenter == nil || out == nil || !out.HasPullRequest() {
+		return false, nil
+	}
+	if g.disclosure == nil {
+		// Fail closed, exactly as forge.post_review and
+		// forge.open_change_request do: unable to disclose means unable to
+		// post. A third forge sink disclosing differently is the thing the Art
+		// 50 perimeter argument cannot survive.
+		return false, errors.New("forgeci: refusing to post an undisclosed CI comment (EU AI Act Art 50(1))")
+	}
+
+	// POST ONCE (design §13.6), by CLAIMING THE ROW BEFORE POSTING.
+	//
+	// The claim is what enforces this, not a check on `out`. The outcome here
+	// was built from the webhook event and enrichment, so its CommentedAt is
+	// always the zero value — the earlier `if !out.CommentedAt.IsZero()` read a
+	// field nothing populates and let EVERY redelivery comment again (observed
+	// live on headmatch PR #52, 2026-09-09: two comments for one run).
+	//
+	// Claiming BEFORE the post, rather than marking after it, also settles the
+	// concurrent case: GitHub can have two deliveries of one run in flight, and
+	// a read-then-post pair would let both see NULL and both post.
+	claimed, err := g.outcomes.ClaimComment(ctx, out.ProjectID, out.Repo, out.RunID, time.Now().UTC())
+	if err != nil {
+		return false, fmt.Errorf("claim ci comment: %w", err)
+	}
+	if !claimed {
+		return false, nil
+	}
+
+	body := renderCIComment(out) + "\n\n---\n" + g.disclosure.PublicationNotice().Text
+	if err := g.commenter.PostComment(ctx, out.Repo, out.Number, body); err != nil {
+		// Give the claim back so a redelivery retries. A missing comment is the
+		// failure this whole section exists to prevent, and holding a claim for
+		// a comment that was never published would cause exactly that.
+		if rel := g.outcomes.ReleaseComment(ctx, out.ProjectID, out.Repo, out.RunID); rel != nil {
+			g.Logger.Warn().Err(rel).
+				Str("repo", out.Repo).Int64("run_id", out.RunID).
+				Msg("forgeci: could not release the comment claim after a failed post; no retry will run")
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// renderCIComment writes the comment body. Facts only.
+//
+// The run LINK is CONSTRUCTED from the repository identity and the numeric run
+// id — never from the workflow name or any other payload string (design §13.2).
+// Rendering an attacker-supplied string as a URL in a pull request is a
+// phishing surface, and the workflow name is the natural thing to have made
+// clickable.
+//
+// The artifact excerpt is deliberately absent: it is attacker-controlled and a
+// comment has no untrusted-content wrapper, so it stays where it does — in
+// forge.fetch_ci, into a model's context.
+func renderCIComment(out *persistence.ForgeCIOutcome) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**CI %s** on `%s`\n\n", sanitiseCIText(out.Conclusion), shortSHA(out.HeadSHA))
+	fmt.Fprintf(&b, "Workflow `%s` concluded **%s**.\n",
+		displayCIWorkflow(out), sanitiseCIText(out.Conclusion))
+
+	var failed []string
+	for _, j := range out.Jobs {
+		if j.Conclusion != "" && j.Conclusion != "success" && j.Conclusion != "skipped" {
+			failed = append(failed, fmt.Sprintf("`%s` (%s)",
+				sanitiseCIText(j.Name), sanitiseCIText(j.Conclusion)))
+		}
+	}
+	if len(failed) > 0 {
+		fmt.Fprintf(&b, "\nFailing jobs: %s\n", strings.Join(failed, ", "))
+	}
+	fmt.Fprintf(&b, "\n[View the run](https://github.com/%s/actions/runs/%d)\n", out.Repo, out.RunID)
+	b.WriteString("\nNo review was posted: this commit has already been reviewed, " +
+		"so there is no new code to look at.\n")
+	return b.String()
+}
+
+// displayCIWorkflow names the workflow, never empty, and always safe to render.
+func displayCIWorkflow(out *persistence.ForgeCIOutcome) string {
+	if out.WorkflowPath != "" {
+		return sanitiseCIText(out.WorkflowPath)
+	}
+	if out.WorkflowName != "" {
+		return sanitiseCIText(out.WorkflowName)
+	}
+	return fmt.Sprintf("run %d", out.RunID)
+}
+
+// sanitiseCIText makes a payload-supplied string safe to render inside a
+// markdown code span.
+//
+// The workflow name and job names come from the repository's own CI config, so
+// anyone who can push a branch chooses them. Wrapping them in backticks is NOT
+// enough on its own: a name containing a backtick CLOSES the span, and the rest
+// renders as live markdown — a link, an image, anything. Found by the test for
+// design §13.2, which had only required the run LINK to be constructed rather
+// than echoed; the same argument applies to every payload string in the body,
+// one level down.
+//
+// Backticks are removed rather than escaped: this is a display label, the
+// authoritative reference is the constructed run link, and a mangled label is a
+// better outcome than a clever escape that a future markdown dialect unpicks.
+// Newlines go for the same reason — a name is one line.
+func sanitiseCIText(s string) string {
+	s = strings.TrimSpace(strings.NewReplacer("`", "", "\n", " ", "\r", " ").Replace(s))
+	if len(s) > maxCITextChars {
+		s = s[:maxCITextChars] + "…"
+	}
+	return s
+}
+
+// maxCITextChars bounds a rendered label so a pathological name cannot push the
+// facts out of view.
+const maxCITextChars = 120
+
+// shortSHA abbreviates for display without pretending a truncated SHA is the
+// identifier — the link above carries the authoritative reference.
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
+}
+
+// AlreadyReviewed reports whether this run's head has already been reviewed and
+// posted about (design §13.4).
+//
+// Reads ForgePRReviewState — the SAME durable row forge.post_review's guard
+// reads, through the same repository. A second source of this fact could
+// disagree with the guard, and the two disagreeing is a review both suppressed
+// and never commented on.
+//
+// EVERY UNCERTAINTY RESOLVES TO FALSE, i.e. to reviewing: an unwired
+// repository, an unreadable row, a missing row or an empty head all fall
+// through to the review path, which then either reviews something real or is
+// refused by the guard with nothing lost but tokens.
+func (g *Ingest) AlreadyReviewed(ctx context.Context, projectID string, out *persistence.ForgeCIOutcome) bool {
+	if g == nil || g.reviewState == nil || out == nil || out.HeadSHA == "" {
+		return false
+	}
+	st, err := g.reviewState.Get(ctx, projectID, out.Repo, out.Number)
+	if err != nil || st == nil || st.LastReviewedHeadSHA == "" {
+		return false
+	}
+	return st.LastReviewedHeadSHA == out.HeadSHA
 }

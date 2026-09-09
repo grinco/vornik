@@ -26,7 +26,11 @@ func (s stubCIOutcomes) Upsert(context.Context, *persistence.ForgeCIOutcome) err
 func (s stubCIOutcomes) ListByHeadSHA(context.Context, string, string, string) ([]*persistence.ForgeCIOutcome, error) {
 	return s.rows, s.err
 }
-func (s stubCIOutcomes) PruneBefore(context.Context, time.Time) (int64, error) { return 0, nil }
+func (s stubCIOutcomes) ClaimComment(context.Context, string, string, int64, time.Time) (bool, error) {
+	return true, nil
+}
+func (s stubCIOutcomes) ReleaseComment(context.Context, string, string, int64) error { return nil }
+func (s stubCIOutcomes) PruneBefore(context.Context, time.Time) (int64, error)       { return 0, nil }
 
 // The assertion this handler exists to make. An excerpt containing an
 // imperative reaches the rendered context ONLY inside the untrusted markers.

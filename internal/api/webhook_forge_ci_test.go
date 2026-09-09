@@ -18,9 +18,11 @@ import (
 // (LLD 2026-09-08-forge-ci-outcomes-design.md §3.2).
 
 type stubCIIngest struct {
-	recorded []forgeci.Run
-	out      *persistence.ForgeCIOutcome
-	cfg      forgeci.Config
+	recorded        []forgeci.Run
+	out             *persistence.ForgeCIOutcome
+	cfg             forgeci.Config
+	alreadyReviewed bool
+	commented       []int64
 }
 
 func (s *stubCIIngest) Record(_ context.Context, run forgeci.Run) *persistence.ForgeCIOutcome {
@@ -28,6 +30,15 @@ func (s *stubCIIngest) Record(_ context.Context, run forgeci.Run) *persistence.F
 	return s.out
 }
 func (s *stubCIIngest) Cfg() forgeci.Config { return s.cfg }
+
+func (s *stubCIIngest) AlreadyReviewed(context.Context, string, *persistence.ForgeCIOutcome) bool {
+	return s.alreadyReviewed
+}
+
+func (s *stubCIIngest) Comment(_ context.Context, out *persistence.ForgeCIOutcome) (bool, error) {
+	s.commented = append(s.commented, out.RunID)
+	return true, nil
+}
 
 func ciJob(conclusion string, number int) forge.ForgeJob {
 	return forge.ForgeJob{

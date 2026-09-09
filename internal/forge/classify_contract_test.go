@@ -211,6 +211,8 @@ func (c classifyProvider) PushBranch(context.Context, string, string, string, st
 func (c classifyProvider) OpenChangeRequest(context.Context, ChangeRequestSpec) (string, error) {
 	return "", nil
 }
+func (c classifyProvider) PostComment(context.Context, string, int, string) error { return nil }
+
 func (c classifyProvider) PostReview(context.Context, string, int, ReviewSpec) error { return nil }
 func (c classifyProvider) VerifyPushAccess(context.Context) error                    { return nil }
 

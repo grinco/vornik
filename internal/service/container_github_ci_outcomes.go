@@ -52,7 +52,22 @@ func (g *githubTaskCreator) createFromCIOutcome(ctx context.Context, ev github.T
 		WorkflowName: ev.CI.WorkflowName,
 		WorkflowPath: ev.CI.WorkflowPath,
 	})
-	d := forgeci.Decide(out, g.ci.Cfg())
+	d := forgeci.Decide(out, g.ci.Cfg(), g.ci.AlreadyReviewed(ctx, g.project.ID, out))
+	if d.Comment {
+		// A failure on an already-reviewed head: a factual comment instead of a
+		// reviewer that would be refused (design §13).
+		posted, cerr := g.ci.Comment(ctx, out)
+		if cerr != nil {
+			g.logger.Warn().Err(cerr).
+				Str("repo", ev.Repo).Int64("run_id", ev.CI.RunID).
+				Msg("github task creator: CI status comment failed; it will retry on a redelivery")
+		}
+		g.logger.Info().
+			Str("repo", ev.Repo).Int64("run_id", ev.CI.RunID).
+			Bool("commented", posted).Str("reason", d.Reason).
+			Msg("github task creator: CI outcome commented instead of reviewed")
+		return nil
+	}
 	if !d.Enqueue {
 		g.logger.Info().
 			Str("repo", ev.Repo).Int64("run_id", ev.CI.RunID).
@@ -192,6 +207,7 @@ func (c *Container) ciIngestForProject(p *registry.Project) *forgeci.Ingest {
 		MaxExcerptBytes:   ci.MaxExcerptBytes,
 		ReviewOnFailure:   ci.ReviewOnFailure,
 		SuccessWorkflowID: ci.SuccessWorkflowID,
+		CommentOnFailure:  ci.CommentsOnFailure(),
 	}
 	logger := c.Logger.With().Str("component", "forge_ci").Str("project_id", p.ID).Logger()
 
@@ -213,5 +229,11 @@ func (c *Container) ciIngestForProject(p *registry.Project) *forgeci.Ingest {
 		c.Logger.Info().Str("project_id", p.ID).Str("provider", prov.Name()).
 			Msg("forge provider cannot read CI outcomes; recording webhook conclusions only")
 	}
-	return forgeci.New(c.repos.ForgeCIOutcomes, reader, cfg, logger)
+	ing := forgeci.New(c.repos.ForgeCIOutcomes, reader, cfg, logger)
+	// The comment sink and its disclosure travel together: a commenter without
+	// a discloser refuses to post, matching the two existing forge sinks.
+	if c.AIDisclosure != nil {
+		ing = ing.WithCommenting(prov, c.AIDisclosure)
+	}
+	return ing.WithReviewState(c.repos.ForgePRReviewState)
 }

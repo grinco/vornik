@@ -7785,4 +7785,22 @@ DROP INDEX IF EXISTS idx_forge_ci_outcomes_head;
 DROP TABLE IF EXISTS forge_ci_outcomes;
 `,
 	},
+	{
+		Version: 182,
+		Name:    "forge_ci_outcomes_commented_at",
+		// When Forge posted a CI-status comment for this run
+		// (2026-09-08-forge-ci-outcomes-design.md §13.6). NULL = not yet.
+		//
+		// THE ONLY COLUMN ON THIS TABLE THE UPSERT MUST NOT TOUCH. Every other
+		// column records what CI REPORTED and is refreshed by each delivery;
+		// this one records what Forge DID about it, and a redelivery resetting
+		// it to NULL would post a second comment on the same run.
+		Up: `
+ALTER TABLE forge_ci_outcomes ADD COLUMN IF NOT EXISTS commented_at TIMESTAMPTZ;
+COMMENT ON COLUMN forge_ci_outcomes.commented_at IS 'When Forge posted a CI-status comment for this run. NULL = not yet. NEVER overwritten by the upsert: it records what Forge did, not what CI reported.';
+`,
+		Down: `
+ALTER TABLE forge_ci_outcomes DROP COLUMN IF EXISTS commented_at;
+`,
+	},
 }

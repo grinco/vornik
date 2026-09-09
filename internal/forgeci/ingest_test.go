@@ -93,7 +93,7 @@ func TestDecideCITrigger(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Decide(tc.out, tc.cfg)
+			got := Decide(tc.out, tc.cfg, false)
 			if got.Enqueue != tc.wantEnq {
 				t.Errorf("Enqueue = %v, want %v (reason %q)", got.Enqueue, tc.wantEnq, got.Reason)
 			}

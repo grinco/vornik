@@ -185,6 +185,10 @@ var sqliteAdditiveColumns = []additiveColumn{
 	// non-null default would make every historical row look like a match for
 	// whatever body is being approved today.
 	{"execution_injected_skills", "body_sha256", `TEXT`},
+	// Postgres migration 182 — when Forge commented on a CI run
+	// (LLD 2026-09-08-forge-ci-outcomes-design §13.6). Nullable: NULL means
+	// "not yet commented", which is the state every existing row is in.
+	{"forge_ci_outcomes", "commented_at", `TEXT`},
 }
 
 // applyAdditiveColumns adds any registered column missing from an existing

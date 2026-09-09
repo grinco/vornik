@@ -1574,6 +1574,9 @@ CREATE TABLE IF NOT EXISTS forge_ci_outcomes (
     artifact_bytes     INTEGER NOT NULL DEFAULT 0,
     artifact_truncated INTEGER NOT NULL DEFAULT 0,
     recorded_at        TEXT NOT NULL,
+    -- commented_at: when Forge posted a CI-status comment for this run.
+    -- The ONE column the upsert must never overwrite — see the repository.
+    commented_at       TEXT,
     PRIMARY KEY (project_id, repo, run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_forge_ci_outcomes_head

@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/forge/forge.go
-      sha256: 263bbdd37ed88e6c3ca7fc1725638febcdcd39b1cf52b341ba0682042820dafa
+      sha256: b86dd991b35124dfb83880c283a3aa95c5ab5b39cf1a578a67fbd463f237caa2
     - path: internal/forge/github/github.go
-      sha256: 2b9ea217e7455fa9e9e072e5a8bf98e9fa031211fafbdce3536bfc5f17ec4dbd
+      sha256: cf3cc48eae88b4f3de45cf53a79b011bd3ae0845e73bcbd3f87f1119ec266619
 ---
 # Forge — GitHub automation
 
@@ -241,6 +241,13 @@ such as a push to your default branch.
 - A **failed** run triggers a review, coalesced through the same machinery that
   collapses a push burst, so six workflows finishing together produce one review
   rather than six.
+- A **failed** run whose commit has *already* been reviewed gets a short factual
+  **comment** instead — the workflow, the conclusion, the failing jobs and a link
+  to the run. This is the common case, because CI usually finishes just after the
+  review of the push that triggered it. No model writes that comment, so there is
+  nothing in it to be wrong: re-reviewing a commit with no new code is how a bot
+  ends up describing the wrong pull request. Turn it off with
+  `ci.comment_on_failure: false`.
 - A **green** run is recorded quietly. If you set `ci.success_workflow_id` it
   also starts that workflow once per run — useful for depositing a merged build's
   output somewhere, and off unless you configure it.
@@ -268,6 +275,7 @@ forge:
     max_excerpt_bytes: 65536    # store at most this, and say when it truncated
     review_on_failure: true     # a failed run triggers a coalesced review
     success_workflow_id: ""     # a green run fires this workflow; empty is off
+    comment_on_failure: true    # say so when a failure cannot produce a review
     workflow_paths: []          # limit to these workflow files; empty means all
 ```
 

@@ -25,6 +25,13 @@ import (
 type ForgeCIIngest interface {
 	Record(ctx context.Context, run forgeci.Run) *persistence.ForgeCIOutcome
 	Cfg() forgeci.Config
+	// Comment posts the factual CI-status comment for a run that cannot
+	// produce a review (design §13).
+	Comment(ctx context.Context, out *persistence.ForgeCIOutcome) (bool, error)
+	// AlreadyReviewed reports whether this run's head has already been
+	// reviewed and posted about, which is what turns a failure into a comment
+	// rather than a review.
+	AlreadyReviewed(ctx context.Context, projectID string, out *persistence.ForgeCIOutcome) bool
 }
 
 // WithForgeCIIngest wires CI ingestion. Job-tier only, for the same reason as
@@ -59,9 +66,27 @@ func (s *Server) applyForgeCIRules(ctx context.Context, w http.ResponseWriter,
 		WorkflowPath: job.CI.WorkflowPath,
 	})
 
-	d := forgeci.Decide(out, ingest.Cfg())
+	d := forgeci.Decide(out, ingest.Cfg(), ingest.AlreadyReviewed(ctx, project.ID, out))
 	if d.Enqueue {
 		return false // fall through and create the task
+	}
+	if d.Comment {
+		// A failure on a head whose review is already posted: say so factually
+		// rather than running a reviewer that would be refused (design §13).
+		posted, err := ingest.Comment(ctx, out)
+		if err != nil {
+			s.logger.Warn().Err(err).
+				Str("project_id", project.ID).Str("repo", job.Repo).
+				Int64("run_id", job.CI.RunID).
+				Msg("webhook: CI status comment failed; it will retry on a redelivery")
+		}
+		s.logger.Info().
+			Str("project_id", project.ID).Str("repo", job.Repo).
+			Int64("run_id", job.CI.RunID).Bool("commented", posted).
+			Str("delivery", deliveryID).Str("reason", d.Reason).
+			Msg("webhook: CI outcome recorded, commented instead of reviewing")
+		respondJSON(w, http.StatusOK, map[string]string{"status": "ci_commented"})
+		return true
 	}
 
 	s.logger.Info().

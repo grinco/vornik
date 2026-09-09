@@ -84,6 +84,15 @@ type ForgeCIOutcome struct {
 	ArtifactTruncated bool
 
 	RecordedAt time.Time
+
+	// CommentedAt is when Forge posted a CI-status comment for this run, or
+	// the zero time when it has not (design §13.6).
+	//
+	// THE ONE FIELD ON THIS STRUCT THE UPSERT DOES NOT WRITE. Everything else
+	// records what CI REPORTED and is refreshed by every delivery; this records
+	// what Forge DID about it. A redelivery resetting it would post a second
+	// comment on the same run.
+	CommentedAt time.Time
 }
 
 // ForgeCIJob is one job within a run.
@@ -125,6 +134,27 @@ type ForgeCIOutcomeRepository interface {
 	// workflow. Empty slice when nothing has run — NOT an error: "no CI has
 	// completed for this commit" is a fact a review must be able to state.
 	ListByHeadSHA(ctx context.Context, projectID, repo, headSHA string) ([]*ForgeCIOutcome, error)
+
+	// ClaimComment atomically takes the right to comment on this run, and
+	// reports whether it got it. False means someone already has it.
+	//
+	// A COMPARE-AND-SET (`SET commented_at = ? WHERE commented_at IS NULL`)
+	// rather than a read followed by a write. Two reasons, and the first is the
+	// one that bit: the in-memory outcome a caller holds comes from the webhook
+	// and enrichment, so its CommentedAt is ALWAYS zero — checking the struct
+	// checks a field nothing populates, and every redelivery comments again.
+	// The second is that two concurrent deliveries for one run would both read
+	// NULL and both post.
+	//
+	// Separate from Upsert on purpose: Upsert refreshes what CI reported, and
+	// folding this in would let the delivery that re-reports a run re-arm its
+	// comment.
+	ClaimComment(ctx context.Context, projectID, repo string, runID int64, at time.Time) (bool, error)
+
+	// ReleaseComment gives the claim back, for a post that failed. Without it a
+	// failed post would suppress every retry — and a missing comment is the
+	// failure this whole path exists to prevent.
+	ReleaseComment(ctx context.Context, projectID, repo string, runID int64) error
 
 	// PruneBefore deletes outcomes completed before the cutoff, returning how
 	// many rows went. A CI outcome is evidence about a run and loses its value

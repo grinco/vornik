@@ -25,7 +25,7 @@ func NewForgeCIOutcomeRepository(db DBTX) *ForgeCIOutcomeRepository {
 const forgeCIOutcomeColumns = `project_id, repo, run_id, head_sha, number,
 	workflow_name, workflow_path, run_attempt, conclusion,
 	started_at, completed_at, jobs_json,
-	artifact_excerpt, artifact_bytes, artifact_truncated, recorded_at`
+	artifact_excerpt, artifact_bytes, artifact_truncated, recorded_at, commented_at`
 
 // Upsert records a completed run.
 //
@@ -43,7 +43,7 @@ func (r *ForgeCIOutcomeRepository) Upsert(ctx context.Context, o *persistence.Fo
 	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO forge_ci_outcomes (`+forgeCIOutcomeColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (project_id, repo, run_id) DO UPDATE SET
 			head_sha = EXCLUDED.head_sha,
 			number = EXCLUDED.number,
@@ -58,11 +58,42 @@ func (r *ForgeCIOutcomeRepository) Upsert(ctx context.Context, o *persistence.Fo
 			artifact_bytes = EXCLUDED.artifact_bytes,
 			artifact_truncated = EXCLUDED.artifact_truncated,
 			recorded_at = EXCLUDED.recorded_at`,
+		// commented_at is DELIBERATELY ABSENT from the SET list above (design
+		// §13.6). Every other column records what CI reported and is refreshed;
+		// this one records what Forge did, and refreshing it would post a
+		// second comment on a redelivery.
 		o.ProjectID, o.Repo, o.RunID, o.HeadSHA, o.Number,
 		o.WorkflowName, o.WorkflowPath, o.RunAttempt, o.Conclusion,
 		nullTimeOrNil(o.StartedAt), o.CompletedAt.UTC(), string(jobs),
 		o.ArtifactExcerpt, o.ArtifactBytes, o.ArtifactTruncated, o.RecordedAt.UTC(),
+		nullTimeOrNil(o.CommentedAt),
 	)
+	return mapDBError(err)
+}
+
+// ClaimComment takes the right to comment, atomically.
+func (r *ForgeCIOutcomeRepository) ClaimComment(ctx context.Context, projectID, repo string, runID int64, at time.Time) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE forge_ci_outcomes SET commented_at = $4
+		 WHERE project_id = $1 AND repo = $2 AND run_id = $3
+		   AND commented_at IS NULL`,
+		projectID, repo, runID, at.UTC())
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ReleaseComment returns the claim after a failed post.
+func (r *ForgeCIOutcomeRepository) ReleaseComment(ctx context.Context, projectID, repo string, runID int64) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE forge_ci_outcomes SET commented_at = NULL
+		 WHERE project_id = $1 AND repo = $2 AND run_id = $3`,
+		projectID, repo, runID)
 	return mapDBError(err)
 }
 
@@ -98,16 +129,20 @@ func scanForgeCIOutcomes(rows *sql.Rows) ([]*persistence.ForgeCIOutcome, error) 
 	out := []*persistence.ForgeCIOutcome{}
 	for rows.Next() {
 		var o persistence.ForgeCIOutcome
-		var started sql.NullTime
+		var started, commented sql.NullTime
 		var jobs string
 		if err := rows.Scan(&o.ProjectID, &o.Repo, &o.RunID, &o.HeadSHA, &o.Number,
 			&o.WorkflowName, &o.WorkflowPath, &o.RunAttempt, &o.Conclusion,
 			&started, &o.CompletedAt, &jobs,
-			&o.ArtifactExcerpt, &o.ArtifactBytes, &o.ArtifactTruncated, &o.RecordedAt); err != nil {
+			&o.ArtifactExcerpt, &o.ArtifactBytes, &o.ArtifactTruncated, &o.RecordedAt,
+			&commented); err != nil {
 			return nil, err
 		}
 		if started.Valid {
 			o.StartedAt = started.Time.UTC()
+		}
+		if commented.Valid {
+			o.CommentedAt = commented.Time.UTC()
 		}
 		o.CompletedAt = o.CompletedAt.UTC()
 		o.RecordedAt = o.RecordedAt.UTC()

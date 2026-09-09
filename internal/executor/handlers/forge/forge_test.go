@@ -27,6 +27,10 @@ type fakeProvider struct {
 	pushedDir, pushedBranch, pushedSha string
 	gotSpec                            forgeapi.ChangeRequestSpec
 	gotReview                          forgeapi.ReviewSpec
+	commentRepo                        string
+	commentNumber                      int
+	commentBody                        string
+	commentErr                         error
 	gotRepo                            string
 	gotNumber                          int
 
@@ -81,6 +85,13 @@ func (f *fakeProvider) PostReview(_ context.Context, repo string, number int, r 
 	return f.reviewErr
 }
 func (f *fakeProvider) VerifyPushAccess(context.Context) error { return nil }
+
+// PostComment records the comment body so a test can assert a status echo was
+// posted as a COMMENT and not as a review state.
+func (f *fakeProvider) PostComment(_ context.Context, repo string, number int, body string) error {
+	f.commentRepo, f.commentNumber, f.commentBody = repo, number, body
+	return f.commentErr
+}
 
 type fakeResolver struct {
 	p   forgeapi.ForgeProvider

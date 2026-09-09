@@ -50,6 +50,9 @@ func RunForgeCIOutcomeSuite(t *testing.T, repo persistence.ForgeCIOutcomeReposit
 	t.Run("PruneBefore_removes_only_what_completed_earlier", func(t *testing.T) {
 		ciOutcomePruneBefore(ctx, t, repo, proj, repo1, sha, now)
 	})
+	t.Run("A_redelivery_must_not_clear_commented_at", func(t *testing.T) {
+		ciOutcomeCommentedAtSurvivesUpsert(ctx, t, repo, proj, repo1, sha, now)
+	})
 }
 
 func ciOutcomeRoundTrip(ctx context.Context, t *testing.T, repo persistence.ForgeCIOutcomeRepository,
@@ -255,4 +258,86 @@ func mustOneOutcome(ctx context.Context, t *testing.T, repo persistence.ForgeCIO
 		t.Fatalf("got %d rows for %s, want exactly 1", len(got), sha)
 	}
 	return got[0]
+}
+
+// ciOutcomeCommentedAtSurvivesUpsert is the assertion that separates the two
+// backends (design §13.6).
+//
+// Every other column on this row records what CI REPORTED and is refreshed by
+// each delivery. commented_at records what Forge DID about it, and the upsert
+// must leave it alone — a redelivery that cleared it would post a second
+// comment on the same run.
+//
+// Postgres gets this right by omitting the column from its SET list. SQLite
+// would NOT with `INSERT OR REPLACE`, which replaces the whole row: this case
+// fails against that spelling, which is why it is asserted rather than assumed.
+func ciOutcomeCommentedAtSurvivesUpsert(ctx context.Context, t *testing.T, repo persistence.ForgeCIOutcomeRepository,
+	proj, repo1, _ string, now time.Time) {
+	t.Helper()
+	const commentedSHA = "sha-commented"
+	base := func() *persistence.ForgeCIOutcome {
+		return &persistence.ForgeCIOutcome{
+			ProjectID: proj, Repo: repo1, RunID: 6006, HeadSHA: commentedSHA,
+			Conclusion: "failure", WorkflowPath: ".github/workflows/w.yml",
+			CompletedAt: now, RecordedAt: now,
+		}
+	}
+	if err := repo.Upsert(ctx, base()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	// ESTABLISH THE PRECONDITION rather than assume it. The Postgres lane runs
+	// against a DATABASE THAT PERSISTS between runs, and the upsert above
+	// deliberately preserves commented_at — so a previous run's claim on this
+	// fixture id survives and the first claim below fails, which is the suite
+	// mis-reporting a clean tree as broken. (Third instance of this class in
+	// this repository; the other two were the rating-rollup seeders.)
+	if err := repo.ReleaseComment(ctx, proj, repo1, 6006); err != nil {
+		t.Fatalf("ReleaseComment (precondition): %v", err)
+	}
+
+	claimed, err := repo.ClaimComment(ctx, proj, repo1, 6006, now)
+	if err != nil || !claimed {
+		t.Fatalf("ClaimComment on an unclaimed run: claimed=%v err=%v", claimed, err)
+	}
+	got := mustOneOutcome(ctx, t, repo, proj, repo1, commentedSHA)
+	if got.CommentedAt.IsZero() {
+		t.Fatal("ClaimComment did not record the timestamp")
+	}
+
+	// THE CLAIM IS EXCLUSIVE (regression, headmatch PR #52 2026-09-09: a
+	// redelivery posted a second comment). A second claim must be refused by
+	// the STORE — the caller's in-memory outcome cannot answer this, because
+	// the one an ingress builds from a webhook always has a zero CommentedAt.
+	claimed, err = repo.ClaimComment(ctx, proj, repo1, 6006, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("ClaimComment (second): %v", err)
+	}
+	if claimed {
+		t.Error("a second claim on the same run SUCCEEDED — the run would be commented on twice")
+	}
+
+	// Released, it can be claimed again: a post that failed must be retryable.
+	if err := repo.ReleaseComment(ctx, proj, repo1, 6006); err != nil {
+		t.Fatalf("ReleaseComment: %v", err)
+	}
+	if got := mustOneOutcome(ctx, t, repo, proj, repo1, commentedSHA); !got.CommentedAt.IsZero() {
+		t.Error("ReleaseComment left commented_at set")
+	}
+	claimed, err = repo.ClaimComment(ctx, proj, repo1, 6006, now)
+	if err != nil || !claimed {
+		t.Fatalf("ClaimComment after release: claimed=%v err=%v", claimed, err)
+	}
+
+	// The redelivery. Everything CI reported may be refreshed; the comment
+	// record may not.
+	again := base()
+	again.Conclusion = "failure"
+	if err := repo.Upsert(ctx, again); err != nil {
+		t.Fatalf("Upsert (redelivery): %v", err)
+	}
+	got = mustOneOutcome(ctx, t, repo, proj, repo1, commentedSHA)
+	if got.CommentedAt.IsZero() {
+		t.Error("a redelivery CLEARED commented_at — the same run would be " +
+			"commented on twice")
+	}
 }

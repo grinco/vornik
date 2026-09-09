@@ -21,6 +21,8 @@ func (f fakeProvider) PushBranch(context.Context, string, string, string, string
 func (f fakeProvider) OpenChangeRequest(context.Context, ChangeRequestSpec) (string, error) {
 	return "", nil
 }
+func (f fakeProvider) PostComment(context.Context, string, int, string) error { return nil }
+
 func (f fakeProvider) PostReview(context.Context, string, int, ReviewSpec) error { return nil }
 func (f fakeProvider) VerifyPushAccess(context.Context) error                    { return nil }
 

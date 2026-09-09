@@ -185,6 +185,14 @@ type ForgeProvider interface {
 	OpenChangeRequest(ctx context.Context, s ChangeRequestSpec) (url string, err error)
 	// PostReview posts r against the change request identified by (repo, number).
 	PostReview(ctx context.Context, repo string, number int, r ReviewSpec) error
+	// PostComment posts a plain comment on the change request's conversation.
+	//
+	// DISTINCT FROM PostReview, and the distinction is the point: a review
+	// carries an APPROVE / REQUEST_CHANGES state that can satisfy or block
+	// branch protection, while a comment carries none. Anything that merely
+	// REPORTS — a CI status, a status echo — must use this, so a machine note
+	// can never move a merge gate.
+	PostComment(ctx context.Context, repo string, number int, body string) error
 	// VerifyPushAccess reports whether the provider's credentials can push
 	// branches (the permission OpenChangeRequest needs). A non-nil error means
 	// the integration is mis-permissioned or unreachable — callers log it at boot

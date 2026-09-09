@@ -430,6 +430,36 @@ func (p *Provider) VerifyPushAccess(ctx context.Context) error {
 	return nil
 }
 
+// PostComment posts a plain conversation comment, never a review state.
+//
+// GitHub serves pull-request conversation comments from the ISSUES endpoint —
+// the same one an issue comment uses — which is why this reaches
+// /issues/{n}/comments rather than anything under /pulls.
+func (p *Provider) PostComment(ctx context.Context, repo string, number int, body string) error {
+	tok, err := p.token(ctx)
+	if err != nil {
+		return err
+	}
+	reqBody, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return fmt.Errorf("forge/github: encode comment: %w", err)
+	}
+	url := fmt.Sprintf("%s/repos/%s/issues/%d/comments", p.apiBaseURL, repo, number)
+	req, err := p.newReq(ctx, http.MethodPost, url, reqBody, tok)
+	if err != nil {
+		return err
+	}
+	resp, respBody, err := p.do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return forge.NewStatusError("forge/github: post comment",
+			resp.StatusCode, resp.Header, excerpt(respBody))
+	}
+	return nil
+}
+
 func (p *Provider) applyLabels(ctx context.Context, tok, repo string, number int, labels []string) {
 	reqBody, _ := json.Marshal(map[string][]string{"labels": labels})
 	url := fmt.Sprintf("%s/repos/%s/issues/%d/labels", p.apiBaseURL, repo, number)

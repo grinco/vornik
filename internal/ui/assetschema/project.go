@@ -222,7 +222,7 @@ var ProjectDeferredPaths = []string{
 	"forge.ci.enabled", "forge.ci.artifact_name",
 	"forge.ci.max_artifact_bytes", "forge.ci.max_excerpt_bytes",
 	"forge.ci.review_on_failure", "forge.ci.success_workflow_id",
-	"forge.ci.workflow_paths",
+	"forge.ci.workflow_paths", "forge.ci.comment_on_failure",
 	"github.app_id", "github.installation_id", "github.private_key_path", "github.api_base_url",
 	"github.repo",
 	// Forge automation. mention_handle joins the rest of the block as YAML-only:

@@ -910,6 +910,16 @@ type ProjectForgeCI struct {
 	// would lose the thing being deposited.
 	SuccessWorkflowID string `yaml:"success_workflow_id"`
 
+	// CommentOnFailure posts a factual status comment when a failure lands on a
+	// head whose review is already posted, where a review would only be refused
+	// (design §13).
+	//
+	// A *bool because the zero value must not mean off: DEFAULTS TRUE, unlike
+	// every sibling here. The asymmetry tracks the failure mode rather than the
+	// feature set — the others do something unwanted when enabled, while this
+	// one loses a signal silently when disabled, which is the bug it fixes.
+	CommentOnFailure *bool `yaml:"comment_on_failure"`
+
 	// WorkflowPaths limits ingestion to these workflow FILES. Matched on path
 	// rather than display name: a name is text an author can change without
 	// noticing anything depends on it. Empty records every workflow.
@@ -929,6 +939,11 @@ func (c *ProjectForgeCI) CIDefaults() {
 	if c.MaxExcerptBytes <= 0 {
 		c.MaxExcerptBytes = 64 << 10 // 64 KiB
 	}
+}
+
+// CommentsOnFailure resolves the tri-state: unset means TRUE (design §13.7).
+func (c ProjectForgeCI) CommentsOnFailure() bool {
+	return c.CommentOnFailure == nil || *c.CommentOnFailure
 }
 
 // ProjectGit controls the git-over-HTTPS workspace-access feature.

@@ -276,8 +276,39 @@ forge:
     review_on_failure: true     # a failed run triggers a coalesced review
     success_workflow_id: ""     # a green run fires this workflow; empty is off
     comment_on_failure: true    # say so when a failure cannot produce a review
-    workflow_paths: []          # limit to these workflow files; empty means all
+    workflow_paths: []          # record only these workflow files; empty means all
+    trigger_workflow_paths: []  # of those, only these may TRIGGER; empty means all
 ```
+
+**Why two path lists.** `workflow_paths` decides what is *recorded*;
+`trigger_workflow_paths` decides which of those recorded runs may *start* a
+review. On a repository where several workflows run per pull request, one list
+cannot express what you want:
+
+- record everything and let everything trigger, and a green push fires the
+  success workflow once per run — several reviews for one push;
+- record only one workflow, and the review sees only that one. It can then
+  report a green pipeline while another workflow is red, which is worse than
+  having no CI context at all.
+
+So record everything and nominate one gate:
+
+```yaml
+forge:
+  ci:
+    workflow_paths: []                                   # record all of them
+    trigger_workflow_paths:
+      - ".github/workflows/integration.yml"              # …this one starts the review
+```
+
+Pick the workflow that finishes last, or the one you consider authoritative:
+the review renders the outcomes recorded *when it runs*, so a gate that
+finishes early shows a partial picture. It never invents one — a run that has
+not completed is reported as not completed, never as passing.
+
+Naming a path in `trigger_workflow_paths` that a non-empty `workflow_paths`
+excludes is rejected at startup: that run would never be ingested, so the
+trigger could never fire.
 
 If your events arrive on the generic signed webhook rather than the App
 channel, give the source a `ci_workflow_id` as well — a CI run is not a change

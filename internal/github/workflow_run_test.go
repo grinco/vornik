@@ -17,14 +17,10 @@ func (c *capturingTaskCreator) Create(_ context.Context, ev TaskCreationEvent) e
 	return nil
 }
 
-func ciChannel(t *testing.T, enabled bool, paths []string) (*Channel, *installation, *capturingTaskCreator) {
+func ciChannel(t *testing.T, enabled bool) (*Channel, *installation, *capturingTaskCreator) {
 	t.Helper()
 	tc := &capturingTaskCreator{}
-	inst := &installation{
-		taskCreator:     tc,
-		ciEnabled:       enabled,
-		ciWorkflowPaths: paths,
-	}
+	inst := &installation{taskCreator: tc, ciEnabled: enabled}
 	return &Channel{logger: zerolog.Nop()}, inst, tc
 }
 
@@ -55,7 +51,7 @@ func ciPayload(path string, prNumbers ...int) eventPayload {
 }
 
 func TestWorkflowRunCompletedCreatesATask(t *testing.T) {
-	c, inst, tc := ciChannel(t, true, nil)
+	c, inst, tc := ciChannel(t, true)
 	c.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d1",
 		ciPayload(".github/workflows/terraform-plan.yml", 42), inst)
 
@@ -80,7 +76,7 @@ func TestWorkflowRunCompletedCreatesATask(t *testing.T) {
 // Off by default: with CI ingestion disabled the delivery is acked and nothing
 // happens, which is the pre-feature behaviour exactly.
 func TestWorkflowRunIgnoredWhenDisabled(t *testing.T) {
-	c, inst, tc := ciChannel(t, false, nil)
+	c, inst, tc := ciChannel(t, false)
 	c.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d2",
 		ciPayload(".github/workflows/terraform-plan.yml", 42), inst)
 	if len(tc.events) != 0 {
@@ -88,29 +84,41 @@ func TestWorkflowRunIgnoredWhenDisabled(t *testing.T) {
 	}
 }
 
-// The workflow filter matches on PATH, not display name.
-func TestWorkflowRunFilterMatchesOnPath(t *testing.T) {
-	watched := []string{".github/workflows/terraform-plan.yml"}
-
-	c, inst, tc := ciChannel(t, true, watched)
-	c.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d3",
-		ciPayload(".github/workflows/terraform-plan.yml", 42), inst)
-	if len(tc.events) != 1 {
-		t.Fatalf("a watched workflow must fire: got %d events", len(tc.events))
-	}
-
-	c2, inst2, tc2 := ciChannel(t, true, watched)
-	c2.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d4",
-		ciPayload(".github/workflows/some-other.yml", 42), inst2)
-	if len(tc2.events) != 0 {
-		t.Fatalf("an unwatched workflow must not fire: got %d events", len(tc2.events))
+// THE CHANNEL DOES NOT FILTER BY WORKFLOW PATH, and that is the fix rather than
+// a gap (design §14.4).
+//
+// It used to. The copy lived here, inside the GitHub App channel, so the
+// GENERIC RELAY INGRESS — the door the deployment that found this actually uses
+// — had no filter at all and `workflow_paths` did nothing there. The filter now
+// lives in forgeci, which both ingresses run through, and is tested there
+// against both.
+//
+// This case pins the division so nobody restores the duplicate: the channel
+// forwards every completed run, and forgeci decides what is recorded. Two
+// implementations of one safety check means one of them is wrong.
+func TestWorkflowRunChannelForwardsEveryPathAndLetsForgeciFilter(t *testing.T) {
+	for _, path := range []string{
+		".github/workflows/terraform-plan.yml",
+		".github/workflows/some-other.yml",
+	} {
+		c, inst, tc := ciChannel(t, true)
+		c.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d3",
+			ciPayload(path, 42), inst)
+		if len(tc.events) != 1 {
+			t.Fatalf("%s: the channel must forward every completed run; got %d events",
+				path, len(tc.events))
+		}
+		if got := tc.events[0].CI.WorkflowPath; got != path {
+			t.Errorf("forwarded workflow_path = %q, want %q — forgeci filters on this",
+				got, path)
+		}
 	}
 }
 
 // A run with no pull request — a default-branch build, or a fork PR — is still
 // recorded, with Number 0 and no PR session (design §3.3).
 func TestWorkflowRunWithNoPullRequestStillFires(t *testing.T) {
-	c, inst, tc := ciChannel(t, true, nil)
+	c, inst, tc := ciChannel(t, true)
 	c.handleWorkflowRunCompleted(context.Background(), "workflow_run", "d5",
 		ciPayload(".github/workflows/deploy.yml"), inst)
 

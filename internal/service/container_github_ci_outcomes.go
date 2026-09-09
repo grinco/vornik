@@ -208,6 +208,11 @@ func (c *Container) ciIngestForProject(p *registry.Project) *forgeci.Ingest {
 		ReviewOnFailure:   ci.ReviewOnFailure,
 		SuccessWorkflowID: ci.SuccessWorkflowID,
 		CommentOnFailure:  ci.CommentsOnFailure(),
+		// Both path filters live in forgeci so BOTH ingresses honour them.
+		// workflow_paths used to be enforced only inside the App channel, which
+		// meant the generic relay ingress ignored it entirely (design §14.4).
+		WorkflowPaths:        append([]string(nil), ci.WorkflowPaths...),
+		TriggerWorkflowPaths: append([]string(nil), ci.TriggerWorkflowPaths...),
 	}
 	logger := c.Logger.With().Str("component", "forge_ci").Str("project_id", p.ID).Logger()
 

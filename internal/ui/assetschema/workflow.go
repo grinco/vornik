@@ -72,7 +72,13 @@ func WorkflowSchema() AssetSchema {
 				KeyHelp:     "The step's map key. Renaming = delete + re-add under the new key.",
 				ItemSchema:  workflowStepItemSchema(),
 				ItemDeferredPaths: []string{
-					"gates",                 // []WorkflowGate — conditional transitions
+					"gates", // []WorkflowGate — conditional transitions
+					// map[string]string — a system step's outcome→target routing
+					// (2026-09-01-forge-rereview-triggers-design.md §17.2). Deferred
+					// with `gates` and for the same reason: the form has no editor
+					// for a free-keyed map, and a half-rendered one that dropped
+					// keys on save would be worse than editing the YAML.
+					"on_outcome",
 					"payload",               // map[string]any — call_project input
 					"params",                // map[string]any — spawn_project params
 					"initial_task.workflow", // *WorkflowInitialTask

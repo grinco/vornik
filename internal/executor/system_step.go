@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -243,4 +244,166 @@ func systemResultMessage(result json.RawMessage) string {
 		return env.Message
 	}
 	return env.Message[:systemResultMaxBytes] + systemResultTruncationMarker
+}
+
+// systemResultBody extracts a handler's `message` WITHOUT capping it — the cap
+// belongs to systemResultChain, which owns the total budget across a run of
+// system steps. Capping here as well would apply the limit twice.
+func systemResultBody(result json.RawMessage) string {
+	if len(result) == 0 {
+		return ""
+	}
+	var env struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(result, &env); err != nil {
+		return ""
+	}
+	return env.Message
+}
+
+// systemStepOutcome reads the outcome a handler reported, for `on_outcome`
+// routing (design 2026-09-01-forge-rereview-triggers-design.md §17.2).
+//
+// A DEDICATED key rather than reusing a handler's domain fields. forge.fetch_diff
+// already carries `scope`, whose value happens to match today — but `scope` is
+// REFERENCE MATERIAL that reaches the reviewing model's prompt, and routing on
+// it would mean a later change to that prompt-facing vocabulary silently
+// re-routes deployed workflows. The one duplicated string buys them the ability
+// to diverge. Same separation the SystemHandler doc comment draws between
+// `message` and the structured keys.
+//
+// An unreadable or absent outcome is the empty string, which routes on
+// on_success — no result shape can make this branch fail a task.
+func systemStepOutcome(result json.RawMessage) string {
+	if len(result) == 0 {
+		return ""
+	}
+	var env struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(result, &env); err != nil {
+		return ""
+	}
+	return env.Outcome
+}
+
+// nextAfterSystemStep picks the successor of a SUCCESSFUL system step.
+//
+// Failure is not routed here — a failure takes on_fail, and letting an outcome
+// win over that would turn an error into a silent branch.
+func nextAfterSystemStep(onSuccess string, onOutcome map[string]string, result json.RawMessage) string {
+	if len(onOutcome) == 0 {
+		return onSuccess
+	}
+	if target, ok := onOutcome[systemStepOutcome(result)]; ok && target != "" {
+		return target
+	}
+	return onSuccess
+}
+
+// systemResultChain accumulates the output of consecutive system steps so the
+// next agent receives ALL of them, not only the last.
+//
+// INCIDENT 2026-09-09, headmatch PR #53. `lastResultMessage` was one variable
+// assigned by each system step, so when `github-review` gained a second system
+// step — the chain became fetch_diff → fetch_ci → review — fetch_ci overwrote
+// the diff and the reviewer got the CI summary instead. Its prompt still said
+// "the previous step provided the COMPLETE unified diff as your input", so it
+// improvised (run_shell 33, git_diff 1, in a workflow that forbids running git),
+// described a change from a different pull request, and posted an APPROVAL.
+//
+// The same customer-reported defect this file's systemResultMessage was written
+// to fix on 2026-09-03, reached the second way. C1 said "the next agent step
+// carries that handler's output" — true of each step, false of a sequence.
+//
+// Design: https://docs.vornik.io,
+// Amendment 2026-09-09.
+type systemResultChain struct {
+	sections []systemResultSection
+	used     int
+}
+
+type systemResultSection struct {
+	stepID  string
+	handler string
+	body    string
+}
+
+// Append adds one successful system step's rendering.
+//
+// A handler with no `message` adds NO SECTION and does not disturb what earlier
+// steps contributed. Before accumulation an empty result had to CLEAR the
+// carried message, or the previous step's text stood in as if it were this
+// step's (the 2026-09-04 addendum). A buffer that resets at every agent step
+// cannot go stale that way, so "contributes nothing" can now mean exactly that.
+func (c *systemResultChain) Append(stepID, handler string, result json.RawMessage) {
+	body := systemResultBody(result)
+	if body == "" {
+		return
+	}
+	// FIRST COME, FIRST SERVED against a TOTAL budget, so a chain of N steps
+	// cannot multiply the agent's context by N. Earlier sections keep their
+	// content whole and later ones degrade: in a chain the earlier step is the
+	// primary input and the later ones enrich it (fetch_diff, then fetch_ci),
+	// and an equal share per section would halve a 250 KiB diff to make room
+	// for a 2 KiB CI summary. It also keeps the allocation stable — adding a
+	// step never changes what the steps before it contributed.
+	remaining := systemResultMaxBytes - c.used
+	if remaining <= 0 {
+		return
+	}
+	if len(body) > remaining {
+		// The MARKER COUNTS against the budget. Cutting to `remaining` and then
+		// appending the marker overruns by exactly its length — caught by this
+		// package's own budget test, which asserts the total rather than
+		// trusting the arithmetic.
+		keep := remaining - len(systemResultTruncationMarker)
+		if keep <= 0 {
+			// Not enough room left to say anything AND say it was cut. A
+			// section that is only a truncation notice tells the agent nothing
+			// it can use, so add none.
+			return
+		}
+		body = body[:keep] + systemResultTruncationMarker
+	}
+	c.used += len(body)
+	c.sections = append(c.sections, systemResultSection{stepID: stepID, handler: handler, body: body})
+}
+
+// Reset clears the accumulator. Called when an agent step consumes it, and when
+// a system step FAILS — a failure replaces rather than appends, because the
+// recovery agent an on_fail routes to needs the error unambiguous rather than
+// appended under a heading after 200 KiB of diff.
+func (c *systemResultChain) Reset() { c.sections, c.used = nil, 0 }
+
+// Render produces the agent-facing text.
+//
+// ONE SECTION RENDERS BARE — no header, byte-identical to what a single system
+// step produced before this existed. Every workflow in the fleet with a single
+// system→agent boundary is therefore untouched by this change, which is what
+// makes it safe to ship; labels appear only where there is something to
+// disambiguate.
+func (c *systemResultChain) Render() string {
+	switch len(c.sections) {
+	case 0:
+		return ""
+	case 1:
+		return c.sections[0].body
+	}
+	var b strings.Builder
+	for i, s := range c.sections {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		// The step id AND the handler: a reader can check both against the
+		// workflow. The payload beside this is author-controlled, so a diff can
+		// contain a line shaped like a header — it does not become instructions
+		// (handler output is reference material by construction), but it could
+		// be misattributed. Named as a residual in the design; eliminating it
+		// needs a channel the payload cannot reach.
+		fmt.Fprintf(&b, "=== step %s (%s) ===\n", s.stepID, s.handler)
+		b.WriteString(s.body)
+	}
+	return b.String()
 }

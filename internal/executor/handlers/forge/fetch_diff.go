@@ -73,7 +73,14 @@ func (h *FetchDiffHandler) Execute(ctx context.Context, in executor.SystemStepIn
 		// request or only what changed since the last review — otherwise an
 		// incremental diff reads as a suspiciously small PR and the prose
 		// describes the wrong thing.
-		"scope":    scope,
+		"scope": scope,
+		// The ROUTING contract, deliberately a separate key from "scope"
+		// above even though the two carry the same string today. "scope" is
+		// reference material the reviewer's prompt reads; this is what
+		// on_outcome switches on, so a workflow can send `no-change` to a
+		// terminal instead of paying for a review of nothing (design
+		// 2026-09-01-forge-rereview-triggers-design.md §17.2).
+		"outcome":  scope,
 		"head_sha": head,
 	})
 	return executor.SystemStepResult{Result: out}, nil

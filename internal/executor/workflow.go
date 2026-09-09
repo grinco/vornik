@@ -74,6 +74,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 	// so they can be staged as inputs for the next step.
 	var stepArtifacts []map[string]string
 	var lastResultMessage string
+	// systemChain accumulates consecutive system steps' output so an agent
+	// receives ALL of it, not only the last step's. See the type's doc comment
+	// for the incident (headmatch PR #53, 2026-09-09).
+	var systemChain systemResultChain
 	// lastResultErr carries the original error that produced lastResultMessage
 	// so resolveTerminalOutcome can wrap it with %w and preserve the error
 	// chain (e.g. context.Canceled) for ClassifyExecutionFailure. Only set
@@ -475,6 +479,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			}
 			lastResultMessage = ""
 			lastResultErr = nil
+			// The agent has now been handed the chain, so it is spent. Without
+			// this a later agent in the same workflow would receive the system
+			// context belonging to the first one.
+			systemChain.Reset()
 			// Set when a step that pins delegated_workflow finished a fresh
 			// pass with zero schedulable subtasks (see the guard below).
 			emptyDelegation := false
@@ -901,6 +909,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					// the handler so an operator doesn't read it as an agent
 					// message. state.LastResult is unchanged (bare error) so a
 					// downstream step's PrevResult sees the same shape as before.
+					// REPLACE, not append: on_fail usually routes to a
+					// recovery agent, which needs the error unambiguous rather
+					// than buried under a heading after 200 KiB of diff.
+					systemChain.Reset()
 					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, err.Error())
 					state.LastResult = errorResultJSON(err)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
@@ -948,6 +960,8 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					// %w chain into the failure classifier); prefix names the
 					// handler. state.LastResult keeps the bare error for the
 					// next step's PrevResult (unchanged shape).
+					// REPLACE, not append — see the sibling failure path above.
+					systemChain.Reset()
 					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, sysErr.Error())
 					state.LastResult = errorResultJSON(sysErr)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
@@ -990,20 +1004,33 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				// failure to the next agent and stayed silent about its success.
 				//
 				// Design: https://docs.vornik.io
-				lastResultMessage = systemResultMessage(sysResult.Result)
+				//
+				// APPEND, not assign (amendment 2026-09-09). A chain of system
+				// steps used to leave the agent holding only the last one's
+				// output: when github-review became fetch_diff → fetch_ci →
+				// review, the reviewer got the CI summary instead of the diff
+				// and invented a review of a different pull request.
+				systemChain.Append(currentStepID, step.Handler, sysResult.Result)
+				lastResultMessage = systemChain.Render()
 			} else {
 				state.LastResult = []byte(`{}`)
-				// AND clear the carried message. Setting LastResult without
-				// resetting this left the PREVIOUS step's text in place, so an
-				// agent following a system step that succeeded with an EMPTY
-				// result was handed whatever came before it — on the
-				// interesting path the error of the step whose on_fail routed
-				// here, presented as its predecessor's output. The agent-step
-				// success path resets unconditionally (:476), which is what
-				// makes this an asymmetry rather than a choice. Residual half
-				// of the asymmetry 9db8b7bb fixed; found by the 2026-09-03
-				// four-week audit.
-				lastResultMessage = ""
+				// An empty result CONTRIBUTES NOTHING and no longer clears.
+				//
+				// It used to clear, correctly: without accumulation, leaving
+				// the carried message alone let the PREVIOUS step's text stand
+				// in as if it were this step's — on the interesting path the
+				// error of the step whose on_fail routed here, presented as its
+				// predecessor's output (the 2026-09-04 addendum).
+				//
+				// The accumulator cannot go stale that way: it holds only the
+				// unbroken run of system steps since the last agent step, and
+				// resets there. So a handler that returns no `message` adds no
+				// section and leaves earlier steps' output intact, which is
+				// what "contributes nothing" should have meant all along.
+				// Clearing here now would re-create the original bug one step
+				// further along — a fetch_ci returning nothing would wipe the
+				// diff fetch_diff had just supplied.
+				lastResultMessage = systemChain.Render()
 			}
 			// A system handler can request an AWAITING_INPUT PARK instead of
 			// routing onward (forge.open_change_request when a push is rejected):
@@ -1027,10 +1054,28 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				}
 				return "", nil, completedSteps, errLeadHandoff
 			}
-			if err := e.saveCheckpoint(ctx, execution, step.OnSuccess, completedSteps, state); err != nil {
+			// A system step may route on the outcome its handler reported
+			// (design 2026-09-01-forge-rereview-triggers-design.md §17.2), so
+			// a `no-change` diff can reach a terminal without paying for a
+			// reviewer that has nothing to review. No on_outcome map, or an
+			// outcome the map does not name, is exactly on_success — which is
+			// what makes this additive to every workflow already deployed.
+			nextAfterSystem := nextAfterSystemStep(step.OnSuccess, step.OnOutcome, sysResult.Result)
+			if nextAfterSystem != step.OnSuccess {
+				e.logger.Info().
+					Str("task_id", task.ID).
+					Str("execution_id", execution.ID).
+					Str("step", currentStepID).
+					Str("handler", step.Handler).
+					Str("outcome", systemStepOutcome(sysResult.Result)).
+					Str("next", nextAfterSystem).
+					Str("instead_of", step.OnSuccess).
+					Msg("workflow: system step routed on its outcome")
+			}
+			if err := e.saveCheckpoint(ctx, execution, nextAfterSystem, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
 			}
-			currentStepID = step.OnSuccess
+			currentStepID = nextAfterSystem
 		case "parallel":
 			// Declarative intra-workflow fan-out (parallel-fanout LLD §4.2).
 			// First pass: create one PARALLEL delegated child per static

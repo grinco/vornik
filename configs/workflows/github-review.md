@@ -13,9 +13,34 @@ steps:
   fetch_diff:
     type: "system"
     handler: "forge.fetch_diff"
-    on_success: "review"
+    on_success: "fetch_ci"
+    # Nothing new since the last review: stop here rather than pay a reviewer to
+    # look at no commits. forge.post_review's guard would refuse to post the
+    # result anyway (2026-09-01-forge-rereview-triggers-design.md §16), and with
+    # CI ingestion on this is the COMMON shape rather than the rare one — CI
+    # almost always completes on a head whose review has already finished.
+    #
+    # §17 is why this is `on_outcome` and not `gates:` — a gates block on a
+    # system step parses, validates, and is never evaluated. That silence cost a
+    # P1: a reviewer wrote a review of nothing and posted it as an approval.
+    on_outcome:
+      no-change: "nothing_to_review"
     on_fail: "failed"
     timeout: "5m"
+  # What CI concluded for the commit under review
+  # (2026-09-08-forge-ci-outcomes-design.md §6). Optional by design: a review
+  # that omits this step behaves exactly as it did before the feature. It never
+  # renders a blank — "no CI run has completed for this commit" and "CI passed"
+  # are different facts, and it says which.
+  #
+  # on_fail continues to the review rather than failing it: a review without CI
+  # context is worth more than no review.
+  fetch_ci:
+    type: "system"
+    handler: "forge.fetch_ci"
+    on_success: "review"
+    on_fail: "review"
+    timeout: "2m"
   review:
     type: "agent"
     role: "reviewer"
@@ -77,6 +102,9 @@ terminals:
   complete:
     status: "COMPLETED"
     message: "Change-request review posted."
+  nothing_to_review:
+    status: "COMPLETED"
+    message: "No new commits since the last review; no reviewer was run."
   failed:
     status: "FAILED"
     message: "Change-request review failed."

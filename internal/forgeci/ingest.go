@@ -120,6 +120,43 @@ type Config struct {
 	// when enabled is an unwanted behaviour change, while this one's failure
 	// mode when disabled is silent signal loss (design §13.7).
 	CommentOnFailure bool
+
+	// WorkflowPaths limits which runs are RECORDED; TriggerWorkflowPaths limits
+	// which of those may TRIGGER. Both empty = everything, i.e. the behaviour
+	// before either existed. Design §14.
+	//
+	// WorkflowPaths lives HERE, in the code both ingresses share, and not in
+	// either ingress. It was previously enforced only inside the GitHub App
+	// channel, so on the generic relay ingress — the door this deployment
+	// actually uses — it parsed and did nothing. Third instance of that class
+	// in this feature; §14.4.
+	WorkflowPaths        []string
+	TriggerWorkflowPaths []string
+}
+
+// Watches reports whether a run on this workflow path is recorded at all.
+//
+// Matched on PATH rather than display name: a name is text an author can change
+// without noticing anything depends on it.
+func (c Config) Watches(path string) bool { return pathAllowed(c.WorkflowPaths, path) }
+
+// Triggers reports whether a run on this workflow path may trigger, given that
+// it is watched. Governs the failure and the green trigger alike — "is this run
+// the gate?" is not a question about what the run concluded.
+func (c Config) Triggers(path string) bool { return pathAllowed(c.TriggerWorkflowPaths, path) }
+
+// pathAllowed: an empty filter allows everything, which is what makes both keys
+// additive to every project already deployed.
+func pathAllowed(allowed []string, path string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, a := range allowed {
+		if a == path {
+			return true
+		}
+	}
+	return false
 }
 
 // Record fetches the run's full detail and stores it.
@@ -130,6 +167,16 @@ type Config struct {
 // this delivery its behaviour.
 func (g *Ingest) Record(ctx context.Context, ev Run) *persistence.ForgeCIOutcome {
 	if g == nil || g.outcomes == nil {
+		return nil
+	}
+	// An unwatched workflow is not recorded, and — because this sits BEFORE the
+	// provider fetch below — does not cost an API call either. The cost being
+	// avoided is the round-trip, not just the row (design §14.4).
+	if !g.cfg.Watches(ev.WorkflowPath) {
+		g.Logger.Debug().
+			Str("repo", ev.Repo).Int64("run_id", ev.RunID).
+			Str("workflow_path", ev.WorkflowPath).
+			Msg("forgeci: workflow not watched; not recording")
 		return nil
 	}
 
@@ -292,6 +339,14 @@ func Decide(out *persistence.ForgeCIOutcome, cfg Config, alreadyReviewed bool) D
 	switch {
 	case out == nil:
 		return Decision{Reason: "no outcome recorded"}
+
+	case !cfg.Triggers(out.WorkflowPath):
+		// Recorded, so a review that runs for another reason still renders this
+		// run's outcome — but not itself a trigger. The case neither key could
+		// express alone (design §14.1): without it, a repo running five
+		// workflows either posts five reviews on a green push or hides four
+		// workflows' results from the one review it does post.
+		return Decision{Reason: "workflow is not a trigger"}
 
 	case out.Failed():
 		// A failure is where a human wants Forge to speak. It needs a pull

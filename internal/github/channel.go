@@ -257,12 +257,6 @@ type InstallationConfig struct {
 	// re-accepted it.
 	CIEnabled bool
 
-	// CIWorkflowPaths, when non-empty, limits CI ingestion to these workflow
-	// FILES (e.g. ".github/workflows/terraform-plan.yml"). Matched on path
-	// rather than display name: a name is text an author can change without
-	// noticing anything depends on it. Empty records every workflow.
-	CIWorkflowPaths []string
-
 	// ReviewDraftPRs opts INTO auto-reviewing draft pull requests. Default
 	// false: a draft is work in progress, and ready_for_review is the
 	// transition that starts review. An explicit on-demand command still
@@ -469,10 +463,10 @@ type installation struct {
 	autoReviewOnPush bool
 	reviewDraftPRs   bool
 
-	// ciEnabled / ciWorkflowPaths are the resolved forms of the same-named
-	// InstallationConfig fields.
-	ciEnabled       bool
-	ciWorkflowPaths []string
+	// ciEnabled is the resolved form of the same-named InstallationConfig
+	// field. There is deliberately no ciWorkflowPaths beside it: the
+	// workflow-path filter lives in forgeci, where both ingresses see it.
+	ciEnabled bool
 
 	// tokenMu guards the installation-access-token cache. Held
 	// across the JWT exchange so two concurrent Sends after expiry
@@ -613,7 +607,6 @@ func buildInstallation(ic InstallationConfig) *installation {
 		// nil == unset == ON. See InstallationConfig.AutoReviewOnPush.
 		autoReviewOnPush: ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush,
 		ciEnabled:        ic.CIEnabled,
-		ciWorkflowPaths:  append([]string(nil), ic.CIWorkflowPaths...),
 		reviewDraftPRs:   ic.ReviewDraftPRs,
 	}
 }
@@ -1616,15 +1609,12 @@ func (c *Channel) handleWorkflowRunCompleted(ctx context.Context, event, deliver
 			Msg("github-app: forge CI ingestion disabled; acking")
 		return
 	}
-	// A workflow filter, when configured, matches on the workflow PATH rather
-	// than its display name: a name is text an author can change without
-	// noticing anything depends on it.
-	if len(inst.ciWorkflowPaths) > 0 && !containsString(inst.ciWorkflowPaths, p.WorkflowRun.Path) {
-		c.logger.Debug().
-			Str("workflow_path", p.WorkflowRun.Path).
-			Msg("github-app: workflow not watched; acking")
-		return
-	}
+	// The workflow-path filter is NOT applied here. It lives in forgeci, which
+	// both ingresses run through, because a copy here was a copy the generic
+	// relay ingress did not have — so `workflow_paths` parsed and did nothing
+	// on the door this deployment uses. Two implementations of one safety check
+	// means one of them is wrong, and it was this one: correct, and unreachable
+	// from the ingress that mattered. Design §14.4.
 
 	number := 0
 	if len(p.WorkflowRun.PullRequests) > 0 {
@@ -1660,15 +1650,4 @@ func (c *Channel) handleWorkflowRunCompleted(ctx context.Context, event, deliver
 			Str("repo", ev.Repo).Int64("run_id", ev.CI.RunID).
 			Msg("github-app: CI outcome task creation failed")
 	}
-}
-
-// containsString is a tiny membership helper; the workflow filter is the only
-// caller and a map would cost more than it saves at this size.
-func containsString(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
 }

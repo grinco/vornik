@@ -78,7 +78,18 @@ func newTestHarness(t *testing.T, configure ...func(n *Narrator)) *testHarness {
 //
 // expectNoLine deliberately does NOT use this — there, the window IS the
 // assertion, and stretching it would only slow the suite down.
-const narrationWaitFloor = 15 * time.Second
+//
+// RAISED 15s → 60s on 2026-09-09, the SECOND occurrence of the same flake
+// (`make test`, i.e. `go test -v -race -short ./...`, on a host also running
+// the daemon and Postgres: 15.02s, and the same test passed alone under
+// identical flags immediately after). Recorded as a pattern rather than
+// re-tuned as a one-off: the number is not measuring the narrator, it is
+// measuring how many other packages happen to be compiling and racing beside
+// it. Sixty seconds is inside the package's own test timeout and, since a
+// waiting test returns the instant its line lands, still costs a passing run
+// nothing. If it flakes a third time the deadline is the wrong instrument and
+// the wait wants a real signal, not a bigger number.
+const narrationWaitFloor = 60 * time.Second
 
 func (h *testHarness) awaitLine(timeout time.Duration) *persistence.ExecutionNarration {
 	h.t.Helper()

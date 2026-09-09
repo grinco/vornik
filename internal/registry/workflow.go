@@ -209,6 +209,22 @@ type WorkflowStep struct {
 	OnFail string `yaml:"on_fail"`
 	// Gates define conditional transitions
 	Gates []WorkflowGate `yaml:"gates"`
+
+	// OnOutcome routes a SYSTEM step on the outcome its handler reported,
+	// mapping that outcome to a step or terminal.
+	//
+	// Gates cannot do this and look as though they should: they work by
+	// injecting their conditions into an AGENT's prompt so the model emits
+	// matching JSON (buildGatePromptSuffix). A system step has no prompt and
+	// no model, so a `gates:` block on one silently never matches — which is
+	// how a reviewer kept running on a diff with nothing in it (design
+	// 2026-09-01-forge-rereview-triggers-design.md §16.3, §17.2).
+	//
+	// Precedence: a FAILURE takes OnFail, unchanged. Otherwise the handler's
+	// reported outcome is looked up here, and OnSuccess is the fallback — an
+	// outcome absent from the map routes normally, so a handler growing a new
+	// outcome value cannot break a workflow that does not name it.
+	OnOutcome map[string]string `yaml:"on_outcome,omitempty"`
 	// Timeout for this step (e.g., "30m")
 	Timeout string `yaml:"timeout"`
 	// Retry configures this step's retry ladder. Optional: a zero value
@@ -799,6 +815,55 @@ func (w *Workflow) Validate(filename string) error {
 				}
 			}
 			if err := w.validateTransition(stepID, fmt.Sprintf("gates[%d].target", i), gate.Target, filename); err != nil {
+				return err
+			}
+		}
+
+		// A `gates:` block outside an agent or gate step is INERT, and was
+		// accepted in silence until 2026-09-09. Gates route by injecting their
+		// conditions into an agent's PROMPT (buildGatePromptSuffix) and reading
+		// the JSON the model emits back; a system, approval or plan step has
+		// neither. Two attempts to gate a system step were made during a P1,
+		// both parsed, both validated, both did nothing, and both posted the
+		// review the gate existed to prevent.
+		//
+		// An ERROR rather than a warning, for the reason the incident turned
+		// on: the whole cost was that nothing said anything, and a warning in a
+		// log nobody is reading reproduces that exactly. Safe to fail the load,
+		// because such a block does nothing today — no behaviour can regress.
+		//
+		// Design: 2026-09-01-forge-rereview-triggers-design.md §17.3.
+		if len(step.Gates) > 0 && step.Type != "agent" && step.Type != "gate" {
+			hint := ""
+			if step.Type == "system" {
+				hint = " — use on_outcome to route a system step on what its handler reported"
+			}
+			return WorkflowValidationError{
+				File:  filename,
+				Field: fmt.Sprintf("steps.%s.gates", stepID),
+				Message: fmt.Sprintf("gates are only evaluated on agent and gate steps; on a %q step they parse and are never evaluated%s",
+					step.Type, hint),
+			}
+		}
+
+		// on_outcome targets are transitions like any other: an unknown one
+		// must fail the LOAD, not dead-end a task at runtime.
+		for outcome, target := range step.OnOutcome {
+			if step.Type != "system" {
+				return WorkflowValidationError{
+					File:    filename,
+					Field:   fmt.Sprintf("steps.%s.on_outcome", stepID),
+					Message: fmt.Sprintf("on_outcome routes on a SYSTEM handler's reported outcome; a %q step has none — use gates (agent) or on_success", step.Type),
+				}
+			}
+			if target == "" {
+				return WorkflowValidationError{
+					File:    filename,
+					Field:   fmt.Sprintf("steps.%s.on_outcome.%s", stepID, outcome),
+					Message: "on_outcome target is required",
+				}
+			}
+			if err := w.validateTransition(stepID, fmt.Sprintf("on_outcome.%s", outcome), target, filename); err != nil {
 				return err
 			}
 		}

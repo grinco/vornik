@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -141,4 +142,75 @@ func TestForgeCIRules_CommentStatusReportsWhatHappened(t *testing.T) {
 	if got := statusOf(true); got != "ci_recorded" {
 		t.Errorf("redelivery status = %q, want ci_recorded — it posted nothing", got)
 	}
+}
+
+// THE REPAIR OF §14.4, ASSERTED ON THIS INGRESS: the generic relay path honours
+// the workflow-path filters, because it goes through the REAL forgeci.
+//
+// It did not. `workflow_paths` was enforced only inside the GitHub App channel,
+// so on this ingress — the one the deployment that found this actually uses —
+// the key parsed and did nothing. A stub ingest cannot catch that: the stub
+// would filter or not filter according to whatever the stub does. So this case
+// wires a real *forgeci.Ingest and asserts through it.
+func TestForgeCIRules_TheGenericIngressHonoursTheWorkflowFilters(t *testing.T) {
+	const gate = ".github/workflows/typecheck.yml"
+	const other = ".github/workflows/coverage.yml"
+
+	run := func(cfg forgeci.Config, path string) (handled bool, recorded []string) {
+		store := &pathRecordingOutcomes{}
+		ing := forgeci.New(store, nil, cfg, zerolog.Nop())
+		s := &Server{logger: zerolog.Nop(), forgeCI: func(string) ForgeCIIngest { return ing }}
+
+		job := ciJob("failure")
+		job.CI.WorkflowPath = path
+		w := httptest.NewRecorder()
+		handled = s.applyForgeCIRules(context.Background(), w, &registry.Project{ID: "p"}, "d5", job)
+		return handled, store.paths
+	}
+
+	// Not ingested: recorded nothing, and the delivery is handled here rather
+	// than falling through to create a review task.
+	handled, recorded := run(forgeci.Config{ReviewOnFailure: true, WorkflowPaths: []string{gate}}, other)
+	if !handled || len(recorded) != 0 {
+		t.Errorf("an unwatched workflow: handled=%v recorded=%v — workflow_paths must apply on THIS ingress",
+			handled, recorded)
+	}
+
+	// Ingested but not a gate: recorded, and still no review.
+	handled, recorded = run(forgeci.Config{
+		ReviewOnFailure: true, TriggerWorkflowPaths: []string{gate},
+	}, other)
+	if !handled || len(recorded) != 1 {
+		t.Errorf("a watched non-gate workflow: handled=%v recorded=%v — it must be recorded and not trigger",
+			handled, recorded)
+	}
+
+	// The gate falls THROUGH, so the normal path creates the review task.
+	handled, recorded = run(forgeci.Config{
+		ReviewOnFailure: true, TriggerWorkflowPaths: []string{gate},
+	}, gate)
+	if handled || len(recorded) != 1 {
+		t.Errorf("the gate: handled=%v recorded=%v — it must be recorded AND trigger the review",
+			handled, recorded)
+	}
+}
+
+// pathRecordingOutcomes records which workflow paths reached the store.
+type pathRecordingOutcomes struct{ paths []string }
+
+func (r *pathRecordingOutcomes) Upsert(_ context.Context, o *persistence.ForgeCIOutcome) error {
+	r.paths = append(r.paths, o.WorkflowPath)
+	return nil
+}
+func (r *pathRecordingOutcomes) ListByHeadSHA(context.Context, string, string, string) ([]*persistence.ForgeCIOutcome, error) {
+	return nil, nil
+}
+func (r *pathRecordingOutcomes) ClaimComment(context.Context, string, string, int64, time.Time) (bool, error) {
+	return true, nil
+}
+func (r *pathRecordingOutcomes) ReleaseComment(context.Context, string, string, int64) error {
+	return nil
+}
+func (r *pathRecordingOutcomes) PruneBefore(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }

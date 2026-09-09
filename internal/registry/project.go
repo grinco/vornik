@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -924,6 +925,25 @@ type ProjectForgeCI struct {
 	// rather than display name: a name is text an author can change without
 	// noticing anything depends on it. Empty records every workflow.
 	WorkflowPaths []string `yaml:"workflow_paths"`
+
+	// TriggerWorkflowPaths limits which INGESTED runs may trigger, separately
+	// from which are recorded. Empty = every ingested run may trigger, which is
+	// the behaviour before this key existed.
+	//
+	// WHY TWO KEYS. One filter cannot answer both questions, and a real pull
+	// request needs different answers. A repo running five workflows per PR
+	// either records all five — and then a green push fires the success trigger
+	// five times, because §5 makes that trigger per-run by design — or records
+	// one, and then forge.fetch_ci renders ONE workflow's outcome and the review
+	// can report "CI passed" while another workflow is red. The second is worse
+	// than having no CI integration.
+	//
+	// Narrowing only: a run excluded from ingestion cannot be made to trigger by
+	// naming it here, and Validate rejects that combination rather than letting
+	// a trigger silently never fire.
+	//
+	// Design: 2026-09-08-forge-ci-outcomes-design.md §14.
+	TriggerWorkflowPaths []string `yaml:"trigger_workflow_paths"`
 }
 
 // CIDefaults fills the zero values a partially-specified ci block leaves.
@@ -2134,6 +2154,23 @@ func (p *Project) Validate(filename string) error {
 			}
 			if set != 0 && set != 3 {
 				return ProjectValidationError{File: filename, Field: "forge.github", Message: "app_id, private_key_path, and installation_id must all be set together"}
+			}
+		}
+	}
+	// A trigger path that ingestion excludes can NEVER fire. Rejected at load
+	// rather than left as a quiet no-op: a control that silently never fires is
+	// the same defect the workflow loader rejects a `gates:` block on a system
+	// step for, and it is worth catching in the one place an operator will see
+	// it. Design: 2026-09-08-forge-ci-outcomes-design.md §14.2.
+	if watched := p.Forge.CI.WorkflowPaths; len(watched) > 0 {
+		for _, trig := range p.Forge.CI.TriggerWorkflowPaths {
+			if !slices.Contains(watched, trig) {
+				return ProjectValidationError{
+					File:  filename,
+					Field: "forge.ci.trigger_workflow_paths",
+					Message: fmt.Sprintf("%q is not in forge.ci.workflow_paths, so it is never ingested and could never trigger; "+
+						"add it there, or leave workflow_paths empty to record every workflow", trig),
+				}
 			}
 		}
 	}

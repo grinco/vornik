@@ -921,6 +921,21 @@ type ProjectForgeCI struct {
 	// one loses a signal silently when disabled, which is the bug it fixes.
 	CommentOnFailure *bool `yaml:"comment_on_failure"`
 
+	// BlockApprovalOnFailure withholds an APPROVE while a recorded run for the
+	// reviewed head has FAILED: the review posts as a non-gating comment naming
+	// the failing workflow instead (design §16).
+	//
+	// A *bool because the zero value must not mean off — DEFAULTS TRUE, like
+	// CommentOnFailure and for the same asymmetry. Off, a false approval
+	// reaches the pull request and can satisfy branch protection; three were
+	// posted on one PR in one afternoon, each looking like a considered
+	// verdict, and the third came after the reviewer's prompt was given an
+	// explicit rule against it. On, an approval is withheld on a repo whose CI
+	// is red for unrelated reasons — visible, self-explaining, and recoverable
+	// by a human. A nuisance against a wrong answer in the uniform of a right
+	// one.
+	BlockApprovalOnFailure *bool `yaml:"block_approval_on_failure"`
+
 	// WorkflowPaths limits ingestion to these workflow FILES. Matched on path
 	// rather than display name: a name is text an author can change without
 	// noticing anything depends on it. Empty records every workflow.
@@ -964,6 +979,15 @@ func (c *ProjectForgeCI) CIDefaults() {
 // CommentsOnFailure resolves the tri-state: unset means TRUE (design §13.7).
 func (c ProjectForgeCI) CommentsOnFailure() bool {
 	return c.CommentOnFailure == nil || *c.CommentOnFailure
+}
+
+// BlocksApprovalOnFailure resolves the tri-state: unset means TRUE (design §16.4).
+//
+// Same shape as CommentsOnFailure, deliberately: these are the two switches in
+// this block that default true, and both do so because their OFF state loses
+// something silently rather than doing something unwanted.
+func (c ProjectForgeCI) BlocksApprovalOnFailure() bool {
+	return c.BlockApprovalOnFailure == nil || *c.BlockApprovalOnFailure
 }
 
 // ProjectGit controls the git-over-HTTPS workspace-access feature.

@@ -34,6 +34,27 @@ type PostReviewHandler struct {
 	// posted (design §6). Optional: nil simply means no baseline is recorded,
 	// and the next review is a full one.
 	reviewState persistence.ForgePRReviewStateRepository
+
+	// ciOutcomes answers "did CI fail on the head this review covers", which
+	// gates an APPROVE (2026-09-08-forge-ci-outcomes-design.md §16). Nil = the
+	// gate cannot engage, i.e. exactly today's behaviour for any project
+	// without CI ingestion.
+	ciOutcomes persistence.ForgeCIOutcomeRepository
+	// blocksApproval resolves the operator's switch FOR A PROJECT. A function
+	// rather than a bool because this handler is registered once for the
+	// daemon while `block_approval_on_failure` is per-project config — baking
+	// one project's answer in at construction would apply it to every project.
+	// Nil = the gate cannot engage.
+	blocksApproval func(projectID string) bool
+}
+
+// WithCIGate attaches the CI-outcome store and the per-project switch, enabling
+// the refusal to submit an APPROVE over a red pipeline.
+func (h *PostReviewHandler) WithCIGate(o persistence.ForgeCIOutcomeRepository, blocks func(projectID string) bool) *PostReviewHandler {
+	if h != nil {
+		h.ciOutcomes, h.blocksApproval = o, blocks
+	}
+	return h
 }
 
 // WithReviewState attaches the PR review-state store so a posted review
@@ -296,6 +317,40 @@ func (h *PostReviewHandler) Execute(ctx context.Context, in executor.SystemStepI
 		return executor.SystemStepResult{Result: out}, nil
 	}
 
+	// AN APPROVE OVER A RED PIPELINE IS NOT SUBMITTED (design §16).
+	//
+	// Three approvals were posted on headmatch PR #53 in one afternoon, each
+	// while a recorded run for that head had FAILED, and each dismissing the
+	// failure differently: "a pre-existing environment issue", a fabricated
+	// passing mypy output, and finally "in a file this diff does not touch" —
+	// about the only file the diff touched. The third came AFTER the reviewer's
+	// prompt was given an explicit blocker rule, and lifted its excuse from the
+	// list of legitimate overrides that rule supplied.
+	//
+	// So this does not consult the reasoning. It reads the same durable rows
+	// fetch_ci reads and refuses the submission — the pattern §16.7 of the
+	// re-review design named: when a guard and a write depend on one ground
+	// truth, both read the row.
+	if failing, blocked := h.approvalBlockedByCI(ctx, in.Task.ProjectID, job, event); blocked {
+		body = ciWithheldNotice(failing) + body
+		body = withRequestQuote(body, job)
+		body = withDisclosure(body, h.disclosure.PublicationNotice())
+		// A COMMENT, not REQUEST_CHANGES. The prose says the change is fine;
+		// posting it under a rejecting state puts approving words in a
+		// rejecting envelope and a reader cannot tell which half to believe.
+		if err := provider.PostComment(ctx, job.Repo, job.Number, body); err != nil {
+			return executor.SystemStepResult{}, fmt.Errorf("%s: post withheld-approval comment: %w", name, err)
+		}
+		out, _ := json.Marshal(map[string]any{
+			"posted": true, "number": job.Number, "event": "COMMENT",
+			"approval_withheld": true, "ci_failed_workflow": failing,
+		})
+		zerolog.Ctx(ctx).Warn().
+			Str("repo", job.Repo).Int("number", job.Number).Str("workflow", failing).
+			Msg("forge.post_review: APPROVE withheld — CI failed on the reviewed head; posted as a comment")
+		return executor.SystemStepResult{Result: out}, nil
+	}
+
 	body = withRequestQuote(body, job)
 	body = withDisclosure(body, h.disclosure.PublicationNotice())
 	if err := provider.PostReview(ctx, job.Repo, job.Number, forgeapi.ReviewSpec{Body: body, Event: event}); err != nil {
@@ -428,4 +483,82 @@ func (h *PostReviewHandler) alreadyReviewed(ctx context.Context, projectID strin
 		return "", false // we do not know what this covers, or nothing is reviewed yet
 	}
 	return head, head == st.LastReviewedHeadSHA
+}
+
+// approvalBlockedByCI reports the failing workflow, and whether an APPROVE must
+// be withheld because of it (design §16.3).
+//
+// Deliberately narrow. It engages only on an APPROVE — REQUEST_CHANGES is
+// already the blocking answer and nothing about a red pipeline makes it wrong —
+// and only on a run it can NAME, because "nothing ingested" is not "CI failed".
+// That is the same distinction fetch_ci draws between a blank and a pass, and
+// it keeps a project recording no outcomes behaving exactly as it did before.
+func (h *PostReviewHandler) approvalBlockedByCI(ctx context.Context, projectID string,
+	job *forgeapi.ForgeJob, event forgeapi.ReviewEvent) (string, bool) {
+	if h == nil || h.ciOutcomes == nil || h.blocksApproval == nil || !h.blocksApproval(projectID) {
+		return "", false
+	}
+	if event != forgeapi.ReviewApprove {
+		return "", false
+	}
+	head := job.HeadSHA
+	if h.reviewState != nil {
+		if st, err := h.reviewState.Get(ctx, projectID, job.Repo, job.Number); err == nil && st != nil && st.ReviewingHeadSHA != "" {
+			// The head the review actually COVERS, matching what the baseline
+			// advance below records. Reading a different head here than the one
+			// being marked reviewed is how a guard and a write drift apart.
+			head = st.ReviewingHeadSHA
+		}
+	}
+	if head == "" {
+		return "", false
+	}
+	outs, err := h.ciOutcomes.ListByHeadSHA(ctx, projectID, job.Repo, head)
+	if err != nil {
+		// Unreadable state must not block a review: the failure mode of
+		// refusing on an error is a reviewing outage, which is worse than the
+		// one wrong approval this prevents. Same posture as alreadyReviewed.
+		zerolog.Ctx(ctx).Warn().Err(err).
+			Str("repo", job.Repo).Int("number", job.Number).
+			Msg("forge.post_review: CI outcomes unreadable; not gating the approval")
+		return "", false
+	}
+	for _, o := range outs {
+		if o != nil && o.Failed() {
+			name := o.WorkflowPath
+			if name == "" {
+				name = o.WorkflowName
+			}
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// ciWithheldNotice leads the comment with why the approval was not submitted.
+//
+// On the pull request, not only in a log: "why is there no approval here" must
+// be answerable by the person looking at the pull request.
+func ciWithheldNotice(workflow string) string {
+	return "**Approval withheld — CI is failing on this commit.**\n\n" +
+		"The reviewer below concluded the change is fine, but `" +
+		sanitiseWorkflowName(workflow) + "` failed for the commit under review, so " +
+		"this was posted as a comment rather than submitted as an approval.\n\n---\n\n"
+}
+
+// sanitiseWorkflowName keeps a payload-supplied name inside its code span. The
+// workflow name comes from the repository CI config, so whoever can push a
+// branch chooses it, and a backtick would close the span and let the remainder
+// render as live markdown. Same hole forgeci.sanitiseCIText closes.
+func sanitiseWorkflowName(s string) string {
+	s = strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	if strings.TrimSpace(s) == "" {
+		return "a CI workflow"
+	}
+	return s
 }

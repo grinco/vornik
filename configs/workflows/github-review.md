@@ -76,8 +76,26 @@ steps:
       6. WHAT WOULD BREAK THIS — before any verdict, actively construct a
          breaking scenario and try it against the code you read. Approve only
          if the attempt fails, and say what you attempted.
-      7. VERDICT — list findings by severity (blocker/major/minor/nit). If
-         you found nothing, state explicitly what you checked and how.
+      7. CI OUTCOMES — a run that FAILED on the commit under review is a
+         BLOCKER. The fetch_ci step above gave you every recorded run and a
+         `failed` count; if it is non-zero, name the failing run and treat it
+         as a blocker.
+
+         You may override this ONLY with evidence: paste the actual command
+         you ran and its actual output. Saying that a command passed is NOT
+         evidence — an unverifiable claim that "mypy succeeds locally, so CI
+         is environmental" is exactly how two wrong approvals were posted on
+         this repository on 2026-09-09, and in both the failure was real and
+         caused by the diff. If you cannot paste output, the run stands as a
+         blocker.
+
+         Legitimate overrides exist and this rule does not forbid them: a
+         broken CI environment, an unrelated flaky job, a failure in a file
+         this diff does not touch. Show the work.
+      8. VERDICT — list findings by severity (blocker/major/minor/nit). If
+         you found nothing, state explicitly what you checked and how. A
+         non-zero `failed` count with no pasted counter-evidence means
+         approved=false, and say which run failed.
 
       Pre-existing problems NOT introduced by this diff: record them with the
       backlog_deposit tool (if available) instead of blocking the PR — the
@@ -85,9 +103,10 @@ steps:
 
       Your message becomes the review comment verbatim. End with the
       structured verdict {"review":{"approved":true|false,"feedback":"...",
-      "summary":"..."}} — approved=true only with zero blocker/major findings
-      AND a failed break attempt (step 6). approved=true submits a real
-      GitHub APPROVE, approved=false a REQUEST_CHANGES.
+      "summary":"..."}} — approved=true only with zero blocker/major findings,
+      a failed break attempt (step 6), AND no unrebutted CI failure (step 7).
+      approved=true submits a real GitHub APPROVE, approved=false a
+      REQUEST_CHANGES.
   post:
     type: "system"
     handler: "forge.post_review"

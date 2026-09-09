@@ -276,9 +276,23 @@ forge:
     review_on_failure: true     # a failed run triggers a coalesced review
     success_workflow_id: ""     # a green run fires this workflow; empty is off
     comment_on_failure: true    # say so when a failure cannot produce a review
+    block_approval_on_failure: true # withhold an APPROVE while a run is red
     workflow_paths: []          # record only these workflow files; empty means all
     trigger_workflow_paths: []  # of those, only these may TRIGGER; empty means all
 ```
+
+**A red pipeline withholds the approval.** With `block_approval_on_failure`
+(default on), `forge.post_review` will not submit an **APPROVE** while a run it
+recorded for the reviewed commit has failed. The review is posted as an ordinary
+comment instead, led by a line naming the failing workflow — so the reasoning
+still reaches the pull request, but it cannot satisfy branch protection on a
+commit its own pipeline rejected.
+
+This is a check on the recorded outcome, not on the reviewer's opinion: it does
+not read the review text and cannot be argued with. A `REQUEST_CHANGES` verdict
+is unaffected, and a commit with no recorded runs is not treated as a failure —
+"nothing ran" and "CI failed" are different facts. Set it to `false` to restore
+the previous behaviour.
 
 **Why two path lists.** `workflow_paths` decides what is *recorded*;
 `trigger_workflow_paths` decides which of those recorded runs may *start* a

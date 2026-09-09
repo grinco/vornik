@@ -744,7 +744,28 @@ func (c *Container) initScheduler() error {
 		if c.repos != nil {
 			forgeReviewState = c.repos.ForgePRReviewState
 		}
-		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure).WithReviewState(forgeReviewState))
+		// The CI gate: refuse to submit an APPROVE while a recorded run for the
+		// reviewed head has failed (2026-09-08-forge-ci-outcomes-design.md §16).
+		// The switch is resolved PER PROJECT at execute time — this handler is
+		// registered once for the daemon.
+		var forgeCIOutcomes persistence.ForgeCIOutcomeRepository
+		if c.repos != nil {
+			forgeCIOutcomes = c.repos.ForgeCIOutcomes
+		}
+		blocksApproval := func(projectID string) bool {
+			p := c.Registry.GetProject(projectID)
+			if p == nil {
+				// Unknown project → do not gate. An unreadable config must not
+				// become a reviewing outage; the failure mode of the other
+				// direction is one wrong approval, of this direction every
+				// review on that project.
+				return false
+			}
+			return p.Forge.CI.Enabled && p.Forge.CI.BlocksApprovalOnFailure()
+		}
+		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure).
+			WithReviewState(forgeReviewState).
+			WithCIGate(forgeCIOutcomes, blocksApproval))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver).WithReviewState(forgeReviewState))
 		if c.repos != nil && c.repos.ForgeCIOutcomes != nil {
 			sysHandlers.Register(forgeh.NewFetchCIHandler(c.repos.ForgeCIOutcomes))

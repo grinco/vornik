@@ -85,7 +85,16 @@ func (s *Server) applyForgeCIRules(ctx context.Context, w http.ResponseWriter,
 			Int64("run_id", job.CI.RunID).Bool("commented", posted).
 			Str("delivery", deliveryID).Str("reason", d.Reason).
 			Msg("webhook: CI outcome recorded, commented instead of reviewing")
-		respondJSON(w, http.StatusOK, map[string]string{"status": "ci_commented"})
+		// Report what HAPPENED, not what was attempted. A redelivery whose
+		// claim was refused posted nothing, and answering "ci_commented" to it
+		// is a control that cannot distinguish "commented now" from "commented
+		// already" — the operator reading the response would conclude this
+		// delivery published something it did not.
+		status := "ci_recorded"
+		if posted {
+			status = "ci_commented"
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"status": status})
 		return true
 	}
 

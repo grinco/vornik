@@ -37,6 +37,19 @@ func classifyGateEvalError(err error) (outcome, errorClass string) {
 // buildGatePromptSuffix generates response format instructions from a step's
 // gate conditions. This tells the agent exactly what JSON structure it must
 // produce so that gate evaluation can route the workflow.
+//
+// GATES ARE AN AGENT-STEP MECHANISM, AND ONLY THAT. The conditions are injected
+// into the MODEL's prompt here, and evaluated against the JSON the model
+// returns. A `gates:` block on a SYSTEM step therefore matches nothing: the
+// config validates, reloads clean, and the workflow proceeds exactly as though
+// the block were absent — no error, no log line.
+//
+// This is written down because it cost an afternoon on 2026-09-09. A guard was
+// added as a gate on `forge.fetch_diff` to stop a review being posted when the
+// diff was empty; it reloaded cleanly, did nothing twice, and a fabricated
+// review reached GitHub both times. Routing a system step on its RESULT needs
+// on_success/on_fail or a handler-side decision, not a gate.
+// See https://docs.vornik.io §16.3.
 func buildGatePromptSuffix(gates []registry.WorkflowGate) string {
 	// Collect the unique JSON field paths and their expected values from
 	// all gate conditions to build an example response object.

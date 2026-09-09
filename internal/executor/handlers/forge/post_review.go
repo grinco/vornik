@@ -277,6 +277,25 @@ func (h *PostReviewHandler) Execute(ctx context.Context, in executor.SystemStepI
 	if err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: resolve provider: %w", name, err)
 	}
+	// NOTHING NEW TO REVIEW → POST NOTHING (design §16).
+	//
+	// fetch_diff already reports scope "no-change" when the head has not moved
+	// since the last review, and NOTHING consumed it: the reviewer ran with a
+	// one-sentence diff, invented a review of a different pull request, and this
+	// handler submitted it as a real APPROVAL. The guard belongs here, on the
+	// outward-facing act, beside the disclosure refusal above.
+	if head, refuse := h.alreadyReviewed(ctx, in.Task.ProjectID, job); refuse {
+		out, _ := json.Marshal(map[string]any{
+			"posted": false,
+			"number": job.Number,
+			"reason": "no new commits since the last review of " + head,
+		})
+		zerolog.Ctx(ctx).Info().
+			Str("repo", job.Repo).Int("number", job.Number).Str("head_sha", head).
+			Msg("forge.post_review: nothing new since the last review; posting nothing")
+		return executor.SystemStepResult{Result: out}, nil
+	}
+
 	body = withRequestQuote(body, job)
 	body = withDisclosure(body, h.disclosure.PublicationNotice())
 	if err := provider.PostReview(ctx, job.Repo, job.Number, forgeapi.ReviewSpec{Body: body, Event: event}); err != nil {
@@ -369,4 +388,44 @@ func withRequestQuote(body string, job *forgeapi.ForgeJob) string {
 	b.WriteString("\n---\n\n")
 	b.WriteString(body)
 	return b.String()
+}
+
+// alreadyReviewed reports whether this review covers a head that has already
+// been reviewed and posted about, and the head it resolved (design §16.4).
+//
+// It RE-DERIVES the fact from the durable row rather than reading a flag passed
+// down from fetch_diff. A flag can be dropped by any workflow that omits a step
+// or is written by an author who never heard of it — the same class of failure
+// as the `gates:` block that silently never matched. Two readings of one row
+// cannot drift.
+//
+// The head is resolved exactly as the MarkReviewed call below resolves it, so
+// the head this compares is the head a post would have RECORDED. That is what
+// stops a refusal from disagreeing with the write it is standing in for.
+//
+// EVERY UNCERTAINTY RESOLVES TO POSTING — the opposite of the disclosure refusal
+// above, and deliberately so. There, uncertainty risks publishing an undisclosed
+// comment; here it risks withholding review coverage, and a redundant review is
+// cheaper than a review nobody ever gets.
+func (h *PostReviewHandler) alreadyReviewed(ctx context.Context, projectID string, job *forgeapi.ForgeJob) (string, bool) {
+	if h.reviewState == nil {
+		return "", false // the incremental machinery is not wired at all
+	}
+	// Asking is consent (§7): a human who typed "review" or "full review" on an
+	// unchanged head wants the answer again, and silence would look broken.
+	if job.OnDemand || job.FullReview {
+		return "", false
+	}
+	st, err := h.reviewState.Get(ctx, projectID, job.Repo, job.Number)
+	if err != nil || st == nil {
+		return "", false // unreadable or never reviewed → review
+	}
+	head := st.ReviewingHeadSHA
+	if head == "" {
+		head = job.HeadSHA
+	}
+	if head == "" || st.LastReviewedHeadSHA == "" {
+		return "", false // we do not know what this covers, or nothing is reviewed yet
+	}
+	return head, head == st.LastReviewedHeadSHA
 }

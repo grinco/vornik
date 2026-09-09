@@ -90,7 +90,10 @@ func TestTaskShouldRetry_ChildFailedIsNotTerminal(t *testing.T) {
 // becoming a dumping ground. Membership is asserted exactly, so growing it is a
 // deliberate edit to a test rather than a quiet addition.
 func TestIsTerminalFailureClass_IsANarrowAllowList(t *testing.T) {
-	want := map[string]bool{TaskFailureClassForgeTargetUnavailable: true}
+	want := map[string]bool{
+		TaskFailureClassForgeTargetUnavailable: true,
+		TaskFailureClassForgeJobNoTarget:       true, // 2026-09-09, CI-outcomes design §18
+	}
 
 	for class := range want {
 		if !IsTerminalFailureClass(class) {
@@ -103,5 +106,18 @@ func TestIsTerminalFailureClass_IsANarrowAllowList(t *testing.T) {
 			t.Errorf("IsTerminalFailureClass(%q) = true; the set must be an exact allow-list. "+
 				"Note the lowercase spelling is the STEP vocabulary, which is disjoint from this one", class)
 		}
+	}
+}
+
+// FORGE_JOB_NO_TARGET never earns another attempt: a job that names no pull
+// request or issue cannot acquire one by being retried (CI-outcomes design
+// §18; headmatch task_20260909150605_13cc14a3d079dc09 spent three attempts on
+// the same refusal).
+func TestForgeJobNoTargetIsTerminal(t *testing.T) {
+	if !IsTerminalFailureClass(TaskFailureClassForgeJobNoTarget) {
+		t.Fatal("FORGE_JOB_NO_TARGET must be terminal")
+	}
+	if TaskShouldRetry(1, 3, TaskFailureClassForgeJobNoTarget) {
+		t.Fatal("a job with no target must not be retried")
 	}
 }

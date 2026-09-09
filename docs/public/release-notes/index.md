@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: a75c01a74bdde81a865ecb21e44c857dfb2c6cdc0427bf0a011b24c26a8ed21f
+      sha256: a39cec2d87f66ac8ed8a1cb74f737f08a5597ef6f60ec22dcb9544fd94d6fa28
 ---
 # Release Notes
 
@@ -16,6 +16,77 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     new behavior; those are called out below.
 
 ---
+
+## 2026.9.4
+
+**Forge can read your CI, and it will not approve a red commit.** Turn on
+`forge.ci.enabled` and Forge records what each Actions run concluded — the
+conclusion, the jobs, the timing — against the commit it tested, and puts it in
+front of the reviewer. A failed run triggers a review (six workflows finishing
+together still produce one); a failure on a commit already reviewed gets a
+short factual comment instead, written by no model. With
+`block_approval_on_failure` (default on) `forge.post_review` will not submit an
+**APPROVE** while a run it recorded for that commit is red — the review posts
+as a comment led by the failing workflow's name. A commit with no recorded runs
+is not treated as a failure. To get content in — a `terraform plan`, a test
+report — have your pipeline upload it as an artifact and name it in
+`ci.artifact_name`; Forge reads artifacts, never job logs. Your GitHub App
+needs **Actions (read)** and the `workflow_run` event, asked for only when the
+feature is on. You may name the review workflow as the success workflow, so a
+*completed* run — not the push — triggers the review: a workflow that needs a
+pull request runs only for runs that have one, and a green push to your
+default branch is recorded without starting anything. See the Forge guide,
+*Reading CI outcomes*.
+
+**A reviewer no longer approves code it never read.** When a pull request's
+head had not moved since its last review, the reviewer still ran — on a
+one-sentence diff — and could post a confident review of a *different* pull
+request as a real approval. `forge.post_review` now refuses to post a review of
+an already-reviewed head, and a workflow can skip the model call entirely
+because a system step can route on its own result. Two related fixes: an agent
+now receives **every** preceding system step's output rather than only the
+last (a second system step had been overwriting the diff), and a CI-triggered
+review checks out the pull request's head rather than the base branch.
+
+**Rate what an automated change produced, and see it where you approve.**
+Thumbs up or down on any execution — `vornikctl execution rate <id> up|down
+[--reason ...]`, or the control on the task page. Ratings roll up per skill
+(`vornikctl knowledge rollup`, `/api/v1/skills/{id}/rating-rollup`, a column in
+the skills admin) and appear on the Telegram card, the Slack blocks and the MCP
+`skill_get`/`skill_list` an approver reads, so re-approving an edited skill is
+informed by ratings on *that* body. Kept for `retention.execution_ratings_days`
+(default 400).
+
+**Boot no longer races the database.** The systemd unit waited only for the
+network, so a reboot could start the daemon before the containerized Postgres
+accepted connections and spin it through hundreds of restarts. The unit now
+waits for `podman-restart` and for the database port (bounded, 120s), and an
+absent database fails once with a message naming the cause. **The updater does
+not rewrite unit files** — copy the new `deployments/podman/systemd/vornik.service`
+into place and `systemctl --user daemon-reload`.
+
+**`vornikctl doctor` reads better.** `fallback_rungs` now says whether a dead
+fallback rung was *refused* by an open circuit (the breaker doing its job —
+look at why the model's circuit opened) or *called and failed upstream* (the
+model or its provider); the two were reported as one and pointed at
+credentials for a model that worked elsewhere. And `doctor --offline` no longer
+migrates the SQLite database it is diagnosing.
+
+**Also fixed:** pausing a task read a stale status and could leave a container
+running behind a `PAUSED` row — pause now asks the executor first and never
+flips a running task it could not stop; deleting a project now evicts the
+cached embeddings computed from its text; on SQLite, the entities view lists a
+mention's chunks newest-first, as on Postgres; verifier refusals ("claimed a
+file that is not on disk", "cited a commit that does not exist") are classified
+instead of landing in `unclassified`; `install-enterprise` can replace a
+running daemon (`Text file busy`); the public release tag is created by the
+pipeline, so every release ships a version-tagged agent image; and the
+Community repository's CI, red since the 2026-09-07 export on two tests that
+only pass against the Enterprise tree, is green again.
+
+**Upgrading:** migrations run on start; new keys are additive and default to
+the previous behaviour, except that with `forge.ci` enabled a red pipeline
+withholds approvals by default. Re-install the systemd unit as above.
 
 ## 2026.9.3
 

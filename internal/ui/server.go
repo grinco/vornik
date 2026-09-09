@@ -76,16 +76,18 @@ var staticFS embed.FS
 // ExecutorInterface provides task lifecycle control for the UI.
 type ExecutorInterface interface {
 	Cancel(taskID string) error
-	// Pause stops a RUNNING task's container, flips
+	// Pause stops a live task's container, flips
 	// execution_status + task.Status to PAUSED, cancels the
 	// per-execution context, and blocks until the goroutine's
 	// activeExecutions entry is cleared. The UI's pause action
-	// MUST call this for RUNNING tasks — without it, only
-	// task.Status flips while the goroutine runs to completion
-	// and overwrites PAUSED with FAILED/COMPLETED. Returned
-	// error is "no active execution" when the task isn't
-	// currently RUNNING in this process; callers fall through
-	// to the bare TransitionConditional in that case.
+	// MUST call this FIRST, whatever the task-status snapshot
+	// says (05-scheduler.md §4.8): the live map decides whether a
+	// container is running, not a row read a moment ago. The
+	// returned error wraps executor.ErrNoActiveExecution when
+	// nothing is running in this process — callers then fall
+	// through to a bare TransitionConditional from
+	// executor.PausableWithoutExecution. Any other error means a
+	// container could not be stopped and must be surfaced.
 	Pause(taskID string) error
 	// ResumeTask is the task-driven inverse of Pause: load the
 	// existing PAUSED execution for this task, flip it back to

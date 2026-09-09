@@ -40,6 +40,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -91,6 +93,16 @@ type deadFallbackRung struct {
 	attempts   int
 	lastClass  string
 	lastFailed time.Time
+	// refused counts attempts the breaker rejected BEFORE any request
+	// (model_unhealthy); calledAndFailed counts requests that were made and
+	// failed upstream (llm_call_failed). The remainder of attempts is the
+	// environment: a container or prerequisite failure that never reached the
+	// model-call code path at all.
+	refused         int
+	calledAndFailed int
+	// avgDuration is the mean recorded duration over the window. Sub-second is
+	// a refusal; tens of seconds is a call that was made.
+	avgDuration time.Duration
 }
 
 // checkFallbackRungs reports configured fallback rungs that have attempted and
@@ -120,6 +132,7 @@ func evaluateFallbackRungs(rungs []deadFallbackRung) (items []string, status, me
 	}
 	items = make([]string, 0, len(rungs))
 	models := map[string]int{}
+	var refused, called, attempts int
 	for _, r := range rungs {
 		class := r.lastClass
 		if class == "" {
@@ -130,12 +143,16 @@ func evaluateFallbackRungs(rungs []deadFallbackRung) (items []string, status, me
 			role = "—"
 		}
 		items = append(items, fmt.Sprintf(
-			"[ERROR] %s (role %s, model %s) — %d attempts, 0 reached inference in 30d; last failed %s as %s",
-			r.stepID, role, r.model, r.attempts,
+			"[ERROR] %s (role %s, model %s) — %d attempts, 0 reached inference in 30d (%s; avg %s); last failed %s as %s",
+			r.stepID, role, r.model, r.attempts, rungPopulations(r),
+			rungSeconds(r.avgDuration),
 			r.lastFailed.Format(time.RFC3339), class))
 		if r.model != "" {
 			models[r.model]++
 		}
+		refused += r.refused
+		called += r.calledAndFailed
+		attempts += r.attempts
 	}
 	message = fmt.Sprintf(
 		"%d fallback rung(s) never reached inference — the ladder is walking past them, "+
@@ -148,7 +165,49 @@ func evaluateFallbackRungs(rungs []deadFallbackRung) (items []string, status, me
 			message += fmt.Sprintf("; all of them on %q, so the model is the fault rather than the rungs", m)
 		}
 	}
+	// REFUSED and CALLED-AND-FAILED are opposite remedies, so the message says
+	// which it is (backlog 2026-09-04). Reported as one population, seven
+	// refused rungs on zai.glm-5 read as "the rung cannot reach the model" and
+	// sent the operator to credentials and endpoints for a model that had
+	// ok=15 on another rung. A refusal is the breaker WORKING on evidence it
+	// already had; the question it raises is why the circuit opened, not
+	// whether the rung is wired. A call that was made and failed is the model
+	// or its provider.
+	switch {
+	case refused == attempts:
+		message += "; every attempt was refused by an open circuit — the breaker is doing its job, " +
+			"so look at why the model's circuit is open (agent_model_circuits, model health history), not at the rung"
+	case refused > 0 && called > 0:
+		message += fmt.Sprintf("; %d attempt(s) refused by an open circuit and %d call(s) made and failed upstream — "+
+			"the model or its provider is failing, and the breaker is refusing on that evidence", refused, called)
+	case called > 0:
+		message += "; calls were made and failed upstream — the model or its provider, not the rung"
+	}
 	return items, "ERROR", message
+}
+
+// rungSeconds renders a duration as plain seconds ("0.4s", "41s") so the two
+// populations' timings sit side by side in the same unit — the sub-second vs
+// tens-of-seconds gap is what separates them in workflow-stats.
+func rungSeconds(d time.Duration) string {
+	return strconv.FormatFloat(math.Round(d.Seconds()*10)/10, 'f', -1, 64) + "s"
+}
+
+// rungPopulations renders the three populations a dead rung's attempts fall
+// into, omitting the empty ones so the common single-cause rung reads as one
+// clause.
+func rungPopulations(r deadFallbackRung) string {
+	parts := make([]string, 0, 3)
+	if r.refused > 0 {
+		parts = append(parts, fmt.Sprintf("%d refused by an open circuit", r.refused))
+	}
+	if r.calledAndFailed > 0 {
+		parts = append(parts, fmt.Sprintf("%d called and failed upstream", r.calledAndFailed))
+	}
+	if env := r.attempts - r.refused - r.calledAndFailed; env > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed before any call (container or environment)", env))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // queryDeadFallbackRungs finds fallback steps with attempts and no successes.
@@ -194,6 +253,11 @@ func (h *DoctorHandlers) queryDeadFallbackRungs(ctx context.Context) ([]deadFall
 		       COALESCE(o.model, ''),
 		       COUNT(*)                                              AS attempts,
 		       SUM(CASE WHEN o.outcome = 'ok' THEN 1 ELSE 0 END)     AS successes,
+		       -- The two populations the verdict must tell apart (backlog
+		       -- 2026-09-04): a refusal never sent a request; a failed call did.
+		       SUM(CASE WHEN o.error_class = 'model_unhealthy' THEN 1 ELSE 0 END) AS refused,
+		       SUM(CASE WHEN o.error_class = 'llm_call_failed' THEN 1 ELSE 0 END) AS called_and_failed,
+		       COALESCE(AVG(o.duration_ms), 0)                       AS avg_duration_ms,
 		       MAX(o.recorded_at)                                    AS last_at,
 		       (SELECT COALESCE(i.error_class, '')
 		          FROM execution_step_outcomes i
@@ -232,9 +296,14 @@ func (h *DoctorHandlers) queryDeadFallbackRungs(ctx context.Context) ([]deadFall
 		// timestampValue normalises.
 		var last any
 		var lastClass sql.NullString
-		if err := rows.Scan(&r.stepID, &r.role, &r.model, &r.attempts, &successes, &last, &lastClass); err != nil {
+		// AVG over an integer column is NUMERIC on Postgres and REAL on
+		// SQLite; float64 reads both.
+		var avgMs float64
+		if err := rows.Scan(&r.stepID, &r.role, &r.model, &r.attempts, &successes,
+			&r.refused, &r.calledAndFailed, &avgMs, &last, &lastClass); err != nil {
 			return nil, err
 		}
+		r.avgDuration = time.Duration(avgMs * float64(time.Millisecond))
 		r.lastFailed = timestampValue(last)
 		r.lastClass = lastClass.String
 		out = append(out, r)

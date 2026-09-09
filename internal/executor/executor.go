@@ -2167,12 +2167,23 @@ func (e *Executor) runExecution(ctx context.Context, task *persistence.Task, exe
 			case hasChildren:
 				e.logger.Debug().Str("task_id", task.ID).
 					Msg("pre-work checkout: skipped — task has children (resuming delegator; clone holds the child's merged work)")
-			case spec.IsChangeRequest && spec.HeadRef != "":
+			case spec.HeadRef != "":
 				// PR-review task (github-review): materialize the change request's
 				// head so the reviewer's working tree holds the PR's actual files,
 				// not the base branch (incident 2026-06-13: reviewer "couldn't
 				// locate any new files"). Falls back to the default-branch rebase
 				// internally if the head fetch fails.
+				//
+				// ON HeadRef ALONE, not on IsChangeRequest too (design §17.3).
+				// A CI-triggered review is not a pull-request EVENT — so
+				// IsChangeRequest is correctly false — but it does review a
+				// pull request's head, and the old conjunction sent it to the
+				// default-branch rebase. Every CI-triggered review ran against
+				// `main`, and reviewers reported the change on main rather than
+				// the one in the diff they were handed. HeadRef is only ever set
+				// where a head is known to materialize, so requiring
+				// IsChangeRequest as well was redundant on every path that
+				// reached here.
 				checkoutForgeChangeRequest(ctx, projectDir, spec.HeadRef, spec.DefaultBranch, e.logger)
 			default:
 				// issue-fix and other forge tasks: start code work from HEAD of the
@@ -2608,6 +2619,27 @@ func (e *Executor) Cancel(taskID string) error {
 // failure — callers distinguish it with errors.Is rather than by matching the
 // message, so the wording stays free to change.
 var ErrNoActiveExecution = errors.New("no active execution")
+
+// PausableWithoutExecution is the set of task statuses an operator handler
+// may flip to PAUSED by a bare conditional write AFTER Pause has answered
+// ErrNoActiveExecution. It is the pause from-set without RUNNING.
+//
+// A RUNNING row the live map does not know is either a snapshot that went
+// stale — the row became RUNNING after the handler read it — or a run this
+// daemon does not own. Flipping it to PAUSED records a pause nothing
+// performed: the container keeps executing behind a row that says it does
+// not (backlog 2026-08-21 "Pause is gated on a stale task status too";
+// 05-scheduler.md §4.8). The handler gets a conflict instead and retries,
+// by which time the live map has the handle. One list, here, so the API and
+// UI handlers cannot diverge on it — §4.7's four-site lesson.
+var PausableWithoutExecution = []persistence.TaskStatus{
+	persistence.TaskStatusPending,
+	persistence.TaskStatusQueued,
+	persistence.TaskStatusLeased,
+	persistence.TaskStatusWaitingForChildren,
+	persistence.TaskStatusAwaitingInput,
+	persistence.TaskStatusAwaitingExternal,
+}
 
 // CancelIfActive tears down a live execution for taskID if the executor is
 // running one, and reports whether it was.

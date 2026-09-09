@@ -27,15 +27,24 @@ func (r *EntityMentionRepository) Insert(ctx context.Context, m *persistence.Ent
 }
 
 // ListByEntity returns the mentions for one entity, newest chunk first.
+//
+// Joins project_memory_chunks for the ORDER and the FILTER, as the Postgres
+// twin does. Until 2026-09-09 this ordered by chunk_id — which is not time,
+// so "newest first" held only when ids happened to sort that way — and read
+// entity_mentions alone, so a mention whose chunk row was gone (foreign keys
+// are OFF on this driver; any deletion path that does not sweep mentions
+// strands one) was listed with nothing behind it. The shared repotest suite
+// now pins the order on both backends; the orphan case is pinned here.
 func (r *EntityMentionRepository) ListByEntity(ctx context.Context, entityID string, limit int) ([]*persistence.EntityMention, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT chunk_id, entity_id, char_start, char_end, surface
-		FROM entity_mentions
-		WHERE entity_id = ?
-		ORDER BY chunk_id DESC
+		SELECT m.chunk_id, m.entity_id, m.char_start, m.char_end, m.surface
+		FROM entity_mentions m
+		JOIN project_memory_chunks c ON c.id = m.chunk_id
+		WHERE m.entity_id = ?
+		ORDER BY c.created_at DESC
 		LIMIT ?`, entityID, limit)
 	if err != nil {
 		return nil, err

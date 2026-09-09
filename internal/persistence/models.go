@@ -389,11 +389,28 @@ const (
 	// container runtime) and LLM_ERROR (the chat provider). RATE_LIMITED would
 	// be backwards: a forge 429 is TRANSIENT and keeps retrying.
 	//
-	// The only class in terminalFailureClasses — it skips the retry budget
-	// entirely rather than burning it on calls that cannot come good.
+	// One of two classes in terminalFailureClasses (with FORGE_JOB_NO_TARGET,
+	// below) — it skips the retry budget entirely rather than burning it on
+	// calls that cannot come good.
 	// Decided by forge.PermanentError, a typed signal at the source, never by
 	// matching "HTTP 404" in a message.
 	TaskFailureClassForgeTargetUnavailable = "FORGE_TARGET_UNAVAILABLE"
+	// TaskFailureClassForgeJobNoTarget is a forge system step handed a job that
+	// names nothing to act on — no pull request or issue number, no backlog
+	// origin. Permanent for the same reason as FORGE_TARGET_UNAVAILABLE (the
+	// job cannot acquire a number by being retried) and deliberately NOT that
+	// class: the remedy is the workflow or the trigger that enqueued it, and
+	// nothing on the forge side — no repository, no installation, no
+	// permission — is wrong. Sending an operator to check the App's access
+	// for a job that never named a target is the misdiagnosis this class
+	// exists to prevent (review-20260909-f95b; headmatch
+	// task_20260909150605_13cc14a3d079dc09, a green push to main routed into
+	// the review workflow).
+	//
+	// Decided by forge.PermanentError with Status 0 — permanence read from the
+	// PAYLOAD, no request made (permanent-failure design D1, amended
+	// 2026-09-09).
+	TaskFailureClassForgeJobNoTarget = "FORGE_JOB_NO_TARGET"
 	// TaskFailureClassInvalidOutputLoop fires when a single role keeps
 	// emitting result.json that fails schema validation across the
 	// shape-retry + model-fallback budget. Distinct from INVALID_OUTPUT

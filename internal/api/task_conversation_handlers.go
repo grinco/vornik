@@ -879,32 +879,31 @@ func (s *Server) simpleStatusFlip(
 		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to write "+verb+" message")
 		return
 	}
-	// Pause path: if the task is currently running with an active
-	// executor goroutine, executor.Pause() does the right thing —
-	// stops the container, stamps the pause reason in the state
-	// snapshot, flips DB status, and BLOCKS until the goroutine's
-	// activeExecutions entry is cleared. Without this call the API
-	// just flipped the DB row, leaving the goroutine alive; the
-	// next Resume would find activeExecutions[taskID] still
-	// populated and the scheduler dispatch would terminal-fail
-	// with "task is already being executed". Live evidence:
-	// exec_8bec1d…5e89 (2026-05-10) — pause/resume cycles failed
-	// 100% of the time before this fix. If the task is in a
-	// non-running state (PENDING / QUEUED / WAITING_FOR_CHILDREN /
-	// AWAITING_*), executor.Pause returns "no active execution"
-	// and we fall through to the bare DB transition below — which
-	// is what those states need anyway.
-	if verb == "pause" && s.executor != nil && task.Status == persistence.TaskStatusRunning {
+	// Pause path: ask the executor's live map FIRST, whatever the status
+	// snapshot above says (05-scheduler.md §4.8). executor.Pause resolves
+	// activeExecutions[taskID] under the executor mutex — the authoritative
+	// answer to "is a container running for this task" — stops it, stamps
+	// the pause reason, flips the rows, and BLOCKS until the goroutine's
+	// entry is cleared. Until 2026-09-09 this call was gated on
+	// `task.Status == RUNNING` read at handler entry, and the bare
+	// transition below accepted LEASED and RUNNING alike: a task observed
+	// LEASED that reached RUNNING before the conditional write got its row
+	// flipped to PAUSED with its container still executing — the same
+	// stale-snapshot gate that leaked containers on the cancel path (§4.7).
+	//
+	// Three answers. Success: done. ErrNoActiveExecution: nothing running
+	// here, so the bare transition below flips the row — from
+	// PausableWithoutExecution only, never RUNNING. Anything else: there
+	// WAS a container and stopping it failed; surface that rather than
+	// write a PAUSED row over a running container.
+	if verb == "pause" && s.executor != nil {
 		if _, err := s.executor.Pause(taskID); err != nil {
-			// "no active execution" is a benign race (goroutine
-			// finished between our load and here) — fall through
-			// to the DB transition. Anything else is a real
-			// failure: surface it.
 			if !errors.Is(err, executor.ErrNoActiveExecution) {
 				s.logger.Error().Err(err).Str("taskId", taskID).Msg("pause: executor.Pause failed")
 				respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to pause executor: "+err.Error())
 				return
 			}
+			from = executor.PausableWithoutExecution
 		} else {
 			// executor.Pause already flipped status to PAUSED.
 			// Skip the redundant DB transition.

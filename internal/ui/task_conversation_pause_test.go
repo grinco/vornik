@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/mocks"
 )
@@ -133,12 +135,44 @@ func TestUIPauseTask_RunningTaskGoesThroughExecutor(t *testing.T) {
 	assert.Equal(t, taskID, spy.paused[0])
 }
 
-// TestUIPauseTask_NonRunningSkipsExecutor: a QUEUED or PAUSED
-// task has no goroutine to cancel; the executor.Pause call would
-// just return "no active execution". Skip it and do the bare DB
-// flip — same as the pre-bug behaviour for these states.
-func TestUIPauseTask_NonRunningSkipsExecutor(t *testing.T) {
+// TestUIPauseTask_NonRunningStillAsksTheExecutor: whether a container is
+// running is answered by the executor's live map, never by the status
+// snapshot the handler read a moment ago (05-scheduler.md §4.8, backlog
+// 2026-08-21 "Pause is gated on a stale task status too"). A QUEUED
+// snapshot is asked anyway; the executor's ErrNoActiveExecution is the
+// benign answer and the bare flip follows. This test replaced
+// "NonRunningSkipsExecutor", which pinned the stale-snapshot gate.
+func TestUIPauseTask_NonRunningStillAsksTheExecutor(t *testing.T) {
 	taskID := "task_queued"
+	transitions := 0
+	taskRepo := &mocks.MockTaskRepository{
+		TransitionConditionalFunc: func(_ context.Context, _ string, _ []persistence.TaskStatus, _ persistence.TaskStatus, _ persistence.TransitionOpts) (bool, error) {
+			transitions++
+			return true, nil
+		},
+	}
+	spy := &pauseSpy{pauseErr: fmt.Errorf("%w: task %s", executor.ErrNoActiveExecution, taskID)}
+	s := NewServer(
+		WithLogger(quietLogger()),
+		WithTaskRepository(taskRepo),
+		WithTaskMessageRepository(&fakeTaskMessageRepo{}),
+		WithExecutor(spy),
+	)
+
+	task := &persistence.Task{ID: taskID, Status: persistence.TaskStatusQueued}
+	notice := s.uiPauseTask(context.Background(), task)
+
+	assert.Equal(t, "paused", notice)
+	require.Len(t, spy.paused, 1, "the executor is asked whatever the snapshot says")
+	assert.Equal(t, 1, transitions, "nothing running → the bare TransitionConditional flips the row")
+}
+
+// TestUIPauseTask_LeasedSnapshotWithLiveExecutionGoesThroughExecutor: the
+// leak §4.8 closes. A task read as LEASED that reached RUNNING before the
+// handler acted has a live execution; the executor pauses it (and writes
+// PAUSED itself), and the bare flip must not run on top.
+func TestUIPauseTask_LeasedSnapshotWithLiveExecutionGoesThroughExecutor(t *testing.T) {
+	taskID := "task_leased_then_running"
 	transitions := 0
 	taskRepo := &mocks.MockTaskRepository{
 		TransitionConditionalFunc: func(_ context.Context, _ string, _ []persistence.TaskStatus, _ persistence.TaskStatus, _ persistence.TransitionOpts) (bool, error) {
@@ -154,12 +188,41 @@ func TestUIPauseTask_NonRunningSkipsExecutor(t *testing.T) {
 		WithExecutor(spy),
 	)
 
-	task := &persistence.Task{ID: taskID, Status: persistence.TaskStatusQueued}
+	task := &persistence.Task{ID: taskID, Status: persistence.TaskStatusLeased}
 	notice := s.uiPauseTask(context.Background(), task)
 
 	assert.Equal(t, "paused", notice)
-	assert.Empty(t, spy.paused, "QUEUED task should not call executor.Pause")
-	assert.Equal(t, 1, transitions, "QUEUED task should still hit the bare TransitionConditional")
+	require.Len(t, spy.paused, 1, "a LEASED snapshot must still ask the live map")
+	assert.Equal(t, 0, transitions, "executor.Pause wrote PAUSED; the bare flip must not run on top")
+}
+
+// TestUIPauseTask_BareFlipNeverAcceptsRunningAfterTheLiveMapSaidNothing: a
+// RUNNING row the live map does not know is a stale snapshot or a run this
+// daemon does not own; flipping it to PAUSED records a pause nothing
+// performed. After ErrNoActiveExecution the bare flip's from-set excludes
+// RUNNING and keeps the not-yet-started states.
+func TestUIPauseTask_BareFlipNeverAcceptsRunningAfterTheLiveMapSaidNothing(t *testing.T) {
+	taskID := "task_leased"
+	var from []persistence.TaskStatus
+	taskRepo := &mocks.MockTaskRepository{
+		TransitionConditionalFunc: func(_ context.Context, _ string, f []persistence.TaskStatus, _ persistence.TaskStatus, _ persistence.TransitionOpts) (bool, error) {
+			from = f
+			return true, nil
+		},
+	}
+	spy := &pauseSpy{pauseErr: fmt.Errorf("%w: task %s", executor.ErrNoActiveExecution, taskID)}
+	s := NewServer(
+		WithLogger(quietLogger()),
+		WithTaskRepository(taskRepo),
+		WithTaskMessageRepository(&fakeTaskMessageRepo{}),
+		WithExecutor(spy),
+	)
+
+	task := &persistence.Task{ID: taskID, Status: persistence.TaskStatusLeased}
+	assert.Equal(t, "paused", s.uiPauseTask(context.Background(), task))
+	require.NotNil(t, from, "the bare flip must run when nothing is executing")
+	assert.NotContains(t, from, persistence.TaskStatusRunning, "RUNNING must not be flipped by a handler that could not pause it")
+	assert.Contains(t, from, persistence.TaskStatusLeased, "a leased task that has not started is still pausable")
 }
 
 // TestUIPauseTask_BenignNoActiveExecutionFallsThrough: if the
@@ -176,7 +239,7 @@ func TestUIPauseTask_BenignNoActiveExecutionFallsThrough(t *testing.T) {
 			return true, nil
 		},
 	}
-	spy := &pauseSpy{pauseErr: errors.New("no active execution for task " + taskID)}
+	spy := &pauseSpy{pauseErr: fmt.Errorf("%w: task %s", executor.ErrNoActiveExecution, taskID)}
 	s := NewServer(
 		WithLogger(quietLogger()),
 		WithTaskRepository(taskRepo),
@@ -192,12 +255,12 @@ func TestUIPauseTask_BenignNoActiveExecutionFallsThrough(t *testing.T) {
 	assert.Equal(t, 1, transitions, "benign race should fall through to TransitionConditional")
 }
 
-// TestUIPauseTask_ExecutorPauseHardErrorFallsThroughToDBFlip:
-// any error from executor.Pause that isn't "no active execution"
-// is logged + we fall through. That preserves the operator's
-// intent — the task status still flips to PAUSED even if the
-// container-stop step failed (better than nothing).
-func TestUIPauseTask_ExecutorPauseHardErrorFallsThroughToDBFlip(t *testing.T) {
+// TestUIPauseTask_ExecutorPauseHardErrorIsSurfacedNotFlippedAround: any
+// error from executor.Pause that is not ErrNoActiveExecution means there
+// WAS a live execution and stopping it failed. Flipping the row anyway
+// ("better than nothing", as this test once said) is exactly the state
+// §4.8 forbids — a PAUSED row over a running container. Surface it.
+func TestUIPauseTask_ExecutorPauseHardErrorIsSurfacedNotFlippedAround(t *testing.T) {
 	taskID := "task_hard_err"
 	transitions := 0
 	taskRepo := &mocks.MockTaskRepository{
@@ -216,8 +279,8 @@ func TestUIPauseTask_ExecutorPauseHardErrorFallsThroughToDBFlip(t *testing.T) {
 	task := &persistence.Task{ID: taskID, Status: persistence.TaskStatusRunning}
 	notice := s.uiPauseTask(context.Background(), task)
 
-	assert.Equal(t, "paused", notice)
-	assert.Equal(t, 1, transitions, "hard executor error must still allow DB-level flip")
+	assert.Equal(t, "pause-failed", notice)
+	assert.Equal(t, 0, transitions, "a container that could not be stopped must not get a PAUSED row")
 }
 
 // TestUIPauseTask_FormRouteCallsExecutor: end-to-end form POST →

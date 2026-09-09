@@ -346,6 +346,23 @@ var corpus = map[string]Entry{
 	// TestPlaybookCoversAllFailureClasses listed its classes by hand and
 	// stopped at 19 of 23. Three of the four are emitted in production today.
 
+	persistence.TaskFailureClassForgeJobNoTarget: {
+		Class:        persistence.TaskFailureClassForgeJobNoTarget,
+		Scope:        ScopeTask,
+		HumanMessage: "This task was asked to act on a pull request or issue, but was given none to act on.",
+		Cause: "A forge step (fetch_diff, post_review, open_change_request) received a job that names no pull request " +
+			"or issue number and no backlog origin. Nothing on the forge side is wrong — no repository, installation or " +
+			"permission is involved — the WORKFLOW was started for something it cannot run on. The common shape: a CI " +
+			"run on a push to the default branch (green, no pull request) routed into a review workflow. " +
+			"This class SKIPS the retry budget: a job cannot acquire a pull request by being retried.",
+		Suggestions: []string{
+			"Read the task's payload: the forge_job has number 0 and no backlog kind/slug. Find what ENQUEUED it — a CI trigger, a webhook filter, a manual invocation — and why that path started a change-request workflow without one.",
+			"If forge.ci.success_workflow_id names a review workflow: since 2026.9.4 a green run with no pull request is recorded and starts nothing; on an older daemon, point it at a workflow that does not need a pull request or upgrade.",
+			"If a webhook source routes CI completions (ci_workflow_id / the generic ingress fallback) to the review workflow, a default-branch push will land here — scope the trigger to pull requests.",
+			"Do NOT check the App installation or its permissions for this class — that is FORGE_TARGET_UNAVAILABLE, and this failure never made a forge request.",
+			"This task did NOT exhaust its attempts — it stopped after one deliberately. Re-drive it only after the trigger is fixed; the same job would be refused again.",
+		},
+	},
 	persistence.TaskFailureClassForgeTargetUnavailable: {
 		Class:        persistence.TaskFailureClassForgeTargetUnavailable,
 		Scope:        ScopeTask,

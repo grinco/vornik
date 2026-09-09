@@ -61,6 +61,7 @@ func TaskShouldRetry(attempt, maxAttempts int, class string) bool {
 // recoverable parent.
 var terminalFailureClasses = map[string]bool{
 	TaskFailureClassForgeTargetUnavailable: true,
+	TaskFailureClassForgeJobNoTarget:       true,
 }
 
 // IsTerminalFailureClass reports whether a TASK failure class is one that never

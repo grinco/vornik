@@ -207,7 +207,9 @@ func (c *Container) ciIngestForProject(p *registry.Project) *forgeci.Ingest {
 		MaxExcerptBytes:   ci.MaxExcerptBytes,
 		ReviewOnFailure:   ci.ReviewOnFailure,
 		SuccessWorkflowID: ci.SuccessWorkflowID,
-		CommentOnFailure:  ci.CommentsOnFailure(),
+		SuccessWorkflowNeedsChangeRequest: successWorkflowNeedsChangeRequest(
+			c.workflowLookup(), ci.SuccessWorkflowID),
+		CommentOnFailure: ci.CommentsOnFailure(),
 		// Both path filters live in forgeci so BOTH ingresses honour them.
 		// workflow_paths used to be enforced only inside the App channel, which
 		// meant the generic relay ingress ignored it entirely (design §14.4).
@@ -241,4 +243,31 @@ func (c *Container) ciIngestForProject(p *registry.Project) *forgeci.Ingest {
 		ing = ing.WithCommenting(prov, c.AIDisclosure)
 	}
 	return ing.WithReviewState(c.repos.ForgePRReviewState)
+}
+
+// workflowLookup is the registry's GetWorkflow, nil-safe for a container
+// without a registry (tests; a job-tier process that wires no workflows).
+func (c *Container) workflowLookup() func(string) *registry.Workflow {
+	if c == nil || c.Registry == nil {
+		return func(string) *registry.Workflow { return nil }
+	}
+	return c.Registry.GetWorkflow
+}
+
+// successWorkflowNeedsChangeRequest asks the success workflow's own steps
+// whether it can run on a build that has no pull request (forgeci design §18).
+//
+// An UNKNOWN workflow answers false: the trigger then enqueues as it did before
+// this check existed and the executor reports the missing workflow, which is
+// the right failure for a typo — this check is about a workflow that exists and
+// needs a PR, not about validating the id.
+func successWorkflowNeedsChangeRequest(lookup func(string) *registry.Workflow, id string) bool {
+	if id == "" || lookup == nil {
+		return false
+	}
+	wf := lookup(id)
+	if wf == nil {
+		return false
+	}
+	return forgeci.NeedsChangeRequest(wf.SystemHandlers())
 }

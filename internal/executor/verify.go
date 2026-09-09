@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // verifyClaimedFiles reads three classes of file claims out of an agent's
@@ -127,11 +129,14 @@ func (e *Executor) verifyClaimedFiles(resultBytes []byte, workspaceDir, projectD
 	if len(problems) == 0 {
 		return nil
 	}
-	return fmt.Errorf(
-		"agent claimed %d file(s) but verification failed: %s",
-		len(claims),
-		strings.Join(problems, "; "),
-	)
+	return &claimRefusal{
+		class: stepoutcome.ClassMissingOutput,
+		msg: fmt.Sprintf(
+			"agent claimed %d file(s) but verification failed: %s",
+			len(claims),
+			strings.Join(problems, "; "),
+		),
+	}
 }
 
 // verifyClaimedModifications kept as a thin alias so external callers

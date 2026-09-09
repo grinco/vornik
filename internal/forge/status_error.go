@@ -23,8 +23,17 @@ import (
 // not text-matched".
 //
 // See https://docs.vornik.io
+//
+// STATUS IS THE DISCRIMINATOR, and the convention is frozen: a non-zero Status
+// is HTTP-derived permanence (the target is gone or forbidden →
+// FORGE_TARGET_UNAVAILABLE); Status 0 means permanence was decided from the
+// PAYLOAD with no request made (a job that names no pull request →
+// FORGE_JOB_NO_TARGET). Do not give Status 0 a third meaning; a third source of
+// permanence (a quota refusal, say) wants an explicit field rather than a
+// second overload of this one (review-20260909-a823).
 type PermanentError struct {
-	// Status is the HTTP status that decided permanence.
+	// Status is the HTTP status that decided permanence, or 0 when the payload
+	// did (see the type comment).
 	Status int
 	// Op names the forge operation, for the operator-facing message.
 	Op string
@@ -36,6 +45,12 @@ type PermanentError struct {
 }
 
 func (e *PermanentError) Error() string {
+	// Status 0 means permanence was decided from the PAYLOAD, not a response
+	// — a job that names no pull request, for instance. Inventing "HTTP 0"
+	// there would send the operator looking for a request that never happened.
+	if e.Status == 0 {
+		return fmt.Sprintf("%s: permanent failure: %s", e.Op, e.Detail)
+	}
 	return fmt.Sprintf("%s: permanent failure HTTP %d: %s", e.Op, e.Status, e.Detail)
 }
 

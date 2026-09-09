@@ -115,6 +115,19 @@ type Config struct {
 	MaxExcerptBytes   int
 	ReviewOnFailure   bool
 	SuccessWorkflowID string
+	// SuccessWorkflowNeedsChangeRequest is true when the success workflow's
+	// steps include a forge handler that refuses a job with no pull request
+	// (NeedsChangeRequest over the workflow's system handlers). Resolved at
+	// wiring time from the registry; Decide cannot see the workflow itself.
+	//
+	// headmatch, 2026-09-09: the operator pointed success_workflow_id at the
+	// REVIEW workflow so a completed run is the single review trigger. A merged
+	// push to main is green and has no pull request, and forge.fetch_diff
+	// refused the PR-less job on all three attempts. The design's success hook
+	// was written for deposits on default-branch builds, which have no PR by
+	// nature — so "PR present: either" was right for deposits and wrong for
+	// reviews, and only the workflow's own steps can tell the two apart.
+	SuccessWorkflowNeedsChangeRequest bool
 	// CommentOnFailure posts a factual status comment when a failure cannot
 	// produce a review. Defaults TRUE, unlike its siblings: their failure mode
 	// when enabled is an unwanted behaviour change, while this one's failure
@@ -378,6 +391,12 @@ func Decide(out *persistence.ForgeCIOutcome, cfg Config, alreadyReviewed bool) D
 		if cfg.SuccessWorkflowID == "" {
 			return Decision{Reason: "green, no success workflow configured"}
 		}
+		// A workflow that needs a pull request cannot run on a build that has
+		// none; enqueuing it buys a refusal per attempt. Recorded, and the
+		// reason says so (design §18).
+		if cfg.SuccessWorkflowNeedsChangeRequest && !out.HasPullRequest() {
+			return Decision{Reason: "green run has no pull request, and the success workflow needs one"}
+		}
 		return Decision{
 			Enqueue: true, WorkflowID: cfg.SuccessWorkflowID, Reason: "ci succeeded",
 		}
@@ -387,6 +406,31 @@ func Decide(out *persistence.ForgeCIOutcome, cfg Config, alreadyReviewed bool) D
 		// there is nothing to say.
 		return Decision{Reason: "conclusion " + out.Conclusion + " is not actionable"}
 	}
+}
+
+// changeRequestHandlers are the forge system handlers that refuse a job with no
+// pull request (executor/handlers/forge.forgeJobFromTask: "issue-driven: repo +
+// number>0"). forge.fetch_ci is NOT here on purpose — it joins on head_sha and
+// is the first step of a deposit on a merged-main build (design §3.3, §5.1).
+//
+// One declaration. The handlers package cannot be imported from here (it
+// imports the executor), so this list is asserted against the handlers' own
+// behaviour by a test on that side.
+var changeRequestHandlers = map[string]bool{
+	"forge.fetch_diff":          true,
+	"forge.post_review":         true,
+	"forge.open_change_request": true,
+}
+
+// NeedsChangeRequest reports whether a workflow whose system steps run the
+// given handlers can only run against a pull request.
+func NeedsChangeRequest(handlers []string) bool {
+	for _, h := range handlers {
+		if changeRequestHandlers[h] {
+			return true
+		}
+	}
+	return false
 }
 
 // Context is the reference a triggered task carries.

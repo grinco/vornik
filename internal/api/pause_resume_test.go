@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -98,9 +99,13 @@ func TestPauseTask_FallsBackToDBForNonRunningTask(t *testing.T) {
 		},
 	}
 	msgRepo := &stubTaskMessageRepo{}
-	executor := &mockPauseResumeExecutor{}
+	// The executor is asked whatever the snapshot says (05-scheduler.md
+	// §4.8) and answers as the real one does for a task it is not running:
+	// ErrNoActiveExecution. The fixture used to return a successful pause
+	// for a task it had never seen, which no executor does.
+	exec := &mockPauseResumeExecutor{pauseErr: fmt.Errorf("%w: task %s", executor.ErrNoActiveExecution, taskID)}
 
-	s := buildPauseResumeServer(taskRepo, msgRepo, executor)
+	s := buildPauseResumeServer(taskRepo, msgRepo, exec)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+projectID+"/tasks/"+taskID+"/pause", nil)
 	req = withProjectAndTaskRouteVars(req, projectID, taskID)

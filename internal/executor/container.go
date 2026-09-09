@@ -237,6 +237,14 @@ func refineAgentFailureOutcomeErr(err error) (stepoutcome.Outcome, string) {
 	if chat.IsModelUnhealthyFailure(err) {
 		return stepoutcome.Failed, stepoutcome.ClassModelUnhealthy
 	}
+	// A claim verifier's refusal carries its class on the type. The pipeline
+	// returns these errors intact (claimed_files and role_claims are not in
+	// stepOutcomeExitTier), so the type survives to here; a string arm for the
+	// same phrases is deliberately NOT added — see claimRefusal.
+	var refusal *claimRefusal
+	if errors.As(err, &refusal) {
+		return refusal.outcome(), refusal.class
+	}
 	return refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
 }
 

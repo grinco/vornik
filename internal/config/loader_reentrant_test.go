@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -28,8 +29,23 @@ func TestLoad_IsCallableTwiceInOneProcess(t *testing.T) {
 	//
 	// The reset happens ONCE, before the first Load. The point is that the
 	// SECOND Load needs no reset — that is the defect.
-	t.Chdir(t.TempDir())
+	// Isolate the USER config locations too. Load() searches
+	// $XDG_CONFIG_HOME/vornik and $HOME/.config/vornik after the cwd, and this
+	// test passed for two days only on hosts that had a production config
+	// there — the defaults alone fail validation (api.auth_enabled is on with
+	// no keys), so on every clean runner the FIRST Load returned
+	// "api.api_keys is required" and the re-entrancy it exists to prove was
+	// never reached. Found red on grinco/vornik CI, 2026-09-07..09, and on
+	// the 2026.9.4 release-prep run. The minimal config below makes the
+	// defaults valid without depending on anything outside the test.
+	dir := t.TempDir()
+	t.Chdir(dir)
 	t.Setenv("VORNIK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("api:\n  auth_enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	origArgs := os.Args
 	os.Args = []string{"vornik"}
 	origFlags := flag.CommandLine
@@ -48,8 +64,8 @@ func TestLoad_IsCallableTwiceInOneProcess(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		_, _, err := Load()
-		// A missing config file is fine — it returns defaults. Anything else is
-		// a real failure, and ErrVersionRequested cannot happen under `go test`.
+		// Anything but success is a real failure; ErrVersionRequested cannot
+		// happen under `go test`.
 		if err != nil && !errors.Is(err, ErrVersionRequested) {
 			t.Fatalf("load %d: %v", i+1, err)
 		}

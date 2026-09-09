@@ -44,9 +44,15 @@ func (h *FetchCIHandler) Execute(ctx context.Context, in executor.SystemStepInpu
 	if h == nil || h.outcomes == nil {
 		return executor.SystemStepResult{}, errors.New(name + ": handler is missing required dependencies (outcome store)")
 	}
-	job, err := forgeJobFromTask(in.Task, name)
+	// Load-only: this step joins on head_sha and must work for a build with
+	// no pull request (a deposit on merged main, design §5.1). The repo is the
+	// one thing the lookup cannot do without.
+	job, err := loadForgeJob(in.Task, name)
 	if err != nil {
 		return executor.SystemStepResult{}, err
+	}
+	if strings.TrimSpace(job.Repo) == "" {
+		return executor.SystemStepResult{}, fmt.Errorf("%s: forge job names no repository", name)
 	}
 
 	head := strings.TrimSpace(job.HeadSHA)

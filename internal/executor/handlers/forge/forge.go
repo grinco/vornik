@@ -71,6 +71,44 @@ type forgePayload struct {
 // forgeJobFromTask extracts the typed ForgeJob, erroring clearly when the
 // upstream step didn't record one (a workflow-wiring bug, not a transient fault).
 func forgeJobFromTask(task *persistence.Task, handler string) (*forgeapi.ForgeJob, error) {
+	j, err := loadForgeJob(task, handler)
+	if err != nil {
+		return nil, err
+	}
+	// A job is publishable in one of two shapes:
+	//   - issue-driven: repo + a positive issue/CR number (today's shape);
+	//   - backlog-origin: repo + kind=="backlog" + a non-empty slug (an
+	//     autonomy BACKLOG.md item with no inbound issue number).
+	valid := j.Repo != "" && (j.Number > 0 || (j.Kind == "backlog" && j.Slug != ""))
+	if !valid {
+		// PERMANENT, decided where the payload is in hand. A job that names no
+		// pull request cannot acquire one by being retried: headmatch
+		// task_20260909150605_13cc14a3d079dc09 (2026-09-09) spent all three
+		// attempts on this exact refusal after a green push to main was routed
+		// into the review workflow. The type is what lets the classifier make
+		// it FORGE_TARGET_UNAVAILABLE and TaskShouldRetry stop the ladder —
+		// the same discipline as a forge 404 (2026-09-02 design D1: "the
+		// payload is malformed" is one of the three cases the type names).
+		// No request was made, so Status stays 0 and the message carries no
+		// HTTP code. The SHAPE the job needs is still spelled out: that is what
+		// the operator reading the failure acts on.
+		return nil, &forgeapi.PermanentError{
+			Op:     handler,
+			Detail: fmt.Sprintf("forge job must be either issue-driven (repo + number>0) or backlog-origin (repo + kind=backlog + slug) (%+v)", *j),
+		}
+	}
+	return j, nil
+}
+
+// loadForgeJob extracts the typed ForgeJob without judging its shape. A missing
+// job is a workflow-wiring defect and keeps its ordinary error.
+//
+// forge.fetch_ci reads through this rather than forgeJobFromTask: it joins CI
+// outcomes on head_sha, never the PR number (2026-09-08 design §3.3), and a
+// deposit on a merged-main build — which has no pull request by nature — starts
+// with it (§5.1). Requiring a number there made every such deposit fail on its
+// first step.
+func loadForgeJob(task *persistence.Task, handler string) (*forgeapi.ForgeJob, error) {
 	if task == nil {
 		return nil, fmt.Errorf("%s: task is nil", handler)
 	}
@@ -84,14 +122,6 @@ func forgeJobFromTask(task *persistence.Task, handler string) (*forgeapi.ForgeJo
 	}
 	if j == nil {
 		return nil, fmt.Errorf("%s: no forge job on task — forge_job (or context.forge_job) must be set by the channel/intake step", handler)
-	}
-	// A job is publishable in one of two shapes:
-	//   - issue-driven: repo + a positive issue/CR number (today's shape);
-	//   - backlog-origin: repo + kind=="backlog" + a non-empty slug (an
-	//     autonomy BACKLOG.md item with no inbound issue number).
-	valid := j.Repo != "" && (j.Number > 0 || (j.Kind == "backlog" && j.Slug != ""))
-	if !valid {
-		return nil, fmt.Errorf("%s: forge job must be either issue-driven (repo + number>0) or backlog-origin (repo + kind=backlog + slug) (%+v)", handler, *j)
 	}
 	return j, nil
 }

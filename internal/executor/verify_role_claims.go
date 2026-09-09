@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // verifyRoleClaims is the cross-cutting deception check called after every
@@ -100,7 +102,10 @@ func (e *Executor) verifyRoleClaims(
 	if len(problems) == 0 {
 		return nil
 	}
-	return fmt.Errorf("agent fabrication detected: %s", strings.Join(problems, "; "))
+	return &claimRefusal{
+		class: stepoutcome.ClassVerifyFailed,
+		msg:   fmt.Sprintf("agent fabrication detected: %s", strings.Join(problems, "; ")),
+	}
 }
 
 // toolAuditEntry mirrors one record of the agent's toolAudit array, as the

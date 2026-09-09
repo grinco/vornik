@@ -625,8 +625,15 @@ func TestEntityMentionRepository_ListByEntity(t *testing.T) {
 	}
 	ent, _ := entRepo.GetByCanonical(ctx, "p1", "PERSON", "alpha")
 
+	// The chunks must exist: ListByEntity joins project_memory_chunks for
+	// its order and drops a mention whose chunk is gone (2026-09-09, matching
+	// Postgres). Before that this test passed with no chunk rows at all.
+	seed := seedChunkForSuite(db)
 	end := 10
 	for i, chunkID := range []string{"c1", "c2", "c3"} {
+		if err := seed(ctx, chunkID, "p1", "body "+chunkID, false, time.Now().UTC().Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("seed chunk %s: %v", chunkID, err)
+		}
 		if err := mentionRepo.Insert(ctx, &persistence.EntityMention{
 			ChunkID: chunkID, EntityID: ent.ID, CharStart: i, CharEnd: &end, Surface: "alpha",
 		}); err != nil {

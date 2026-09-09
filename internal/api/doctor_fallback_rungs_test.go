@@ -115,3 +115,90 @@ func TestFallbackRungs_JudgedFailureClassesAreNotDeadRungs(t *testing.T) {
 		}
 	}
 }
+
+// A rung REFUSED by an open circuit and a rung that CALLED AND FAILED are not
+// the same finding, and the remedies are opposite.
+//
+// Backlog 2026-09-04: "The fallback_rungs check cannot tell a refused call from
+// a failed one". Seven dead rungs on zai.glm-5 were reported as "never reached
+// inference", which read as credentials/endpoint — for a model that had ok=15
+// on another rung. The ledger showed two populations: 0.0-1.1s model_unhealthy
+// (the breaker doing its job before any request) and 25-53s llm_call_failed
+// (a request made and failed upstream). Lumping them cost a day of
+// misdiagnosis. The class is typed; the check must read it.
+func TestFallbackRungs_ARefusedRungIsNamedAsRefused(t *testing.T) {
+	last := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	items, _, msg := evaluateFallbackRungs([]deadFallbackRung{{
+		stepID: "recover_lead_lead_model_fallback_infra_retry1", role: "lead", model: "zai.glm-5",
+		attempts: 11, refused: 11, lastClass: "model_unhealthy", lastFailed: last,
+		avgDuration: 400 * time.Millisecond,
+	}})
+	if len(items) != 1 {
+		t.Fatalf("want 1 finding, got %d: %v", len(items), items)
+	}
+	for _, want := range []string{"11 refused by an open circuit", "0.4s"} {
+		if !strings.Contains(items[0], want) {
+			t.Errorf("finding %q does not say %q — the operator cannot tell a refusal from a failed call", items[0], want)
+		}
+	}
+	if !strings.Contains(msg, "breaker") || !strings.Contains(msg, "circuit is open") {
+		t.Errorf("every attempt was a refusal, but the message does not point at the OPEN CIRCUIT: %q", msg)
+	}
+	if strings.Contains(msg, "credentials") || strings.Contains(msg, "endpoint") {
+		t.Errorf("a refused rung must not send the operator to credentials/endpoints: %q", msg)
+	}
+}
+
+func TestFallbackRungs_ACalledAndFailedRungIsNamedAsFailedUpstream(t *testing.T) {
+	last := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+	items, _, msg := evaluateFallbackRungs([]deadFallbackRung{{
+		stepID: "ingest_model_fallback_infra_retry1", role: "ingestor", model: "zai.glm-5",
+		attempts: 7, calledAndFailed: 7, lastClass: "llm_call_failed", lastFailed: last,
+		avgDuration: 41 * time.Second,
+	}})
+	if len(items) != 1 {
+		t.Fatalf("want 1 finding, got %d: %v", len(items), items)
+	}
+	for _, want := range []string{"7 called and failed upstream", "41s"} {
+		if !strings.Contains(items[0], want) {
+			t.Errorf("finding %q does not say %q", items[0], want)
+		}
+	}
+	if !strings.Contains(msg, "provider") {
+		t.Errorf("calls were made and failed; the message must point at the model or its provider: %q", msg)
+	}
+	if strings.Contains(msg, "circuit is open") {
+		t.Errorf("no attempt was refused, yet the message blames an open circuit: %q", msg)
+	}
+}
+
+// Mixed populations are reported as both, per rung — never collapsed into
+// whichever class happened to be last.
+func TestFallbackRungs_MixedRungReportsBothCounts(t *testing.T) {
+	last := time.Now().UTC()
+	items, _, msg := evaluateFallbackRungs([]deadFallbackRung{{
+		stepID: "a_model_fallback", model: "zai.glm-5",
+		attempts: 5, refused: 3, calledAndFailed: 2, lastClass: "model_unhealthy", lastFailed: last,
+	}})
+	for _, want := range []string{"3 refused by an open circuit", "2 called and failed upstream"} {
+		if !strings.Contains(items[0], want) {
+			t.Errorf("finding %q does not say %q", items[0], want)
+		}
+	}
+	if strings.Contains(msg, "every attempt") {
+		t.Errorf("only some attempts were refusals, yet the message generalises to every attempt: %q", msg)
+	}
+}
+
+// Attempts in neither population — container_*, missing_prerequisite — are the
+// environment, not the model, and the item says so instead of hiding them.
+func TestFallbackRungs_EnvironmentFailuresAreNamedAsSuch(t *testing.T) {
+	last := time.Now().UTC()
+	items, _, _ := evaluateFallbackRungs([]deadFallbackRung{{
+		stepID: "a_model_fallback", model: "gemma4:26b",
+		attempts: 4, lastClass: "container_start_failed", lastFailed: last,
+	}})
+	if !strings.Contains(items[0], "4 failed before any call (container or environment)") {
+		t.Errorf("finding %q does not name the environment population", items[0])
+	}
+}

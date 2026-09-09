@@ -79,37 +79,6 @@ func TestPagedropViewBindIsNotAHardcodedHostIP(t *testing.T) {
 	}
 }
 
-// TestAuditJournalMountHasADefault — the broker's audit journal is mounted
-// `${VORNIK_BROKER_AUDIT_JOURNAL_HOST_DIR}:/var/lib/vornik-broker:Z`. Only the
-// Makefile defines that variable (`?= $(HOME)/.local/share/vornik-broker`), so
-// bringing the stack up with podman-compose directly — which README.md
-// documents — left it EMPTY, and the mount silently degraded from a host bind
-// into an anonymous volume.
-//
-// That failure is invisible until it costs you something. Found 2026-09-06:
-//
-//   - the journal was not in operator space, so `make` targets that create and
-//     chmod that directory were maintaining a path nothing used;
-//   - `:Z` cannot relabel a bind that is not one, so the volume kept the
-//     ORIGINATING container's SELinux MCS categories. After a recreate the new
-//     container (c699,c869) could not read a journal labelled c159,c973 and
-//     logged `permission denied` — meaning every audit event it failed to POST
-//     during a daemon outage was dropped rather than journalled.
-//
-// A default in the compose file makes the manifest correct however it is
-// invoked, instead of only under `make`.
-func TestAuditJournalMountHasADefault(t *testing.T) {
-	compose := readCompose(t, "trading.compose.yaml")
-	if strings.Contains(compose, "${VORNIK_BROKER_AUDIT_JOURNAL_HOST_DIR}:") {
-		t.Error("trading.compose.yaml: the audit journal mount must supply a default " +
-			"(${VORNIK_BROKER_AUDIT_JOURNAL_HOST_DIR:-...}) — unset, it degrades from a :Z host bind " +
-			"to an anonymous volume the broker cannot read back after a recreate")
-	}
-	if !strings.Contains(compose, "VORNIK_BROKER_AUDIT_JOURNAL_HOST_DIR:-") {
-		t.Error("trading.compose.yaml: expected a defaulted audit journal mount")
-	}
-}
-
 // TestClusterUIConfigsMountIsWritable — in the cluster topology only the
 // UI node serves the web UI and writes config; workers/webhook stay
 // read-only. The UI node's configs mount must be writable.

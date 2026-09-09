@@ -3,7 +3,7 @@ sources:
     - path: internal/forge/forge.go
       sha256: b86dd991b35124dfb83880c283a3aa95c5ab5b39cf1a578a67fbd463f237caa2
     - path: internal/forge/github/github.go
-      sha256: cf3cc48eae88b4f3de45cf53a79b011bd3ae0845e73bcbd3f87f1119ec266619
+      sha256: e63d11c51e901252e39f9602d9d0b506eab77507e796e477970697401ff353b8
 ---
 # Forge — GitHub automation
 
@@ -250,7 +250,11 @@ such as a push to your default branch.
   `ci.comment_on_failure: false`.
 - A **green** run is recorded quietly. If you set `ci.success_workflow_id` it
   also starts that workflow once per run — useful for depositing a merged build's
-  output somewhere, and off unless you configure it.
+  output somewhere, and off unless you configure it. You can also name the
+  review workflow here, so a *completed* run is what triggers a review rather
+  than the push that started it: a workflow that needs a pull request runs only
+  for runs that have one, and a green push to your default branch is recorded
+  without starting anything.
 - Any review that runs later reads the outcomes for the commit it is reviewing.
 
 **Getting the actual output in.** Conclusions come free. Content — a

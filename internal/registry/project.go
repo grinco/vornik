@@ -909,6 +909,12 @@ type ProjectForgeCI struct {
 	// SuccessWorkflowID fires on a GREEN run, once per run. Empty is off. Not
 	// coalesced: a deposit is about that run's output, and collapsing several
 	// would lose the thing being deposited.
+	//
+	// A workflow that needs a pull request (its steps include forge.fetch_diff,
+	// forge.post_review or forge.open_change_request) runs only for runs that
+	// have one; a green push to the default branch is recorded and starts
+	// nothing (CI-outcomes design §18). So naming the review workflow here is
+	// legitimate: it reviews green pull requests and leaves merged main alone.
 	SuccessWorkflowID string `yaml:"success_workflow_id"`
 
 	// CommentOnFailure posts a factual status comment when a failure lands on a

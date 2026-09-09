@@ -644,19 +644,28 @@ func RunEntityMentionSuite(t *testing.T, repo persistence.EntityMentionRepositor
 	t.Helper()
 	ctx := context.Background()
 	project := uniqueID("proj")
-	chunk, other := uniqueID("chunk"), uniqueID("chunk")
-	for _, c := range []string{chunk, other} {
-		if err := seed(ctx, c, project, "body "+c, false, time.Now().UTC()); err != nil {
-			t.Fatalf("seed chunk: %v", err)
-		}
+	// Two chunks whose LEXICAL order disagrees with their creation order, so
+	// an implementation ordering by chunk_id cannot satisfy "newest chunk
+	// first" by accident. SQLite did exactly that until 2026-09-09 (backlog
+	// 2026-09-05, backend-contract coverage design §8): ORDER BY chunk_id
+	// DESC, while Postgres joins the chunk and orders by its created_at.
+	older, newer := "zz-"+uniqueID("chunk"), "aa-"+uniqueID("chunk")
+	now := time.Now().UTC()
+	if err := seed(ctx, older, project, "body "+older, false, now.Add(-time.Hour)); err != nil {
+		t.Fatalf("seed chunk: %v", err)
+	}
+	if err := seed(ctx, newer, project, "body "+newer, false, now); err != nil {
+		t.Fatalf("seed chunk: %v", err)
 	}
 	ent := &persistence.KnowledgeEntity{ProjectID: project, Type: "person", CanonicalName: "Ada-" + uniqueID("")}
 	if err := entities.Insert(ctx, ent); err != nil {
 		t.Fatalf("seed entity: %v", err)
 	}
-	t.Run("Insert_is_idempotent_and_ListByChunk_orders_by_char_start", func(t *testing.T) { entityMentionInsert(ctx, t, repo, chunk, ent.ID) })
-	t.Run("ListByEntity_returns_the_mentions_and_honours_the_limit", func(t *testing.T) { entityMentionListByEntity(ctx, t, repo, other, ent.ID) })
-	t.Run("DeleteForChunk_removes_only_that_chunks_mentions", func(t *testing.T) { entityMentionDelete(ctx, t, repo, chunk, other) })
+	t.Run("Insert_is_idempotent_and_ListByChunk_orders_by_char_start", func(t *testing.T) { entityMentionInsert(ctx, t, repo, older, ent.ID) })
+	t.Run("ListByEntity_returns_newest_chunk_first_and_honours_the_limit", func(t *testing.T) {
+		entityMentionListByEntity(ctx, t, repo, older, newer, ent.ID)
+	})
+	t.Run("DeleteForChunk_removes_only_that_chunks_mentions", func(t *testing.T) { entityMentionDelete(ctx, t, repo, older, newer) })
 }
 
 func entityMentionInsert(ctx context.Context, t *testing.T, repo persistence.EntityMentionRepository, chunk, entity string) {
@@ -683,20 +692,34 @@ func entityMentionInsert(ctx context.Context, t *testing.T, repo persistence.Ent
 	}
 }
 
-func entityMentionListByEntity(ctx context.Context, t *testing.T, repo persistence.EntityMentionRepository, other, entity string) {
+func entityMentionListByEntity(ctx context.Context, t *testing.T, repo persistence.EntityMentionRepository, older, newer, entity string) {
 	t.Helper()
-	if err := repo.Insert(ctx, &persistence.EntityMention{ChunkID: other, EntityID: entity, CharStart: 1}); err != nil {
-		t.Fatalf("Insert other: %v", err)
+	if err := repo.Insert(ctx, &persistence.EntityMention{ChunkID: newer, EntityID: entity, CharStart: 1}); err != nil {
+		t.Fatalf("Insert newer: %v", err)
 	}
 	all, err := repo.ListByEntity(ctx, entity, 10)
 	if err != nil {
 		t.Fatalf("ListByEntity: %v", err)
 	}
 	if len(all) != 3 {
-		t.Errorf("want 3 mentions of the entity, got %d", len(all))
+		t.Fatalf("want 3 mentions of the entity, got %d", len(all))
 	}
-	if limited, _ := repo.ListByEntity(ctx, entity, 1); len(limited) != 1 {
-		t.Errorf("limit must cap the result: %d", len(limited))
+	// The interface says "newest chunk first". The newer chunk's id sorts
+	// lexically BEFORE the older's, so this fails on an id-ordered
+	// implementation and passes only on one that reads the chunk's time.
+	if all[0].ChunkID != newer || all[1].ChunkID != older || all[2].ChunkID != older {
+		t.Errorf("want newest chunk first (%s, then %s ×2), got %s, %s, %s",
+			newer, older, all[0].ChunkID, all[1].ChunkID, all[2].ChunkID)
+	}
+	limited, err := repo.ListByEntity(ctx, entity, 1)
+	if err != nil {
+		t.Fatalf("ListByEntity limit: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("limit must cap the result: %d", len(limited))
+	}
+	if limited[0].ChunkID != newer {
+		t.Errorf("the limit must keep the NEWEST chunk, got %s", limited[0].ChunkID)
 	}
 }
 

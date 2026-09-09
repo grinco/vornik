@@ -34,6 +34,27 @@ func jsonCanonical(v any) ([]byte, error) {
 // Relies on encoding/json sorting map keys alphabetically (stable
 // since Go 1.12). The prefix is short enough to be readable in logs
 // and the DB column but long enough to be injection-resistant.
+// SystemHandlers lists the handler names of the workflow's system steps,
+// sorted and de-duplicated, so a caller can ask what a workflow DOES without
+// knowing any handler's semantics (forgeci asks whether a success-triggered
+// workflow can run on a build with no pull request). Nil when there are none.
+func (w *Workflow) SystemHandlers() []string {
+	if w == nil || len(w.Steps) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, step := range w.Steps {
+		if step.Type != "system" || step.Handler == "" || seen[step.Handler] {
+			continue
+		}
+		seen[step.Handler] = true
+		out = append(out, step.Handler)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (w *Workflow) Hash() string {
 	if w == nil {
 		return ""

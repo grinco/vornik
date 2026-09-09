@@ -628,16 +628,32 @@ func classifyWorkflowRun(pl ghEventPayload, job forge.ForgeJob) (forge.ForgeJob,
 		return forge.ForgeJob{}, false
 	}
 	job.Action = "completed"
-	// NOT a change request, even when the run belongs to a pull request. The
-	// forge handlers read IsChangeRequest to decide whether they are looking at
-	// a PR, and a CI run that claimed to be one would reach fetch_diff and
-	// post_review as though it were.
+	// NOT a change request: IsChangeRequest tells the webhook router and the
+	// forge handlers that an event IS a pull-request event, which a completed
+	// CI run is not. Flipping it would re-route CI deliveries onto
+	// change_request_workflow_id instead of ci_workflow_id.
 	job.IsChangeRequest = false
 	job.HeadSHA = pl.WorkflowRun.HeadSHA
 	// EMPTY FOR A FORK PR — GitHub's documented behaviour. Number stays 0, the
 	// run is still classified, and only the PR-scoped paths skip it (§3.3).
 	if len(pl.WorkflowRun.PullRequests) > 0 {
 		job.Number = pl.WorkflowRun.PullRequests[0].Number
+		// …BUT THE HEAD REF IS SET, so the review this run triggers gets a
+		// working tree AT the commit it is reviewing (design §17).
+		//
+		// It did not, and the reviewer ran against `main`. The executor chose
+		// its pre-work checkout on `IsChangeRequest && HeadRef != ""`, so a
+		// CI-triggered review fell to the default-branch rebase and reviewed
+		// files that were not the pull request's. Two of three runs on
+		// headmatch PR #53 then described a DIFFERENT pull request — reading
+		// their workspace, which is the more defensible of the two things they
+		// could have trusted — and that was misdiagnosed as model unreliability
+		// before this was found.
+		//
+		// The two flags were conflated. This one answers "is there a head to
+		// materialize", which is true here; IsChangeRequest answers "is this a
+		// pull-request event", which is not.
+		job.HeadRef = fmt.Sprintf("refs/pull/%d/head", job.Number)
 	}
 	job.CI = &forge.CIRef{
 		RunID:        pl.WorkflowRun.ID,

@@ -21,6 +21,7 @@ func testOutcome(conclusion string, number int) *persistence.ForgeCIOutcome {
 func TestDecideCITrigger(t *testing.T) {
 	withReview := Config{ReviewOnFailure: true}
 	withDeposit := Config{ReviewOnFailure: true, SuccessWorkflowID: "rag-deposit"}
+	withReviewOnGreen := Config{ReviewOnFailure: true, SuccessWorkflowID: "github-review", SuccessWorkflowNeedsChangeRequest: true}
 
 	cases := []struct {
 		name       string
@@ -73,6 +74,23 @@ func TestDecideCITrigger(t *testing.T) {
 			name: "green with no pull request still fires the success workflow",
 			out:  testOutcome("success", 0), cfg: withDeposit,
 			wantEnq: true, wantWfID: "rag-deposit",
+		},
+		{
+			// headmatch, 2026-09-09, task_20260909150605_13cc14a3d079dc09: the
+			// operator set success_workflow_id to the REVIEW workflow so a
+			// completed run is the single review trigger. A merged push to
+			// main is green and has no pull request; the review workflow's
+			// first step refused the PR-less job, three times. A success
+			// workflow that needs a change request runs only for runs that
+			// have one — the run is recorded, and the decision says why.
+			name: "green with no pull request does not start a change-request workflow",
+			out:  testOutcome("success", 0), cfg: withReviewOnGreen,
+			wantEnq: false, reasonPart: "no pull request",
+		},
+		{
+			name: "green on a pull request starts the change-request workflow",
+			out:  testOutcome("success", 42), cfg: withReviewOnGreen,
+			wantEnq: true, wantWfID: "github-review",
 		},
 		{
 			name: "skipped is not actionable",
@@ -155,5 +173,29 @@ func TestCIOutcomeContextCarriesNoContent(t *testing.T) {
 	}
 	if ctxMap["ci_head_sha"] != "sha" {
 		t.Errorf("the head SHA is the join key a consumer needs: %+v", ctxMap)
+	}
+}
+
+// NeedsChangeRequest is the one declaration of which forge handlers refuse a
+// job with no pull request (forgeJobFromTask in executor/handlers/forge). It
+// is what lets the success trigger know whether the workflow it would start
+// can run on a merged-main build at all.
+func TestNeedsChangeRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		handlers []string
+		want     bool
+	}{
+		{"a review workflow needs one", []string{"forge.fetch_diff", "forge.fetch_ci", "forge.post_review"}, true},
+		{"an issue-fix workflow needs one", []string{"forge.open_change_request"}, true},
+		{"a deposit that only reads CI does not", []string{"forge.fetch_ci", "rag.ingest"}, false},
+		{"no forge steps at all", []string{"rag.ingest"}, false},
+		{"no system steps", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NeedsChangeRequest(tc.handlers); got != tc.want {
+				t.Errorf("NeedsChangeRequest(%v) = %v, want %v", tc.handlers, got, tc.want)
+			}
+		})
 	}
 }

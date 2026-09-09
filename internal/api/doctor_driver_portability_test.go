@@ -59,7 +59,7 @@ func seedPortabilityDB(t *testing.T) *sql.DB {
 		`CREATE TABLE tool_audit_log (id TEXT PRIMARY KEY, task_id TEXT)`,
 		`CREATE TABLE execution_step_outcomes (
 			execution_id TEXT, step_id TEXT, role TEXT, model TEXT,
-			outcome TEXT, error_class TEXT, recorded_at TIMESTAMP)`,
+			outcome TEXT, error_class TEXT, duration_ms INTEGER, recorded_at TIMESTAMP)`,
 		// The breach ledger: present but empty. Absent, the check degrades to
 		// SKIPPED with the driver's "no such table" in its message, which the
 		// assertions below (rightly) refuse — the fixture's job is to let each
@@ -179,4 +179,26 @@ func TestDoctor_FallbackRungsLikeEscapeIsPortable(t *testing.T) {
 	require.Equal(t, "plan_model_fallback", rungs[0].stepID)
 	require.Equal(t, "model_unhealthy", rungs[0].lastClass,
 		"the last-class subquery must return the newest row's class")
+}
+
+// TestDoctor_FallbackRungsSplitsRefusedFromCalled — the query carries the two
+// populations the check must tell apart (backlog 2026-09-04), on both drivers.
+// The seeded rung has five model_unhealthy rows; two llm_call_failed rows with
+// a real duration are added here so the split and the average are observable.
+func TestDoctor_FallbackRungsSplitsRefusedFromCalled(t *testing.T) {
+	db := seedPortabilityDB(t)
+	for i := 0; i < 2; i++ {
+		_, err := db.Exec(`INSERT INTO execution_step_outcomes
+			(execution_id, step_id, role, model, outcome, error_class, duration_ms, recorded_at)
+			VALUES ('e-stuck','plan_model_fallback','scout','gemma4:26b','failed','llm_call_failed',40000,?)`,
+			time.Now().UTC().Add(-time.Duration(i+10)*time.Hour))
+		require.NoError(t, err)
+	}
+	rungs, err := NewDoctorHandlers(db).queryDeadFallbackRungs(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rungs, 1)
+	require.Equal(t, 7, rungs[0].attempts)
+	require.Equal(t, 5, rungs[0].refused, "model_unhealthy rows are refusals")
+	require.Equal(t, 2, rungs[0].calledAndFailed, "llm_call_failed rows are calls that were made")
+	require.Greater(t, rungs[0].avgDuration, time.Duration(0), "the average duration must come from the ledger")
 }

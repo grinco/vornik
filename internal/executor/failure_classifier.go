@@ -55,7 +55,14 @@ func ClassifyExecutionFailure(err error, hint string) string {
 	// GitHub 404 stop the retry ladder instead of burning the whole budget on
 	// a PR that does not exist. The class constant lives in persistence and is
 	// referenced here rather than duplicated into internal/forge.
-	if _, permanent := forge.AsPermanent(err); permanent {
+	if pe, permanent := forge.AsPermanent(err); permanent {
+		// Status 0: permanence decided from the payload — the job names no
+		// pull request or issue. That is the workflow's fault, not the
+		// target's, and gets its own class so the playbook does not send the
+		// operator to check repository access (CI-outcomes design §18).
+		if pe.Status == 0 {
+			return persistence.TaskFailureClassForgeJobNoTarget
+		}
 		return persistence.TaskFailureClassForgeTargetUnavailable
 	}
 

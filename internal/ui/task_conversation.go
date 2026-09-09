@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/scheduler"
 	"vornik.io/vornik/internal/taintlineage"
@@ -744,15 +746,18 @@ func (s *Server) uiPauseTask(ctx context.Context, task *persistence.Task) string
 		persistence.TaskStatusAwaitingExternal,
 	}
 
-	// RUNNING tasks: cancel the goroutine first. executor.Pause
-	// stops the container, flips execution_status + task.Status
-	// to PAUSED atomically, cancels ctx, and BLOCKS until the
-	// activeExecutions entry is cleared. A successful Pause makes
-	// the bare TransitionConditional below redundant — and skipping
-	// it avoids the rare race where the goroutine's defer cleared
-	// the status before we got here.
-	if s.executor != nil && task.Status == persistence.TaskStatusRunning {
-		if err := s.executor.Pause(task.ID); err == nil {
+	// Ask the executor's live map FIRST, whatever the status snapshot says
+	// (05-scheduler.md §4.8). executor.Pause stops the container, flips
+	// execution_status + task.Status to PAUSED atomically, cancels ctx, and
+	// BLOCKS until the activeExecutions entry is cleared; a successful Pause
+	// makes the bare TransitionConditional below redundant. Until 2026-09-09
+	// this was gated on `task.Status == RUNNING`, and a LEASED snapshot that
+	// reached RUNNING before the bare flip got a PAUSED row over a running
+	// container — the cancel path's §4.7 leak, one verb over.
+	if s.executor != nil {
+		err := s.executor.Pause(task.ID)
+		switch {
+		case err == nil:
 			// executor.Pause already flipped task.Status to PAUSED.
 			meta, _ := json.Marshal(map[string]any{"kind": "paused", "from": string(task.Status)})
 			_ = s.taskMessageRepo.Insert(ctx, &persistence.TaskMessage{
@@ -767,15 +772,21 @@ func (s *Server) uiPauseTask(ctx context.Context, task *persistence.Task) string
 				s.sseBus.Publish(task.ID, SSEEvent{Kind: "status", Data: string(persistence.TaskStatusPaused)})
 			}
 			return "paused"
-		} else if !strings.Contains(err.Error(), "no active execution") {
-			// Real failure — surface it. "no active execution" is
-			// a benign race (goroutine finished between caller's
-			// load and here); fall through to the bare DB flip.
-			s.logger.Warn().Err(err).Str("task_id", task.ID).Msg("uiPauseTask: executor.Pause failed; falling through to bare flip")
+		case errors.Is(err, executor.ErrNoActiveExecution):
+			// Nothing running here: the bare flip below may pause a task
+			// that has not started, but never a RUNNING row it could not
+			// stop.
+			from = executor.PausableWithoutExecution
+		default:
+			// There WAS a live execution and stopping it failed. A PAUSED
+			// row over a running container is the state §4.8 forbids;
+			// surface the failure instead of flipping around it.
+			s.logger.Error().Err(err).Str("task_id", task.ID).Msg("uiPauseTask: executor.Pause failed")
+			return "pause-failed"
 		}
 	}
 
-	// Non-RUNNING (or benign race) — bare conditional transition.
+	// Nothing running (or no executor wired) — bare conditional transition.
 	return s.uiSimpleFlip(ctx, task, from, persistence.TaskStatusPaused, "paused", false)
 }
 

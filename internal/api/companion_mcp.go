@@ -230,6 +230,10 @@ func companionToolDefs() []mcpToolDef {
 							"required": []string{"name", "content"},
 						},
 					},
+					"acknowledge_workflow_cannot_fetch": map[string]any{
+						"type":        "boolean",
+						"description": "Set true to proceed when the prompt contains a URL but the target workflow has no network access (catalog() reports network_access per workflow). Without it such a delegation is REFUSED, because the agent would silently produce a plausible answer having fetched nothing (2026-09-11 incident). Set this ONLY when the URL is incidental — e.g. a link quoted for context in a diff review — never as a way to make a fetch happen. To actually load web pages into project memory: fetch them here with your own web tools, write them to local files, then ship them via /upload (Claude) or delegate with base64 inputArtifacts (Codex) into companion-rag-ingest.",
+					},
 					"skip_auto_extract": map[string]any{
 						"type":        "boolean",
 						"description": "When true, inputArtifacts are stored as raw files only — no automatic MIME-based extraction + memory ingest at upload time. Use this when the chosen workflow is itself an ingestion workflow (companion-rag-ingest, future document-ingest) so the agent gets the raw file staged at /app/workspace/artifacts/in/ instead of finding the file already extracted and skipped. Default false preserves the Telegram/email upload shape where 'just index it' is the right behaviour.",
@@ -807,6 +811,38 @@ func (s *Server) estimateWorkflowCost(ctx context.Context, projectID, workflowID
 	}
 }
 
+// blessedFetchPath is the ONE route from "load these web pages into
+// project memory" to bytes that actually land, named once and not as a
+// menu (unreachable-work guard design §4.2). It is carried verbatim by
+// the delegate refusal and echoed in catalog(), so the host reads the
+// same sentence wherever it meets the constraint.
+//
+// It is deterministic and agent-free, which is why it is the blessed
+// one: the T-87d8 remediation proved it at 318/318 files and 3439 chunks
+// against the same corpus that produced 40 chunks of summary prose
+// through the wrong workflow.
+const blessedFetchPath = "its roles hold no tool that can fetch a URL, so the delegation would " +
+	"produce a plausible answer having fetched nothing. To load web pages into project memory: " +
+	"fetch them host-side with your own web tools, write them to local files, then ship them via " +
+	"/upload (Claude) or delegate with base64 inputArtifacts (Codex) into companion-rag-ingest. " +
+	"If the URL is incidental and the work does not depend on fetching it, re-send with " +
+	"acknowledge_workflow_cannot_fetch: true."
+
+// promptContainsURL reports whether a delegate prompt carries something
+// the model plainly intends to be fetched.
+//
+// Scheme-bearing only, on purpose. A looser matcher (bare "www.", any
+// dotted token) would fire on file names, package paths and version
+// strings, and every false positive costs the host an extra round trip
+// with a flag it had to reason about. The asymmetry the design settles
+// on: a false positive costs one extra call, a false negative costs a
+// user believing 400 pages of documentation are searchable when none of
+// them are.
+func promptContainsURL(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	return strings.Contains(lower, "http://") || strings.Contains(lower, "https://")
+}
+
 type delegateArgs struct {
 	Workflow        string          `json:"workflow"`
 	Prompt          string          `json:"prompt"`
@@ -815,6 +851,12 @@ type delegateArgs struct {
 	RepoScope       string          `json:"repo_scope"`
 	InputArtifacts  []InputArtifact `json:"inputArtifacts"`
 	SkipAutoExtract bool            `json:"skip_auto_extract"`
+	// AcknowledgeWorkflowCannotFetch is the escape hatch on the
+	// network-incapability guard below. Named for the WORKFLOW's
+	// constraint, not the URL's reachability: an earlier draft called it
+	// allow_unreachable_urls, which a host would read as "this URL
+	// happens to be down" and set for the wrong reason.
+	AcknowledgeWorkflowCannotFetch bool `json:"acknowledge_workflow_cannot_fetch"`
 }
 
 func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
@@ -870,6 +912,37 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 		wf := s.projectRegistry.GetWorkflow(args.Workflow)
 		if wf != nil && wf.RequireInputArtifacts && len(args.InputArtifacts) == 0 {
 			return "", fmt.Errorf("workflow %q ingests context.inputArtifacts and none were provided — file paths in the prompt are NOT uploaded; stage files via the /vornik-rag-ingest or /vornik-upload plugin commands (base64 inputArtifacts)", args.Workflow)
+		}
+		// Unreachable-work guard (2026-09-11 companion-research-gather
+		// incident; see https://docs.vornik.io
+		// unreachable-work-guard-design.md §4.3). A host asked for
+		// https://developer.hashicorp.com/terraform/docs to be loaded
+		// into RAG, delegated companion-research-gather, and reported
+		// success. That workflow's analyst role holds no fetch tool of
+		// any kind, so nothing was loaded and the failure was
+		// indistinguishable from success.
+		//
+		// Same rejection shape as the artifact guard above, and for the
+		// same reason: a warning attached to a SUCCESSFUL delegation is a
+		// control that reports a problem while still doing the wrong
+		// thing, and by then the host has already told its user the work
+		// is under way.
+		//
+		// Deliberately narrow. It fires only when the workflow is
+		// PROVABLY network-incapable (registry.WorkflowIsNetworkIncapable
+		// derives that from an allow-list of inert tools, so an
+		// unrecognised tool leaves the workflow looking capable and the
+		// guard silent), and only when the prompt actually carries a URL.
+		// Unknown / ad-hoc workflow IDs are not blocked, matching the
+		// 2026-06-05 guard's own carve-out.
+		if !args.AcknowledgeWorkflowCannotFetch && promptContainsURL(args.Prompt) {
+			var swarm *registry.Swarm
+			if project := s.projectRegistry.GetProject(key.ProjectID); project != nil {
+				swarm = s.projectRegistry.GetSwarm(project.SwarmID)
+			}
+			if registry.WorkflowIsNetworkIncapable(wf, swarm) {
+				return "", fmt.Errorf("workflow %q has NO NETWORK ACCESS — %s", args.Workflow, blessedFetchPath)
+			}
 		}
 		// Derive skip_auto_extract from the workflow definition rather
 		// than trusting the caller to remember it (T-8f69, 2026-07-25).
@@ -1517,12 +1590,32 @@ func (s *Server) companionToolCatalog(ctx context.Context, key *persistence.APIK
 		}
 	}
 
+	// Resolved once: the derived network capability below is a property
+	// of (workflow, swarm), and every workflow in this catalogue runs on
+	// the project's swarm.
+	projectSwarm := s.projectRegistry.GetSwarm(project.SwarmID)
+
 	wfEntries := make([]map[string]any, 0, len(workflowIDs))
 	for _, wfID := range workflowIDs {
 		entry := map[string]any{"id": wfID}
 		if wf := s.projectRegistry.GetWorkflow(wfID); wf != nil {
 			entry["display_name"] = wf.DisplayName
 			entry["description"] = wf.Description
+			// Derived network capability, published NEXT TO the
+			// description so the two cannot disagree silently
+			// (unreachable-work guard design §4.3). Correcting a
+			// description is a one-time act; this line is the ongoing
+			// protection against one re-acquiring a browsing promise,
+			// because the promise is then visibly contradicted by the
+			// field beneath it. Always emitted — an absent field would
+			// read as "unknown", and the whole point is that the model
+			// chooses on this.
+			if registry.WorkflowIsNetworkIncapable(wf, projectSwarm) {
+				entry["network_access"] = "none"
+				entry["network_access_note"] = "This workflow cannot fetch URLs or browse: " + blessedFetchPath
+			} else {
+				entry["network_access"] = "possible"
+			}
 			// Surface the artifact-only contract so clients know to
 			// stage inputArtifacts before delegating (2026-06-05
 			// rag-ingest incident). Only emitted when set, keeping

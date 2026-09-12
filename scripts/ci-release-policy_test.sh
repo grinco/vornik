@@ -79,6 +79,14 @@ assert 'release.tag_name' in body, 'the tag must come from the release that trig
 # A release tag names one artifact forever. Moving it makes a published name
 # mean something new, which is the one thing a tag must never do.
 assert '--force' not in body and '-f ' not in body, 'the CE tag must never be moved'
+# The release job DISPATCHES publish-ce (a GITHUB_TOKEN-published release fires
+# no release event), so on every automated release `github.event.release` is
+# empty and the tag step reads `inputs.tag`. 2026.9.4 shipped with no CE tag —
+# the 2026.9.3 gap again, through the other door — until a second, manual
+# dispatch carried `-f tag=`. The release job must pass it.
+dispatch=[s for s in r['jobs']['goreleaser']['steps'] if 'fan-out' in s.get('name','').lower()]
+assert dispatch, 'release.yaml must dispatch the publication fan-out'
+assert 'tag=' in str(dispatch[0]), 'release.yaml must pass the release tag to publish-ce (-f tag=…), or the CE tree is never tagged'
 
 print('CI/release policy: PASS')
 PY

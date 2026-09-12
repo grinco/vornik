@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: a39cec2d87f66ac8ed8a1cb74f737f08a5597ef6f60ec22dcb9544fd94d6fa28
+      sha256: 854053bfbde1841f46e29ddbb551ab2ed5204bbb3dcf11949ce4e800fbf30781
 ---
 # Release Notes
 

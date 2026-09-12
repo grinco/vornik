@@ -229,8 +229,18 @@ func (e *Executor) hallucinationDetectorParticipant(ctx context.Context, in *Ste
 // result so a no-qualifying-candidate tick NO_ACTIONs instead of the whole
 // step hard-failing. Integrity violations still HARD-fail the step here.
 // No-op for non-trading projects / non-proposal steps (self-gated).
-func (e *Executor) tradingFloorParticipant(_ context.Context, in *StepOutcome) pipeline.Verdict {
+func (e *Executor) tradingFloorParticipant(ctx context.Context, in *StepOutcome) pipeline.Verdict {
+	// Evidence first: a step that never examined its symbols is refused
+	// before any filtering of what it did emit.
+	if err := e.checkTradingEvidence(ctx, in); err != nil {
+		in.HallucinationDetail = err.Error()
+		in.Err = err
+		return refuse(err)
+	}
 	filtered, err := e.filterTradingFloor(in.Task, in.ResultBytes)
+	if err == nil {
+		filtered, err = e.filterTradingEntryPolicy(in.Task, filtered)
+	}
 	if err != nil {
 		in.HallucinationDetail = err.Error()
 		in.Err = err

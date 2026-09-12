@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/taintlineage"
+	"vornik.io/vornik/internal/trading"
 )
 
 // Project represents a project definition loaded from projects/*.yaml
@@ -519,6 +520,12 @@ type ProjectTrading struct {
 	// Empty list disables pre-warming — the strategist falls
 	// back to per-symbol get_quote calls (back-compat).
 	Watchlist []string `yaml:"watchlist"`
+	// EntryPolicy limits new proposals/approvals without preventing exits.
+	EntryPolicy trading.EntryPolicy `yaml:"entry_policy"`
+	// AnalysisEvidence makes the strategist step prove, from its own tool
+	// audit, that it examined every held, benchmark and entry-universe symbol
+	// (2026-09-10). Dark by default.
+	AnalysisEvidence trading.AnalysisEvidence `yaml:"analysis_evidence"`
 
 	// NotifyFillsChatID is the Telegram chat that receives a
 	// per-fill notification when the broker reports a fill on
@@ -1615,6 +1622,23 @@ type ProjectAutonomy struct {
 	// "PROJECT_CONTEXT.md" to use the legacy root-level path.
 	ContextFilePath string `yaml:"contextFilePath"`
 
+	// Feeds declares the recurring slugs an llm-mode goal rotates
+	// through and the cadence each is expected to hold. Optional:
+	// a project that omits it behaves exactly as before, and the
+	// health surface reports its cadence as "not declared" rather
+	// than OK (design §6, the honesty rule).
+	//
+	// Declaring a feed does NOT schedule it. The lead still picks
+	// which slug runs; this is the expectation that picking is
+	// measured against. Slug must match the "<slug>: " prefix the
+	// goal already uses to correlate a task with its feed.
+	//
+	// This is the daemon's ONLY machine-readable cadence source.
+	// PROJECT_CONTEXT.md and the goal prose stay prose — nothing
+	// parses a cadence out of either (manager.go:968 injects the
+	// context file as untrusted text).
+	Feeds []AutonomyFeed `yaml:"feeds,omitempty"`
+
 	// UserContextFilePath is the workspace-relative path the
 	// daemon stamps on agent containers running tasks created
 	// with creation_source = USER. ContextFilePath above is
@@ -1875,6 +1899,45 @@ func (p *Project) ResolveBacklogFilePath() string {
 	return cleaned
 }
 
+// AutonomyFeed is one declared recurring feed: the prompt-prefix slug
+// that identifies its tasks, and how often it is expected to run.
+type AutonomyFeed struct {
+	// Slug is the "<slug>: " prompt prefix identifying this feed's tasks.
+	Slug string `yaml:"slug"`
+	// Cadence is a Go duration string (e.g. "12h", "168h"). Must parse
+	// to a strictly positive duration; validated at registry load.
+	Cadence string `yaml:"cadence"`
+}
+
+// ResolvedFeed is an AutonomyFeed with its cadence parsed. Produced by
+// ResolveFeeds after load-time validation has already guaranteed every
+// cadence parses and is positive, so callers need no error path.
+type ResolvedFeed struct {
+	Slug    string
+	Cadence time.Duration
+}
+
+// ResolveFeeds returns the project's declared feeds with cadences parsed.
+// Returns empty (never nil-panics) when no feeds are declared. Any feed
+// whose cadence fails to parse is skipped rather than returned as a zero
+// cadence — Validate refuses those at load, so reaching this branch means
+// the registry was constructed in a test without validation, and a zero
+// cadence would make every lag a breach.
+func (p *Project) ResolveFeeds() []ResolvedFeed {
+	if p == nil || len(p.Autonomy.Feeds) == 0 {
+		return nil
+	}
+	out := make([]ResolvedFeed, 0, len(p.Autonomy.Feeds))
+	for _, f := range p.Autonomy.Feeds {
+		d, err := time.ParseDuration(strings.TrimSpace(f.Cadence))
+		if err != nil || d <= 0 {
+			continue
+		}
+		out = append(out, ResolvedFeed{Slug: strings.TrimSpace(f.Slug), Cadence: d})
+	}
+	return out
+}
+
 // ResolveCronTaskType returns the task type to assign for
 // Mode="cron" ticks. Falls back through CronTaskType →
 // AllowedTaskTypes[0] → "task" so a minimally-configured cron
@@ -2091,6 +2154,12 @@ func (p *Project) Validate(filename string) error {
 	}
 	if p.Budget.MaxTaskBudgetUSD > 0 && p.Budget.DefaultTaskBudgetUSD > p.Budget.MaxTaskBudgetUSD {
 		return ProjectValidationError{File: filename, Field: "budget.default_task_budget_usd", Message: "cannot exceed budget.max_task_budget_usd"}
+	}
+	if err := p.Trading.EntryPolicy.Validate(); err != nil {
+		return ProjectValidationError{File: filename, Field: "trading.entry_policy", Message: err.Error()}
+	}
+	if err := p.Trading.AnalysisEvidence.Validate(); err != nil {
+		return ProjectValidationError{File: filename, Field: "trading.analysis_evidence", Message: err.Error()}
 	}
 	if p.Trading.Caps.MaxPositionUSD < 0 {
 		return ProjectValidationError{File: filename, Field: "trading.caps.max_position_usd", Message: "cannot be negative"}

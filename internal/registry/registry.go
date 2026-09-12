@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Registry holds all loaded definitions and provides thread-safe read access.
@@ -347,6 +348,33 @@ func stripInvalidProjects(cfg *ConfigSet) *ValidationError {
 						"project '%s' autonomy.backlogFilePath '%s' is invalid (absolute paths and '..' segments rejected)",
 						projectID, project.Autonomy.BacklogFilePath,
 					))
+				}
+			}
+			// Declared feeds: slugs must be unique and cadences must
+			// parse to a positive duration. A duplicate slug makes the
+			// per-slug lag metric ambiguous (two cadences, one series);
+			// a zero or unparseable cadence makes every observation a
+			// breach. Both are operator typos worth refusing at load
+			// rather than discovering in a dashboard.
+			seenSlugs := make(map[string]bool, len(project.Autonomy.Feeds))
+			for _, f := range project.Autonomy.Feeds {
+				slug := strings.TrimSpace(f.Slug)
+				if slug == "" {
+					projectErrs = append(projectErrs, fmt.Errorf(
+						"project '%s' has an autonomy.feeds entry with an empty slug", projectID))
+					continue
+				}
+				if seenSlugs[slug] {
+					projectErrs = append(projectErrs, fmt.Errorf(
+						"project '%s' has a duplicate autonomy.feeds slug '%s'", projectID, slug))
+					continue
+				}
+				seenSlugs[slug] = true
+				d, err := time.ParseDuration(strings.TrimSpace(f.Cadence))
+				if err != nil || d <= 0 {
+					projectErrs = append(projectErrs, fmt.Errorf(
+						"project '%s' autonomy.feeds slug '%s' has cadence '%s', which is not a positive duration",
+						projectID, slug, f.Cadence))
 				}
 			}
 		}

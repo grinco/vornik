@@ -10,6 +10,7 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/reminders"
 )
 
 // reminderRepoForTools implements just enough of
@@ -616,9 +617,15 @@ func TestUpdateReminderTool_CronWinsOverFireInSeconds(t *testing.T) {
 	}
 	te := &ToolExecutor{reminderRepo: repo}
 
-	// fire_in_seconds=60 would put fire_at ~1m out; the daily cron's next
-	// fire is materially further than 2 minutes away, so we can assert the
-	// cron value took effect rather than the seconds offset.
+	// fire_in_seconds=60 would put fire_at ~1m out; the cron's next fire is
+	// somewhere else entirely, so we assert against the cron's OWN next-fire
+	// rather than a "more than 2 minutes away" heuristic.
+	//
+	// The heuristic version of this assertion was wall-clock dependent and
+	// failed for the two minutes a day before 09:00 UTC, when the daily
+	// cron's next fire really was under 2 minutes out (tripped 2026-09-12,
+	// 08:58 UTC). A test that fails for 0.14% of the day is a test that
+	// fails in CI and passes on the desk of whoever investigates it.
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","cron":"0 9 * * *","fire_in_seconds":60,"rationale":"both"}`}}
 	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
@@ -629,8 +636,12 @@ func TestUpdateReminderTool_CronWinsOverFireInSeconds(t *testing.T) {
 	if len(repo.updates) != 1 || repo.updates[0].CronExpr != "0 9 * * *" {
 		t.Fatalf("cron should win + persist, got %+v", repo.updates)
 	}
-	if time.Until(repo.updates[0].FireAt) < 2*time.Minute {
-		t.Errorf("fire_at should be the cron next-fire, not the 60s offset: %v", repo.updates[0].FireAt)
+	wantNext, err := reminders.NextFireAt("0 9 * * *", time.Now())
+	if err != nil {
+		t.Fatalf("NextFireAt: %v", err)
+	}
+	if got := repo.updates[0].FireAt; got.Sub(wantNext).Abs() > time.Minute {
+		t.Errorf("fire_at should be the cron next-fire (%v), not the 60s offset: %v", wantNext, got)
 	}
 }
 

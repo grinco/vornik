@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/autonomy/manager.go
-      sha256: 45c73b66dc39dca95bb6a1daa0291485c81d0eb61e5e9cb954b32c59e3624109
+      sha256: 54f48693c926501fc9d82ba4d4a1f21e88493fc54347a0546de53865eeff320a
     - path: internal/registry/project.go
-      sha256: ac3f3ed462f9a78cbfef7fe1161a69e4b162d7a5623905d796571e781e47d13b
+      sha256: 91cf67dfa1233a2ec929c01d6c1f409ebb197d15c922d9a7c530a8df7e4e333f
 ---
 # Autonomy — self-running projects
 
@@ -54,6 +54,48 @@ Useful keys:
 | `autonomy.requireApproval` | create tasks as awaiting-approval instead of queued |
 | `autonomy.duplicateWindow` | how long a completed task suppresses an identical one (default `24h`; `0` for cron-style) |
 | `autonomy.workflow_id` | override the workflow a `backlog`- or `cron`-mode tick dispatches into (see [Backlog autonomy and agent deposits](#backlog-autonomy-and-agent-deposits)) |
+| `autonomy.feeds` | declare the recurring slugs an `llm`-mode goal rotates through, and the cadence each should hold, so drift is measurable (see below) |
+
+### Declaring feeds (`autonomy.feeds`)
+
+An `llm`-mode goal that rotates through recurring topics usually names them in
+prose, and prose is not something the daemon can measure a schedule against.
+`autonomy.feeds` declares them as data:
+
+```yaml
+autonomy:
+  enabled: true
+  mode: llm
+  pollInterval: "4h"
+  goal: "..."
+  feeds:
+    - slug: czech-news
+      cadence: "12h"
+    - slug: cultural-events
+      cadence: "1440h"
+```
+
+- `slug` must match the `"<slug>: "` prefix your goal already uses for that
+  topic's task prompts — that prefix is how a task is correlated with its feed.
+- `cadence` is a Go duration and must be positive. Slugs must be unique within
+  the project; both rules are checked when the config loads.
+- Declaring feeds **does not schedule anything**. The lead still decides what
+  to run; this is the expectation that decision gets measured against, and it
+  is what `vornikctl autonomy health` reports cadence drift from.
+- Omitting `feeds` is fully supported. A project that declares none reports
+  `not declared` in the health table — never `OK`, because nothing was
+  measured.
+
+Sum your cadences before you commit to them: one tick creates at most one
+task, so a 4-hour `pollInterval` can deliver six tasks a day in total. A set of
+cadences that needs more than that is a backlog, not a schedule, and every feed
+in it will read as permanently overdue.
+
+> **Deploy the daemon before the config.** Project YAML is parsed strictly: a
+> daemon that does not know a key rejects the whole file and drops the whole
+> project — not just the new feature. Install the version that supports
+> `autonomy.feeds` first, confirm it is running, and only then add the key.
+> To roll back, remove the key first and downgrade afterwards.
 
 ## Staying in control
 
@@ -232,7 +274,38 @@ on). Inspect the audit trail and a rollup from the CLI:
 ```bash
 vornikctl autonomy evaluations --project my-project --limit 50
 vornikctl autonomy summary     --project my-project --hours 24
+vornikctl autonomy health      --project my-project --hours 24
 ```
+
+`autonomy health` is the one to reach for when every tick reports success and
+you still suspect the loop has quietly degraded. It puts four things in one
+table: whether one outcome has taken over the window, how each **declared**
+feed's observed cadence compares with the cadence you declared, what each tick
+actually delivered (following the delegation edge to the child that did the
+work, not the router that picked it), and how much routing churn that cost.
+Add `--json` for the raw payload.
+
+It is deliberately explicit about what it did *not* measure. A project with no
+declared feeds prints `not declared`, a window with no judge verdicts prints
+`no verdicts`, and a number that could not be collected prints `not measured`.
+
+The cadence column makes one more distinction worth knowing, because only one
+of the two is a real finding. Health reads a bounded page of the project's most
+recent tasks, so "this feed has no task in it" can mean two different things:
+
+- **The page did not fill.** That was the project's whole history, and the feed
+  really has never run — so the row prints `never ran`.
+- **The page filled.** Older history exists that was not looked at, so the feed
+  may have run before the window or may be badly overdue, and this reading
+  cannot tell you which. The row prints a lower bound instead — `>233h0m0s`,
+  meaning "at least this long" — followed by a note naming the feeds affected
+  and how far back the window reached. Where that bound already exceeds the
+  declared cadence, the feed is overdue no matter what the unexamined history
+  says, and the `BREACH` column still says `slow`.
+
+None of these are `0`, because a control that
+cannot tell "examined and clean" from "never examined" would report the first
+and mean the second.
 
 The project's home page shows a **countdown to the next autonomy tick** and the
 last evaluation's outcome, and the dashboard surfaces a next-evaluation tile

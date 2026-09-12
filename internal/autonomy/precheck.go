@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/trading"
 )
 
 // PreCheckResult is the outcome of a deterministic pre-LLM
@@ -85,7 +86,7 @@ func checkTradingRTH(ctx context.Context, project *registry.Project) PreCheckRes
 			Reason: fmt.Sprintf("trading-rth: market closed (weekend, %s ET)", weekday),
 		}
 	}
-	if isUSMarketHoliday(now) {
+	if trading.IsUSMarketHoliday(now) {
 		return PreCheckResult{
 			Skip:   true,
 			Reason: fmt.Sprintf("trading-rth: market closed (US holiday %s)", now.Format("2006-01-02")),
@@ -209,124 +210,4 @@ func brokerReachable(ctx context.Context, baseURL string) bool {
 		}
 	}
 	return true
-}
-
-// isUSMarketHoliday reports whether the given local date (in
-// ET) is a full-close US equity market holiday. Mirrors the
-// list the strategist uses in its operating-window prompt so
-// the daemon-side gate and the agent-side fallback agree.
-//
-// The half-day closes (day after Thanksgiving, Christmas Eve)
-// are deliberately omitted — markets are open 09:30-13:00, so
-// the standard RTH check would refuse half the live session.
-// The strategist's mid-execution check at 13:00 catches an
-// edge tick scheduled too late.
-//
-// Easter-relative dates (Good Friday) are computed via the
-// Anonymous Gregorian algorithm so the function stays
-// table-free across years.
-func isUSMarketHoliday(t time.Time) bool {
-	year, month, day := t.Date()
-	// New Year's Day (observed: weekend pushes to Monday).
-	if month == time.January {
-		switch t.Weekday() {
-		case time.Monday:
-			if day == 1 || day == 2 || day == 3 {
-				// Jan 1 Monday = direct; Jan 2 Monday = Sunday-pushed; Jan 3 = Saturday from prior year? Saturday holidays push BACK to Friday for NYSE, not Monday.
-				if day == 1 {
-					return true
-				}
-				if day == 2 && time.Date(year, 1, 1, 0, 0, 0, 0, t.Location()).Weekday() == time.Sunday {
-					return true
-				}
-			}
-		default:
-			if day == 1 && t.Weekday() != time.Saturday && t.Weekday() != time.Sunday {
-				return true
-			}
-		}
-	}
-	// MLK Day — third Monday of January.
-	if month == time.January && t.Weekday() == time.Monday && day >= 15 && day <= 21 {
-		return true
-	}
-	// Presidents Day — third Monday of February.
-	if month == time.February && t.Weekday() == time.Monday && day >= 15 && day <= 21 {
-		return true
-	}
-	// Good Friday — compare on Y/M/D, not the full time, so a
-	// mid-day check still matches against the algorithm's
-	// midnight return value.
-	gfYear, gfMonth, gfDay := easterFriday(year, t.Location()).Date()
-	if year == gfYear && month == gfMonth && day == gfDay {
-		return true
-	}
-	// Memorial Day — last Monday of May.
-	if month == time.May && t.Weekday() == time.Monday && day >= 25 {
-		return true
-	}
-	// Juneteenth — Jun 19, observed.
-	if month == time.June && day == 19 && t.Weekday() != time.Saturday && t.Weekday() != time.Sunday {
-		return true
-	}
-	if month == time.June && day == 20 && t.Weekday() == time.Monday {
-		// Jun 19 was Sunday → observed Mon Jun 20.
-		return true
-	}
-	if month == time.June && day == 18 && t.Weekday() == time.Friday {
-		// Jun 19 was Saturday → observed Fri Jun 18.
-		return true
-	}
-	// Independence Day — Jul 4, observed (same weekend rule).
-	if month == time.July && day == 4 && t.Weekday() != time.Saturday && t.Weekday() != time.Sunday {
-		return true
-	}
-	if month == time.July && day == 5 && t.Weekday() == time.Monday {
-		return true
-	}
-	if month == time.July && day == 3 && t.Weekday() == time.Friday {
-		return true
-	}
-	// Labor Day — first Monday of September.
-	if month == time.September && t.Weekday() == time.Monday && day <= 7 {
-		return true
-	}
-	// Thanksgiving — fourth Thursday of November.
-	if month == time.November && t.Weekday() == time.Thursday && day >= 22 && day <= 28 {
-		return true
-	}
-	// Christmas — Dec 25, observed.
-	if month == time.December && day == 25 && t.Weekday() != time.Saturday && t.Weekday() != time.Sunday {
-		return true
-	}
-	if month == time.December && day == 26 && t.Weekday() == time.Monday {
-		return true
-	}
-	if month == time.December && day == 24 && t.Weekday() == time.Friday {
-		return true
-	}
-	return false
-}
-
-// easterFriday returns the Good Friday date for the given
-// year, in the supplied location at midnight. Anonymous
-// Gregorian algorithm — accurate for the Gregorian calendar
-// (1583+).
-func easterFriday(year int, loc *time.Location) time.Time {
-	a := year % 19
-	b := year / 100
-	c := year % 100
-	d := b / 4
-	e := b % 4
-	f := (b + 8) / 25
-	g := (b - f + 1) / 3
-	h := (19*a + b - d - g + 15) % 30
-	i := c / 4
-	k := c % 4
-	l := (32 + 2*e + 2*i - h - k) % 7
-	m := (a + 11*h + 22*l) / 451
-	month := (h + l - 7*m + 114) / 31
-	day := ((h + l - 7*m + 114) % 31) + 1
-	easter := time.Date(year, time.Month(month), day, 0, 0, 0, 0, loc)
-	return easter.AddDate(0, 0, -2) // Good Friday is 2 days before Easter Sunday.
 }

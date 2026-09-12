@@ -107,6 +107,40 @@ ingest, a dataset to validate), do NOT name its path here — use
 `/upload <workflow> "<prompt>" <path…>` so the bytes are staged as
 `inputArtifacts`. See the files rule below.
 
+## Network rule: vornik agents cannot browse
+
+Vornik agents run with the tools their role grants and nothing else.
+**Most companion workflows cannot reach the internet.** `catalog()`
+now reports this per workflow as `network_access: "none"` or
+`"possible"` — read that field, not the workflow's name, and not the
+prose in its description.
+
+A workflow with `network_access: "none"` holds no tool that can fetch a
+URL. Handing it one produces a fluent answer built from nothing. On
+2026-09-11 a host delegated "load https://developer.hashicorp.com/terraform/docs
+into project RAG" to `companion-research-gather`, reported success, and
+nothing was loaded. The daemon now REFUSES a URL-bearing prompt to such
+a workflow rather than queueing it.
+
+**To load web docs into RAG there is one path. Use it; it is not a menu.**
+
+1. Fetch the pages yourself, with your own web tools.
+2. Write them to local files.
+3. `/upload companion-rag-ingest '<prompt>' <file…>` — or `/rag-ingest
+   <file…>` for a plain bulk ingest.
+
+That path is deterministic and agent-free: 318/318 files and 3439 chunks
+on the corpus that produced 40 chunks of summary prose through the wrong
+workflow.
+
+If a URL is **incidental** — quoted for context in a diff you want
+reviewed, not something that needs fetching — re-send the same delegation
+with `acknowledge_workflow_cannot_fetch: true`. Set it for that reason
+only; it does not make a fetch happen.
+
+When you are unsure which workflow fits, read `catalog()` and this skill
+before delegating. Do not infer a capability from a workflow's name.
+
 ## Six shipped workflows
 
 | Workflow ID | Best for |

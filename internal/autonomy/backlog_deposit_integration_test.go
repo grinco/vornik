@@ -1,4 +1,4 @@
-package autonomy
+package autonomy_test
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	vornikapi "vornik.io/vornik/internal/api"
+	"vornik.io/vornik/internal/autonomy"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/config"
 	forgeapi "vornik.io/vornik/internal/forge"
@@ -45,11 +46,16 @@ import (
 // This test closes that gap by driving the REAL deposit HTTP handler
 // (vornikapi.Server.BacklogDeposit) to produce the BACKLOG.md line,
 // then running the REAL tickBacklog (this package, same process) against
-// the file it wrote. It lives in package autonomy (not internal/api)
-// because tickBacklog is unexported and internal/api has no reason to
-// import internal/autonomy (constructing the reverse dependency here,
-// test-file-only, does not create an import cycle: internal/api has no
-// production dependency on internal/autonomy).
+// the file it wrote.
+//
+// Lives in package autonomy_test (not autonomy), and reaches tickBacklog
+// via the test-only TickBacklogForTest hook (export_test.go). It used to
+// live in package autonomy itself on the theory that "internal/api has
+// no reason to import internal/autonomy" — Task 5 (GetAutonomyHealth's
+// autonomy.FeedObservations call) made that false: internal/api now has
+// a real production dependency on internal/autonomy, so this test's own
+// import of internal/api would otherwise close an import cycle from
+// inside package autonomy. Moving to the external test package breaks it.
 func TestBacklogDepositToAutonomyTick_Integration(t *testing.T) {
 	ctx := context.Background()
 
@@ -193,11 +199,11 @@ terminals:
 
 	// --- Step 3: run the REAL backlog tick, sharing the same registry,
 	// workspace, backlogfile.Store, and taskRepo the deposit used.
-	mgr := New(nil, reg, taskRepo, nil,
-		WithWorkspacePath(workspaceRoot),
-		WithBacklogStore(store),
+	mgr := autonomy.New(nil, reg, taskRepo, nil,
+		autonomy.WithWorkspacePath(workspaceRoot),
+		autonomy.WithBacklogStore(store),
 	)
-	require.NoError(t, mgr.tickBacklog(ctx, project, time.Now()))
+	require.NoError(t, mgr.TickBacklogForTest(ctx, project, time.Now()))
 
 	// --- Assertions: a task was created, carrying workflow_id
 	// "backlog-item" and a forge_job whose Slug/Title derive from the

@@ -275,6 +275,10 @@ func (c *Container) initHTTPServer() error {
 			c.Config.API.RateLimit.PerIP.RPS,
 			c.Config.API.RateLimit.PerIP.Burst),
 		api.WithAutonomyEvaluationRepository(c.repos.AutonomyEvaluations),
+		// GET /autonomy/health's judge column (degradation-detection
+		// design 2026-09-10 §6). Same repo the UI subtree's task-detail
+		// verdict panel already uses (WithJudgeVerdictRepository below).
+		api.WithTaskJudgeVerdictRepository(c.repos.JudgeVerdicts),
 		api.WithRateLimiter(c.rateLimiter),
 		api.WithTaskCreator(taskCreator),
 		api.WithConfig(c.Config),

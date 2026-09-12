@@ -1618,3 +1618,174 @@ func sortedStepIDs(steps map[string]WorkflowStep) []string {
 	sort.Strings(out)
 	return out
 }
+
+// ---- derived network capability ------------------------------------
+//
+// https://docs.vornik.io §3.
+//
+// An LLM agent acts only through its tools. A container with permissive
+// egress and no fetch tool cannot fetch — and that is the actual state
+// of every companion role today. So "can this workflow reach the
+// network?" is answered from the TOOL set, not from the container's
+// network policy: SwarmRole.Network is the packet-level boundary and is
+// deliberately not consulted here, because a container that *can* reach
+// the internet is irrelevant to an agent with no tool to do it with.
+// Neither field subsumes the other; this derivation uses the one that
+// binds the agent.
+//
+// The derivation is an ALLOW-LIST of demonstrably inert tools, never a
+// deny-list of recognised network tools, and the polarity is the whole
+// design. A deny-list fails in the harmful direction as the tool surface
+// grows: a future tool named, say, `curl_exec` matches no known pattern,
+// so a workflow that genuinely can fetch would be judged incapable and
+// its delegation WRONGLY REFUSED. Inverted, an unrecognised new tool
+// makes a workflow look capable, the guard stays silent, and the worst
+// case is the status quo ante. The check may under-fire; it cannot
+// over-fire on a tool nobody taught it about.
+
+// inertTools is the allow-list of tools proven unable to reach the
+// network. A workflow counts as network-incapable only when every tool
+// granted by every role its steps reach appears here.
+//
+// MAINTENANCE CONTRACT — read before adding an entry.
+//
+// What qualifies a tool: it must be incapable of originating a request
+// to any host outside the daemon, under every argument a model can pass
+// it. "Reads local files", "reads the project's own memory", "returns a
+// clock value" qualify. Anything that takes a URL, shells out, calls an
+// HTTP API, or dispatches to an MCP server does NOT — `run_shell`,
+// `query_api` and every `mcp__*` name are the standing examples, and
+// they are asserted absent by
+// TestInertTools_ExcludesNetworkCapableTools.
+//
+// What a wrong entry costs: this list is the one thing the derivation
+// cannot itself guard. Adding a tool that CAN fetch converts the guard
+// into the over-firing form two review rounds were spent removing — it
+// would start refusing delegations to workflows that were perfectly
+// able to do the job, and the refusal names a workaround the caller
+// does not need. Omitting an inert tool costs only silence: the guard
+// declines to fire, which is the status quo ante. So when in doubt,
+// leave it off.
+//
+// NOT consulted, and deliberately: the daemon's always-granted baseline
+// (`memory_search`, `skill_fetch` — see internal/agenttools) is appended
+// to every role's effective set at dispatch. The derivation reads the
+// role's DECLARED allowlist only. Both baseline members read daemon-side
+// state and neither can reach an external host, so the two views agree;
+// if a future always-granted tool can fetch, this comment is where that
+// changes.
+var inertTools = map[string]struct{}{
+	"current_time":            {},
+	"file_read":               {},
+	"file_write":              {},
+	"file_edit":               {},
+	"read_many_files":         {},
+	"grep":                    {},
+	"glob":                    {},
+	"memory_search":           {},
+	"set_reminder":            {},
+	"cancel_reminder":         {},
+	"update_reminder":         {},
+	"update_operator_profile": {},
+	"tool_result_read":        {},
+	"get_conversation_window": {},
+}
+
+// ToolIsInert reports whether a tool name is on the inert allow-list.
+// Anything not on the list — including a name this build has never seen
+// — is treated as possibly network-capable.
+func ToolIsInert(name string) bool {
+	_, ok := inertTools[strings.TrimSpace(name)]
+	return ok
+}
+
+// InertToolNames returns the allow-list, sorted. For tests and for
+// operator-facing diagnostics that want to show what qualified.
+func InertToolNames() []string {
+	out := make([]string, 0, len(inertTools))
+	for name := range inertTools {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// stepTypesGrantingOnlyDeclaredRoles lists the step types whose tool
+// surface is fully described by the step's own `role`. Every other type
+// can reach beyond it — `plan` lets a lead build an adaptive plan over
+// the whole swarm, `parallel` fans out into other workflows,
+// `call_project` / `spawn_project` / `a2a_call` cross the project
+// boundary entirely, and `system` dispatches daemon-side handler code
+// that this derivation cannot inspect. A workflow containing any of
+// them is never claimed to be network-incapable.
+var stepTypesGrantingOnlyDeclaredRoles = map[string]struct{}{
+	"agent":    {},
+	"gate":     {},
+	"approval": {},
+}
+
+// WorkflowIsNetworkIncapable reports whether wf, run by swarm, provably
+// holds no tool that could reach the network.
+//
+// It returns false — "possibly capable", guard stays silent — whenever
+// the answer cannot be PROVEN from the declared configuration:
+//
+//   - either argument is nil (an unknown / ad-hoc workflow, matching the
+//     2026-06-05 require_input_artifacts guard's own carve-out);
+//   - a step type that can reach roles or code outside its own `role`;
+//   - a role the swarm does not define, so its tools are unknown;
+//   - a role that declares NO allowedTools, which means UNRESTRICTED in
+//     this codebase (see buildAgentInput and Server.roleToolAllowlist),
+//     not "no tools";
+//   - any granted tool that is not on the inert allow-list.
+//
+// A workflow with no agent-bearing steps at all is likewise not claimed
+// incapable: there is nothing to have proven.
+func WorkflowIsNetworkIncapable(wf *Workflow, swarm *Swarm) bool {
+	if wf == nil || swarm == nil {
+		return false
+	}
+	sawRole := false
+	for _, step := range wf.Steps {
+		if _, ok := stepTypesGrantingOnlyDeclaredRoles[strings.TrimSpace(step.Type)]; !ok {
+			return false
+		}
+		roleName := strings.TrimSpace(step.Role)
+		if roleName == "" {
+			continue
+		}
+		role := findSwarmRole(swarm, roleName)
+		if role == nil {
+			return false
+		}
+		if len(role.Permissions.AllowedTools) == 0 {
+			return false
+		}
+		for _, tool := range role.Permissions.AllowedTools {
+			if !ToolIsInert(tool) {
+				return false
+			}
+		}
+		sawRole = true
+	}
+	return sawRole
+}
+
+// findSwarmRole resolves a workflow step's role name against the swarm
+// catalogue, honouring SwarmRole.Aliases the same way the executor's
+// adaptive plan resolution does.
+func findSwarmRole(swarm *Swarm, name string) *SwarmRole {
+	for i := range swarm.Roles {
+		if swarm.Roles[i].Name == name {
+			return &swarm.Roles[i]
+		}
+	}
+	for i := range swarm.Roles {
+		for _, alias := range swarm.Roles[i].Aliases {
+			if alias == name {
+				return &swarm.Roles[i]
+			}
+		}
+	}
+	return nil
+}

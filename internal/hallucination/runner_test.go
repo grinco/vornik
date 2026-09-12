@@ -21,6 +21,11 @@ import (
 type fakeVerdictRepo struct {
 	mu       sync.Mutex
 	recorded []*persistence.TaskJudgeVerdict
+	// existing, when set, is what GetByTask returns instead of a miss —
+	// the "a verdict is already on file" state Run's idempotency
+	// short-circuit keys on. Left nil (the default) the double keeps its
+	// original miss contract, which every other test here relies on.
+	existing *persistence.TaskJudgeVerdict
 }
 
 func (f *fakeVerdictRepo) Record(_ context.Context, v *persistence.TaskJudgeVerdict) error {
@@ -31,6 +36,9 @@ func (f *fakeVerdictRepo) Record(_ context.Context, v *persistence.TaskJudgeVerd
 }
 
 func (f *fakeVerdictRepo) GetByTask(_ context.Context, _ string) (*persistence.TaskJudgeVerdict, error) {
+	if f.existing != nil {
+		return f.existing, nil
+	}
 	return nil, persistence.ErrNotFound
 }
 

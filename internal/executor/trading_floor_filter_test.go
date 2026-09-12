@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -9,6 +10,7 @@ import (
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/trading"
 )
 
 func tradingFloorProject(id string) *registry.Project {
@@ -24,6 +26,27 @@ func tradingFloorProject(id string) *registry.Project {
 			},
 		},
 	}
+}
+
+func TestEntryPolicyGatesApprovalsWithScorecardOff(t *testing.T) {
+	p := tradingFloorProject("trade")
+	p.Trading.Scorecard.Enabled = false
+	p.Trading.EntryPolicy = trading.EntryPolicy{Enabled: true, AllowedSymbols: []string{"AAPL"}, LongOnly: true, MaxRiskUSD: 50, MaxEntriesPerTick: 1}
+	resolver := &MockWorkflowResolver{projects: map[string]*registry.Project{"trade": p}}
+	e := &Executor{logger: zerolog.Nop(), workflows: resolver}
+	task := &persistence.Task{ID: "t", ProjectID: "trade", Payload: []byte(`{"taskType":"trading"}`)}
+	out, err := e.filterTradingEntryPolicy(task, []byte(`{"approved":[{"symbol":"NVO","intent":"open","action":"BUY"}],"has_approvals":true}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"approved":[]`)
+	assert.Contains(t, string(out), `"has_approvals":false`)
+	state := &StepOutcome{Task: task, ResultBytes: []byte(`{"approved":[{"symbol":"NVO","intent":"open","action":"BUY"}],"has_approvals":true}`)}
+	e.tradingFloorParticipant(context.Background(), state)
+	require.NoError(t, state.Err)
+	assert.Contains(t, string(state.ResultBytes), `"approved":[]`)
+	task.Payload = []byte(`{"taskType":"research"}`)
+	out, err = e.filterTradingEntryPolicy(task, []byte("Research prose without an order envelope"))
+	require.NoError(t, err)
+	assert.Equal(t, "Research prose without an order envelope", string(out))
 }
 
 // The executor helper drops a sub-floor open (soft) via the shared filter.

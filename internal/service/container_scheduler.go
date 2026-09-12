@@ -1776,7 +1776,8 @@ func (c *Container) rebuildSchedulerMetrics() {
 	// verifier package can't reach) so vornik_trading_floor_rejected_total
 	// is visible on /metrics — avoids the 2026-06-06 invisible-metric class.
 	verifier.RegisterFloorMetrics(reg)
-	c.Logger.Info().Msg("trading floor metrics wired")
+	executor.RegisterEvidenceMetrics(reg)
+	c.Logger.Info().Msg("trading floor and evidence metrics wired")
 
 	// Memory firewall metrics (LLD § Observability / drift-mitigation
 	// §8.3). The six promised series were registered nowhere before

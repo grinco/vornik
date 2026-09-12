@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 79343c8c6c2bb8dbff8dc79be1e98ee4d7fe6d6fcc5715f6ba394506fe38b105
+      sha256: 93a24329bca8b8f277c788abab9ba26fa5111c43014c3eb256232c28c78f372c
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: f2264b09f27fe2675b7df79956e333c62be761a2be23eaedf2e3dc5116d88f3c
+      sha256: d59f2d54b900cc028a343550d487f9db9de8ea2295ce51bdc7bbdec6c3902364
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: 502fb81b5a17ca7d9cb1c2b867c4f8c8c0358dde7bf4df43a154cd819107a3d8
+      sha256: e891b1ba67df833c35f5d747378127fb4dcf26c3d4afa50122bde6a4533e3672
 ---
 # Companion plugin
 
@@ -46,7 +46,7 @@ The companion exposes these MCP tools:
 | `result` | fetch a completed task's output inline |
 | `cancel` | cancel a task that hasn't finished |
 | `list` | list recent companion-created tasks for the project |
-| `catalog` | show which workflows this key may delegate to, with cost estimates |
+| `catalog` | show which workflows this key may delegate to, with cost estimates and whether each can reach the network |
 | `skill_propose` | propose a knowledge skill (instructional know-how) as a draft (needs `skill_write`) |
 | `skill_search` | find active/trusted knowledge skills by scope, domain, role (needs `skill_read`) |
 | `skill_get` | fetch one knowledge skill's full body (needs `skill_read`) |
@@ -264,6 +264,21 @@ The shipped delegation workflows include:
 `catalog` lists exactly which of these your key is allowed to run. When you're
 about to delegate something vornik may already know, `delegate` can surface a
 hint from memory first, so you don't spend compute re-deriving it.
+
+**Vornik agents cannot browse.** An agent can only act through the tools its
+role grants, and most companion roles hold nothing that reaches the network —
+so handing one a URL gets you a fluent answer assembled from nothing at all.
+`catalog` reports this per workflow as `network_access`, either `none` or
+`possible`, next to the description. A `delegate` whose prompt contains a URL
+is refused outright when the target workflow is `none`, rather than queued and
+reported as under way.
+
+To get external pages into project memory, fetch them in your editor with its
+own web tools, save them as local files, and send those files to the
+**RAG ingest** workflow — `/upload` in Claude Code, or `delegate` with base64
+`inputArtifacts` in Codex. If a URL in your prompt is incidental — a link
+quoted for context in a diff you want reviewed — pass
+`acknowledge_workflow_cannot_fetch: true` and the delegation proceeds.
 
 ## Setting it up
 

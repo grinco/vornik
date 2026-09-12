@@ -899,7 +899,12 @@ type Server struct {
 	// the endpoint (returns 503 GIST_NOT_CONFIGURED).
 	gistReader       GistReader
 	autonomyEvalRepo persistence.AutonomyEvaluationRepository
-	readinessChecks  []ReadinessCheck
+	// verdictRepo backs GET /projects/{id}/autonomy/health's judge column
+	// (the degradation-detection table, design 2026-09-10). Nil renders
+	// judge as {"declared": false} — same honest shape as an empty verdict
+	// window, never a fabricated 0% failure rate.
+	verdictRepo     persistence.TaskJudgeVerdictRepository
+	readinessChecks []ReadinessCheck
 	// draining is the graceful-shutdown gate. SIGTERM in
 	// container.Run flips this true, then sleeps the grace period
 	// before calling shutdown(). While set, /readyz returns 503
@@ -2018,6 +2023,16 @@ func WithChainMetrics(m *AuthChainMetrics) ServerOption {
 func WithAutonomyEvaluationRepository(repo persistence.AutonomyEvaluationRepository) ServerOption {
 	return func(s *Server) {
 		s.autonomyEvalRepo = repo
+	}
+}
+
+// WithTaskJudgeVerdictRepository wires the judge-verdict column of GET
+// /api/v1/projects/{p}/autonomy/health. Nil is a supported, honest
+// configuration: the handler reports judge.declared=false rather than
+// omitting the block or fabricating a rate.
+func WithTaskJudgeVerdictRepository(repo persistence.TaskJudgeVerdictRepository) ServerOption {
+	return func(s *Server) {
+		s.verdictRepo = repo
 	}
 }
 

@@ -328,7 +328,17 @@ type evalRecord struct {
 // SHA-256 before storage so operators can correlate evaluations by prompt
 // without leaking task content through the audit log.
 func (m *Manager) recordEvaluation(ctx context.Context, r evalRecord) {
-	if m == nil || m.evalRepo == nil {
+	if m == nil {
+		return
+	}
+	// Emitted here rather than at each recordEvaluation call site (there
+	// are dozens, across every tick exit path): this is the single point
+	// every tick exit passes through, so no future outcome can be added
+	// without also being counted.
+	if m.metrics != nil && r.outcome != "" {
+		m.metrics.EvaluationOutcomesTotal.WithLabelValues(r.projectID, r.outcome).Inc()
+	}
+	if m.evalRepo == nil {
 		return
 	}
 	// Use a detached, short-bounded context: the tick context is often
@@ -466,6 +476,18 @@ func (m *Manager) SetWorkspacePath(p string) {
 // — if we hit the timeout, systemd SIGKILLs us anyway, so logging and
 // returning is strictly better than waiting forever.
 const stopGracePeriod = 30 * time.Second
+
+// autonomyStateTaskPageSize bounds the recent-task history
+// buildStateContext loads for the lead's prompt AND hands to
+// FeedObservations. Named rather than inlined because the bound is not
+// only a prompt-size decision any more: it is the horizon every feed
+// observation is measured against, and a feed whose cadence exceeds it
+// can only ever be reported as "not measured, older history not
+// examined" (see FeedHorizon). internal/api/autonomy_handlers.go keeps
+// its own mirror of this number for the same call — the two are
+// deliberately equal so the tick and the health endpoint never disagree
+// about how much history "recent" means.
+const autonomyStateTaskPageSize = 50
 
 // Stop shuts down all loops. Cancels each project's context first so
 // in-flight evaluation ticks (which derive their LLM-call context
@@ -1626,10 +1648,73 @@ func (m *Manager) buildStateContext(ctx context.Context, project *registry.Proje
 	pid := project.ID
 	tasks, err := m.taskRepo.List(ctx, persistence.TaskFilter{
 		ProjectID: &pid,
-		PageSize:  50,
+		PageSize:  autonomyStateTaskPageSize,
 	})
 	if err != nil {
 		return "", false, err
+	}
+
+	// Feed cadence observation. Deterministic, no LLM, no extra query —
+	// it reuses the task list this function already loaded and the same
+	// `now` anchor every age below uses. Nothing here changes the
+	// prompt; it only measures.
+	if m.metrics != nil {
+		for _, obs := range FeedObservations(project.ResolveFeeds(), tasks, autonomyStateTaskPageSize, now) {
+			if obs.NeverRan {
+				// No gauge: absent evidence is not a lag of zero, and a
+				// LOWER BOUND (obs.LagAtLeast, set when the page was
+				// saturated) is not a measurement either — publishing it
+				// as feed_lag_seconds would understate the real lag by an
+				// unknown amount. Absence of the series is the honest
+				// "not measured".
+				//
+				// DELETE, not merely skip. A gauge child that stops being
+				// written does not disappear: it freezes at its last
+				// value and keeps being exported as though it were
+				// current. So a feed that WAS measured and has now fallen
+				// off the end of the page — exactly the degradation this
+				// surface exists to detect — would go on reporting the
+				// lag it had on its last good tick while the breach
+				// counter climbed beside it. Skipping alone would make
+				// "presence means measured" (design §4, LLD 11 §8) false
+				// in precisely the case it is there to cover.
+				//
+				// DeleteLabelValues is per-child, never Reset(): the
+				// other declared feeds of this project are still measured
+				// and must keep their series. It returns false when there
+				// was nothing to delete, which is the ordinary case and
+				// not an error.
+				m.metrics.FeedLagSeconds.DeleteLabelValues(project.ID, obs.Slug)
+				// The breach COUNTER is deliberately left alone. A
+				// counter's meaning is its monotonic history: deleting a
+				// child resets it to zero, and rate()/increase() read
+				// that as a counter reset and lose the breaches already
+				// recorded. A counter that simply stops being incremented
+				// already says something TRUE ("no new breaches"),
+				// whereas a gauge that stops being Set says something
+				// FALSE ("the current lag is X"). Only the gauge lies by
+				// standing still.
+				//
+				// A breach can still be PROVEN without a measurement,
+				// though: nothing carrying the slug anywhere in a full
+				// page of history that spans longer than the cadence is
+				// overdue whatever its last run was. Counting that is the
+				// difference between `slow` being reachable and `slow`
+				// being unreachable for every feed that fell off the end
+				// of the page (see FeedObservation.Breach).
+				if obs.Breach != "" {
+					m.metrics.FeedCadenceBreachTotal.
+						WithLabelValues(project.ID, obs.Slug, obs.Breach).Inc()
+				}
+				continue
+			}
+			m.metrics.FeedLagSeconds.
+				WithLabelValues(project.ID, obs.Slug).Set(obs.Lag.Seconds())
+			if obs.Breach != "" {
+				m.metrics.FeedCadenceBreachTotal.
+					WithLabelValues(project.ID, obs.Slug, obs.Breach).Inc()
+			}
+		}
 	}
 
 	var hasActive bool

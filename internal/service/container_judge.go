@@ -115,11 +115,17 @@ func (c *Container) buildJudgeRunner() *hallucination.JudgeRunner {
 		Pricing:   c.pricingTable,
 	}
 	return &hallucination.JudgeRunner{
-		Judge:        judge,
-		Verdicts:     verdicts,
-		Audits:       audits,
-		Artifacts:    artifacts,
-		Executions:   executions,
+		Judge:      judge,
+		Verdicts:   verdicts,
+		Audits:     audits,
+		Artifacts:  artifacts,
+		Executions: executions,
+		// Children lets the runner tell a delegating adaptive-workflow
+		// parent (whose deliverable lives in a child task) from an
+		// ordinary task, and decline to grade the former against its
+		// own routing output. See runner.go's gate + the 2026-09-10
+		// amendment to hallucination-detection-design.md.
+		Children:     c.repos.Tasks,
 		Logger:       c.Logger.With().Str("component", "judge").Logger(),
 		JudgeRoleTag: "judge",
 		// Token + cost accounting: same pricing table as

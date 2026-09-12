@@ -33,6 +33,7 @@ import (
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/storage"
 	"vornik.io/vornik/internal/telegram"
+	"vornik.io/vornik/internal/trading"
 )
 
 // initMCP connects to MCP servers declared by each project, scoping
@@ -470,15 +471,17 @@ func brokerHeadersFor(p *registry.Project, serverName string) map[string]string 
 		return nil
 	}
 	caps := struct {
-		MaxPositionUSD             float64 `json:"max_position_usd"`
-		MaxDailyTurnoverUSD        float64 `json:"max_daily_turnover_usd"`
-		MaxOrdersPerHour           int     `json:"max_orders_per_hour"`
-		MaxOrdersPerMinute         int     `json:"max_orders_per_minute"`
-		DrawdownCircuitBreakerPct  float64 `json:"drawdown_circuit_breaker_pct"`
-		DailyLossCircuitBreakerPct float64 `json:"daily_loss_circuit_breaker_pct"` // audit T4
-		KillSwitch                 bool    `json:"kill_switch"`
-		Mode                       string  `json:"mode"` // audit T1 defence-in-depth
+		EntryPolicy                trading.EntryPolicy `json:"entry_policy"`
+		MaxPositionUSD             float64             `json:"max_position_usd"`
+		MaxDailyTurnoverUSD        float64             `json:"max_daily_turnover_usd"`
+		MaxOrdersPerHour           int                 `json:"max_orders_per_hour"`
+		MaxOrdersPerMinute         int                 `json:"max_orders_per_minute"`
+		DrawdownCircuitBreakerPct  float64             `json:"drawdown_circuit_breaker_pct"`
+		DailyLossCircuitBreakerPct float64             `json:"daily_loss_circuit_breaker_pct"` // audit T4
+		KillSwitch                 bool                `json:"kill_switch"`
+		Mode                       string              `json:"mode"` // audit T1 defence-in-depth
 	}{
+		EntryPolicy:                p.Trading.EntryPolicy,
 		MaxPositionUSD:             p.Trading.Caps.MaxPositionUSD,
 		MaxDailyTurnoverUSD:        p.Trading.Caps.MaxDailyTurnoverUSD,
 		MaxOrdersPerHour:           p.Trading.Caps.MaxOrdersPerHour,

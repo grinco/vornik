@@ -24,11 +24,15 @@ import (
 // based on the verdict (Phase 3 is purely informational —
 // judge as a quality signal, not a gate).
 type JudgeRunner struct {
-	Judge        Judge
-	Verdicts     persistence.TaskJudgeVerdictRepository
-	Audits       AuditLister
-	Artifacts    ArtifactLister
-	Executions   ExecutionGetter
+	Judge      Judge
+	Verdicts   persistence.TaskJudgeVerdictRepository
+	Audits     AuditLister
+	Artifacts  ArtifactLister
+	Executions ExecutionGetter
+	// Children resolves a parent's delegated children so the runner can
+	// decline to grade a router. Nil-safe: unset means "judge
+	// everything", which is the pre-2026-09-10 behaviour.
+	Children     ChildLister
 	Logger       zerolog.Logger
 	JudgeRoleTag string // Defaults to "judge"; allows operators to label per-project judges differently.
 	// Pricing + LLMUsage wire the judge call's token cost
@@ -67,6 +71,14 @@ type ExecutionGetter interface {
 	List(ctx context.Context, filter persistence.ExecutionFilter) ([]*persistence.Execution, error)
 }
 
+// ChildLister is the narrow subset of persistence.TaskRepository the
+// runner needs: a parent's direct children, to tell a delegating parent
+// from an ordinary task. Defined locally to match AuditLister /
+// ArtifactLister / ExecutionGetter rather than pulling the full repo.
+type ChildLister interface {
+	GetChildren(ctx context.Context, parentTaskID string) ([]*persistence.Task, error)
+}
+
 // Run evaluates a single completed task and persists the
 // verdict. Idempotent: a verdict already on file for this task
 // short-circuits with a debug log, no second LLM call.
@@ -82,6 +94,7 @@ func (r *JudgeRunner) Run(ctx context.Context, task *persistence.Task) error {
 	if r.Verdicts == nil {
 		return nil
 	}
+
 	if existing, err := r.Verdicts.GetByTask(ctx, task.ID); err == nil && existing != nil {
 		r.Logger.Debug().Str("task_id", task.ID).Msg("judge: verdict already recorded, skipping")
 		if r.Metrics != nil {
@@ -92,6 +105,47 @@ func (r *JudgeRunner) Run(ctx context.Context, task *persistence.Task) error {
 		// Real DB error — proceed anyway so a transient outage
 		// doesn't permanently skip the judge for this task.
 		r.Logger.Warn().Err(err).Str("task_id", task.ID).Msg("judge: verdict lookup failed, proceeding")
+	}
+
+	// A delegating parent's artifacts are its routing output, not its
+	// deliverable — the work lives in the child, which is judged on its
+	// own. Grading the parent against artifacts filtered by the
+	// parent's own TaskID (below) produced 17 fail / 21 abstain / 2 pass
+	// across 40 adaptive parents on 2026-09-10, i.e. a control that
+	// fails on everything and therefore reports nothing.
+	//
+	// Keyed on delegation-engine children EXISTING (DelegationMode !=
+	// nil, the discriminator from 10-delegation-engine.md). A parent
+	// that failed before creating any child does not match, and is
+	// judged exactly as before — that is deliberate, not a gap.
+	//
+	// Placed BELOW the idempotency short-circuit, deliberately. Above
+	// it, every completed task paid a GetChildren round-trip even when a
+	// verdict was already on file, and a delegating parent with a prior
+	// verdict recorded `skipped_delegated` instead of the
+	// `skipped_existing` it had always recorded. Below it, both
+	// behaviours are preserved and the extra query is paid only by tasks
+	// that would otherwise be judged.
+	if r.Children != nil {
+		children, err := r.Children.GetChildren(ctx, task.ID)
+		if err != nil {
+			// Judge rather than skip: a lookup failure must not
+			// silently suppress a verdict.
+			r.Logger.Warn().Err(err).Str("task_id", task.ID).
+				Msg("judge: child lookup failed, judging anyway")
+		} else {
+			for _, c := range children {
+				if c != nil && c.DelegationMode != nil {
+					r.Logger.Debug().Str("task_id", task.ID).
+						Msg("judge: delegating parent, verdict belongs to the child")
+					if r.Metrics != nil {
+						r.Metrics.JudgeEvaluationsTotal.
+							WithLabelValues(task.ProjectID, "skipped_delegated").Inc()
+					}
+					return nil
+				}
+			}
+		}
 	}
 
 	in := JudgeInput{Task: task}

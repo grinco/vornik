@@ -146,6 +146,16 @@ func TestBrokerHeadersFor(t *testing.T) {
 	assert.Equal(t, float64(3), caps["max_orders_per_minute"])
 	assert.Equal(t, 8.5, caps["drawdown_circuit_breaker_pct"])
 	assert.Equal(t, true, caps["kill_switch"])
+	project.Trading.EntryPolicy.Enabled = true
+	project.Trading.EntryPolicy.NoPositionAdditions = true
+	project.Trading.EntryPolicy.MaxRiskUSD = 50
+	headers = brokerHeadersFor(project, "broker")
+	require.NoError(t, json.Unmarshal([]byte(headers["X-Project-Caps"]), &caps))
+	policy, ok := caps["entry_policy"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, policy["enabled"])
+	assert.Equal(t, true, policy["no_position_additions"])
+	assert.Equal(t, float64(50), policy["max_risk_usd"])
 }
 
 // Audit T4 + T1 + T2: the per-project daily-loss breaker pct and the

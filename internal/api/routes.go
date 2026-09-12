@@ -1024,6 +1024,12 @@ func (s *Server) apiV1ProjectsHandler(w http.ResponseWriter, r *http.Request) {
 			s.GetAutonomyEvaluationSummary(w, r)
 			return
 		}
+	} else if remaining == "/autonomy/health" || remaining == "/autonomy/health/" {
+		// GET /projects/{id}/autonomy/health — degradation-detection table
+		if r.Method == http.MethodGet {
+			s.GetAutonomyHealth(w, r)
+			return
+		}
 	} else if remaining == "/ratelimit-status" || remaining == "/ratelimit-status/" {
 		// GET /projects/{id}/ratelimit-status — per-key + per-project
 		// rate-limit headroom + recent warn/block counts. Drives the

@@ -150,6 +150,19 @@ func ProjectSchema() AssetSchema {
 					{Path: "trading.caps.drawdown_circuit_breaker_pct", Label: "Drawdown breaker (%)", Kind: KindFloat},
 					{Path: "trading.caps.daily_loss_circuit_breaker_pct", Label: "Daily-loss breaker (%)", Kind: KindFloat},
 					{Path: "trading.watchlist", Label: "Watchlist", Kind: KindStringList},
+					{Path: "trading.entry_policy.enabled", Label: "Entry policy enabled", Kind: KindBool, Help: "Filter workflow proposals and approvals independently of scorecard settings; exits remain allowed."},
+					{Path: "trading.entry_policy.allowed_symbols", Label: "New-entry symbols", Kind: KindStringList, Help: "When the policy is enabled, an empty list blocks every new entry. Held names outside this list can still be closed."},
+					{Path: "trading.entry_policy.long_only", Label: "Long entries only", Kind: KindBool},
+					{Path: "trading.entry_policy.no_position_additions", Label: "No position additions", Kind: KindBool, Help: "Broker entry gate: refuse existing exposure or same-side working/unresolved orders. Protective exits remain exempt."},
+					{Path: "trading.entry_policy.max_risk_usd", Label: "Max planned entry loss (USD)", Kind: KindFloat, Help: "Quantity times distance to stop; gaps, slippage and commissions can exceed this amount. Must be positive when enabled."},
+					{Path: "trading.entry_policy.min_notional_usd", Label: "Min entry notional (USD)", Kind: KindFloat},
+					{Path: "trading.entry_policy.max_entries_per_tick", Label: "Max new entries per tick", Kind: KindInt, Help: "Must be positive when enabled. Applies separately to proposals and approvals."},
+					{Path: "trading.entry_policy.max_gross_exposure_usd", Label: "Max gross exposure (USD)", Kind: KindFloat, Help: "Broker entry gate: held market value plus working parent-order notional plus the new order. 0 = off."},
+					{Path: "trading.entry_policy.max_positions", Label: "Max positions", Kind: KindInt, Help: "Broker entry gate: distinct held plus pending symbols including the new one. 0 = off."},
+					{Path: "trading.entry_policy.daily_loss_pause_usd", Label: "Daily loss pause (USD)", Kind: KindFloat, Help: "Broker entry gate: no new entries once the session's realised P&L is at or below the negated value. 0 = off."},
+					{Path: "trading.analysis_evidence.enabled", Label: "Analysis evidence gate", Kind: KindBool, Help: "Fail the strategist step unless its tool audit shows every held, benchmark and entry-universe symbol was examined and carried values match tool outputs."},
+					{Path: "trading.analysis_evidence.min_daily_bars", Label: "Min daily bars for evidence", Kind: KindInt, Help: "Bars a get_historical_bars fallback must return to count as examining a symbol. Must be positive when enabled."},
+					{Path: "trading.analysis_evidence.benchmark_symbols", Label: "Benchmark symbols", Kind: KindStringList, Help: "Examined every tick alongside held and entry-universe symbols."},
 					{Path: "trading.notify_fills_chat_id", Label: "Notify fills chat ID", Kind: KindString},
 					// Scorecard/regime entry floor — dark by default; both enabled flags
 					// gate the code-enforced scorecard_floor verifier.
@@ -203,6 +216,12 @@ var ProjectDeferredPaths = []string{
 	// Regime per-region min component count — a map[string]int (e.g. {us:6, eu:5,
 	// apac:4}); no scalar form Kind, so it stays a raw-YAML block.
 	"trading.regime.min_component_count",
+	// Declared feed cadences (2026-09-10) — a []AutonomyFeed{slug, cadence},
+	// no scalar form Kind for a list of structs, so it stays a raw-YAML
+	// block like the regime min-component-count map above. Editing it
+	// wrong is caught at registry load (duplicate slug, bad cadence), not
+	// silently accepted, so the raw-YAML escape hatch is not unsafe here.
+	"autonomy.feeds",
 	// GitHub App channel + outbound credentials.
 	"github_app.app_id", "github_app.private_key_path", "github_app.installation_id",
 	"github_app.api_base_url", "github_app.webhook_secret_env", "github_app.repo_allowlist",

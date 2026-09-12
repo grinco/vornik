@@ -10,6 +10,7 @@ import (
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/trading"
 	"vornik.io/vornik/internal/tradingpnl"
 )
 
@@ -200,13 +201,15 @@ func projectCapsHeader(project *registry.Project) string {
 		return ""
 	}
 	caps := struct {
-		MaxPositionUSD            float64 `json:"max_position_usd"`
-		MaxDailyTurnoverUSD       float64 `json:"max_daily_turnover_usd"`
-		MaxOrdersPerHour          int     `json:"max_orders_per_hour"`
-		MaxOrdersPerMinute        int     `json:"max_orders_per_minute"`
-		DrawdownCircuitBreakerPct float64 `json:"drawdown_circuit_breaker_pct"`
-		KillSwitch                bool    `json:"kill_switch"`
+		EntryPolicy               trading.EntryPolicy `json:"entry_policy"`
+		MaxPositionUSD            float64             `json:"max_position_usd"`
+		MaxDailyTurnoverUSD       float64             `json:"max_daily_turnover_usd"`
+		MaxOrdersPerHour          int                 `json:"max_orders_per_hour"`
+		MaxOrdersPerMinute        int                 `json:"max_orders_per_minute"`
+		DrawdownCircuitBreakerPct float64             `json:"drawdown_circuit_breaker_pct"`
+		KillSwitch                bool                `json:"kill_switch"`
 	}{
+		EntryPolicy:               project.Trading.EntryPolicy,
 		MaxPositionUSD:            project.Trading.Caps.MaxPositionUSD,
 		MaxDailyTurnoverUSD:       project.Trading.Caps.MaxDailyTurnoverUSD,
 		MaxOrdersPerHour:          project.Trading.Caps.MaxOrdersPerHour,

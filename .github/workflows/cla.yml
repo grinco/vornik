@@ -46,7 +46,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
-          path-to-signatures: signatures/cla.json
+          # v2 signature file (2026-09-14): CLA.md v2 moved the beneficiary from the
+          # founder personally to EaseIT Labs s.r.o. Pointing at a fresh file makes
+          # every v1 signer sign again; signatures/cla.json stays as the v1 record.
+          path-to-signatures: signatures/cla-v2.json
           path-to-document: https://github.com/grinco/vornik/blob/main/CLA.md
           branch: cla-signatures
           allowlist: dependabot[bot],grinco

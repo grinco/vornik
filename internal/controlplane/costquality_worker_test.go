@@ -12,7 +12,10 @@ import (
 	"vornik.io/vornik/internal/quality"
 )
 
+// The embedded interface promotes lookups this worker never calls
+// (GetByIdempotencyKey) without declaring a second double for them.
 type fakeProposals struct {
+	persistence.ProposalRepository
 	created []*persistence.ControlPlaneProposal
 }
 

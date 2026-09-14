@@ -59,6 +59,30 @@ type TradingSeriesProbe interface {
 	ValidateSeries(ctx context.Context) ([]TradingSeriesFinding, error)
 }
 
+// DurabilityReport is the outcome of probing the active store's commit
+// durability contract (2026-09-13 config-assistant review R6): SQLite must
+// run with synchronous=FULL, Postgres with synchronous_commit=on. The
+// config-assistant feature refuses to enable when the contract cannot be
+// established, with no silent single-file fallback.
+type DurabilityReport struct {
+	Driver string // "sqlite" | "postgres" | ""
+	OK     bool
+	Detail string
+}
+
+// DurabilityProber reports whether the active store honours the durable
+// commit contract the config-apply journal relies on. Implemented by an
+// adapter in the api layer that owns the *sql.DB; nil when not wired.
+type DurabilityProber interface {
+	ProbeDurability(ctx context.Context) DurabilityReport
+}
+
+// A2APeerLister names the configured a2a.peers keys so the
+// architect-consult feature can confirm its configured peer exists.
+type A2APeerLister interface {
+	A2APeerNames() []string
+}
+
 // Deps is the narrow read surface the feature checks need. Each field is
 // an interface so tests supply stubs (see stubInstinctRepo et al).
 type Deps struct {
@@ -77,4 +101,17 @@ type Deps struct {
 	// interface, mirroring the SecretsDir convention above.
 	RoleLibraryDir string
 	Logger         zerolog.Logger
+
+	// Identity is the identity-core repository on the ACTIVE store
+	// (users, groups, bindings). The `identity` feature's prereq and
+	// Verify read it; nil means the tables are not wired on this backend.
+	Identity persistence.IdentityRepository
+	// AdminAudit is the admin audit sink the `architect-consult` feature
+	// requires before it may enable (review R8: a nil repository means
+	// zero consultations, never an unaudited one).
+	AdminAudit persistence.AdminAuditRepository
+	// Durability probes the store's commit contract for `config-assistant`.
+	Durability DurabilityProber
+	// A2APeers lists configured a2a.peers keys for `architect-consult`.
+	A2APeers A2APeerLister
 }

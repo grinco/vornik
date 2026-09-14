@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+
+	"vornik.io/vornik/internal/config"
 )
 
 // fakePlainProvider satisfies chat.Provider but NOT ModelHealthReporter.
@@ -38,7 +40,7 @@ func TestEvalModelHealth_HealthyModelOK(t *testing.T) {
 	stats := []modelHealthStat{
 		{model: "zai.glm-5", samples: 40, failures: 2, medianCompletionTokens: 800},
 	}
-	findings := evalModelHealth(stats, nil)
+	findings := evalModelHealth(stats, nil, defaultDoctorThresholds())
 	if len(findings) != 0 {
 		t.Fatalf("healthy model should produce no findings; got %v", findings)
 	}
@@ -50,7 +52,7 @@ func TestEvalModelHealth_HighFailureRateFlagged(t *testing.T) {
 	stats := []modelHealthStat{
 		{model: "z-ai/glm-4.5-air:free", samples: 12, failures: 12, medianCompletionTokens: 300},
 	}
-	findings := evalModelHealth(stats, map[string]string{"z-ai/glm-4.5-air:free": "zai.glm-5"})
+	findings := evalModelHealth(stats, map[string]string{"z-ai/glm-4.5-air:free": "zai.glm-5"}, defaultDoctorThresholds())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %v", findings)
 	}
@@ -69,7 +71,7 @@ func TestEvalModelHealth_DegenerateTokensFlagged(t *testing.T) {
 	stats := []modelHealthStat{
 		{model: "qwen3.6:35b", samples: 20, failures: 4, medianCompletionTokens: 3},
 	}
-	findings := evalModelHealth(stats, nil)
+	findings := evalModelHealth(stats, nil, defaultDoctorThresholds())
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %v", findings)
 	}
@@ -87,7 +89,7 @@ func TestEvalModelHealth_LowSampleSkipped(t *testing.T) {
 	stats := []modelHealthStat{
 		{model: "rare.model", samples: 2, failures: 2, medianCompletionTokens: 1},
 	}
-	findings := evalModelHealth(stats, nil)
+	findings := evalModelHealth(stats, nil, defaultDoctorThresholds())
 	if len(findings) != 0 {
 		t.Fatalf("low-sample model should be skipped; got %v", findings)
 	}
@@ -314,4 +316,11 @@ func TestCheckAgentModelCircuits_AllClosedOK(t *testing.T) {
 	if got.Status != "OK" || !strings.Contains(got.Message, "1 agent model circuit(s) closed") {
 		t.Errorf("all-closed agent should be OK; got %q / %q", got.Status, got.Message)
 	}
+}
+
+// defaultDoctorThresholds is the compiled-default bound set — what an operator
+// who has configured nothing gets, and what these cases were written against
+// when the numbers were Go constants.
+func defaultDoctorThresholds() config.ResolvedDoctorThresholds {
+	return config.DoctorThresholds{}.Resolve()
 }

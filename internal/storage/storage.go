@@ -92,16 +92,17 @@ type Repositories struct {
 	// channel bindings) backing internal/authz. Phase 2 of
 	// oidc-identity-permissions-design.md.
 	//
-	// NIL ON THE SQLITE BRANCH — the identity tables ship only in
-	// the Postgres migrations. Phase-3 wiring (authz.Service /
-	// SessionBackend) must gate on the Postgres backend or
-	// nil-check before constructing consumers.
+	// Present on BOTH backends since 2026-09-13 (config-assistant plan
+	// §2 / review R1): the identity tables ship in Postgres migrations
+	// 90/91/183 and in the SQLite starter schema, and one repotest suite
+	// runs against each. Until then it was nil on the SQLite branch and
+	// consumers gated on the Postgres backend; that gate is no longer
+	// needed.
 	Identity persistence.IdentityRepository
 	// UISessions is the browser login session repository (migration 91).
 	//
-	// NIL ON THE SQLITE BRANCH — the ui_sessions table ships only in
-	// the Postgres migrations alongside the rest of the identity core.
-	// Consumers must nil-check or gate on the Postgres backend.
+	// Present on BOTH backends since 2026-09-13, alongside the rest of
+	// the identity core (see Identity above).
 	UISessions           persistence.UISessionRepository
 	Webhooks             persistence.WebhookEventRepository
 	Messages             persistence.TaskMessageRepository
@@ -228,6 +229,11 @@ type Repositories struct {
 	// single-process deployments don't need contention
 	// semantics.
 	LeaderLocks persistence.DaemonLeaderLockRepository
+	// ApplyJournal backs the durable multi-file config apply
+	// (LLD 2026-09-13-config-apply-journal-design, migration 184):
+	// controlplane.ApplyEngine commits PREPARED here before its first
+	// file write and reconciles open rows at startup.
+	ApplyJournal persistence.ApplyJournalRepository
 	// ChannelSessions persists per-channel conversation state
 	// (webchat / email / slack / github / future-telegram) across
 	// daemon restarts and across replicas. Migration 58 added the
@@ -368,6 +374,8 @@ func openSQLite(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error
 // set. Split out of openSQLite (2026-07-10, task 2.1) purely to keep
 // the connect/migrate/construct function under the funlen budget —
 // no behaviour change.
+//
+//nolint:dupl,funlen // Intentionally mirrors Build so backend drift is visually auditable.
 func buildSQLiteRepositories(db *sql.DB) *Repositories {
 	r := &Repositories{
 		Tasks:                          sqlite.NewTaskRepository(db),
@@ -394,7 +402,6 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
 		MCPOAuthTokens:                 sqlite.NewMCPOAuthTokenRepository(db),
 		ChatMemoryWriteAudit:           sqlite.NewChatMemoryWriteAuditRepository(db),
-		APIKeys:                        sqlite.NewAPIKeyRepository(db),
 		Webhooks:                       sqlite.NewWebhookEventRepository(db),
 		Messages:                       sqlite.NewTaskMessageRepository(db),
 		Scratchpads:                    sqlite.NewTaskScratchpadRepository(db),
@@ -427,6 +434,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		HealingTrials:           sqlite.NewWorkflowHealingTrialRepository(db),
 		MemoryPolicyEvaluations: sqlite.NewMemoryPolicyEvaluationRepository(db),
 		LeaderLocks:             sqlite.NewLeaderLockRepository(db),
+		ApplyJournal:            sqlite.NewApplyJournalRepository(db),
 		ClusterNodes:            sqlite.NewClusterNodeRepository(db),
 		ChannelSessions:         sqlite.NewChannelSessionRepository(db),
 		LiveEvents:              sqlite.NewExecutionLiveEventRepository(db),
@@ -450,9 +458,17 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		// Scratchpads already wired above; TaskScratchpadRepository
 		// is the only remaining piece (see persistence interfaces).
 	}
+	withSQLiteAccessStores(r, db)
 	withSQLiteTradingStores(r, db)
 	withSQLiteForgeStores(r, db)
 	return r
+}
+
+// withSQLiteAccessStores attaches the CE identity and key repositories.
+func withSQLiteAccessStores(r *Repositories, db *sql.DB) {
+	r.APIKeys = sqlite.NewAPIKeyRepository(db)
+	r.Identity = sqlite.NewIdentityRepository(db)
+	r.UISessions = sqlite.NewUISessionRepository(db)
 }
 
 // withSQLiteForgeStores attaches the forge-domain repositories.
@@ -512,6 +528,8 @@ func openPostgres(ctx context.Context, cfg config.DatabaseConfig) (*Backend, err
 // the postgres-package implementations are wired; the SQLite branch
 // lands in phase 2 and will pick by examining a sentinel on the DBTX
 // (or via a separate sqlite-specific BuildXxx method).
+//
+//nolint:dupl,funlen // Intentionally mirrors buildSQLiteRepositories; keep the two lists comparable.
 func Build(dbtx persistence.DBTX) *Repositories {
 	r := &Repositories{
 		Tasks:                          postgres.NewTaskRepository(dbtx),
@@ -579,6 +597,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		HealingTrials:                  postgres.NewWorkflowHealingTrialRepository(dbtx),
 		MemoryPolicyEvaluations:        postgres.NewMemoryPolicyEvaluationRepository(dbtx),
 		LeaderLocks:                    postgres.NewLeaderLockRepository(dbtx),
+		ApplyJournal:                   postgres.NewApplyJournalRepository(dbtx),
 		ClusterNodes:                   postgres.NewClusterNodeRepository(dbtx),
 		ChannelSessions:                postgres.NewChannelSessionRepository(dbtx),
 		LiveEvents:                     postgres.NewExecutionLiveEventRepository(dbtx),

@@ -722,6 +722,10 @@ func TestSweepGlobal_DisabledShortCircuits(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal(0): %v", err)
@@ -766,6 +770,10 @@ func TestSweepGlobal_TableAbsentNoOp(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -806,6 +814,10 @@ func TestPreviewGlobal_CountsWithoutDelete(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.PreviewGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("PreviewGlobal: %v", err)
@@ -858,6 +870,10 @@ func TestSweepGlobal_DeleteRemovesRows(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 30, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -906,6 +922,10 @@ func TestSweepGlobal_UISessionsDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -946,6 +966,10 @@ func TestSweepGlobal_LinkCodesDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -985,6 +1009,10 @@ func TestSweepGlobal_APIKeysDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 0})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -1040,6 +1068,10 @@ func TestSweepGlobal_EmbeddingCacheDeleteRemovesRows(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -1080,6 +1112,10 @@ func TestSweepGlobal_EmbeddingCacheTableAbsentNoOp(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -1119,6 +1155,10 @@ func TestPreviewGlobal_EmbeddingCache(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.PreviewGlobal(context.Background(), GlobalPolicy{ResponseCacheDays: 0, EmbeddingCacheDays: 30})
 	if err != nil {
 		t.Fatalf("PreviewGlobal: %v", err)

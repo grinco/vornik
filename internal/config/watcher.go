@@ -339,6 +339,11 @@ type ConfigReloader struct {
 	// in-process caches too. nil = single-process behaviour
 	// (only the receiving instance reloads).
 	postReloadHook func()
+	// postReloadHooks are additional hooks (AddPostReloadHook) fired after
+	// postReloadHook, each isolated in its own recover. Added 2026-09-13 so
+	// a second subsystem (the config-assistant's consult toggle audit) can
+	// observe a successful reload without displacing the NOTIFY broadcast.
+	postReloadHooks []func()
 }
 
 // ActivationBlockedError indicates a staged config is valid but cannot be activated yet.
@@ -397,6 +402,18 @@ func (r *ConfigReloader) SetMetrics(m *Metrics) {
 // up; this is at-most-once + best-effort).
 func (r *ConfigReloader) SetPostReloadHook(fn func()) {
 	r.postReloadHook = fn
+}
+
+// AddPostReloadHook registers an additional post-reload hook. Hooks run
+// in registration order after SetPostReloadHook's, each isolated in a
+// recover; none may block the reload path.
+func (r *ConfigReloader) AddPostReloadHook(fn func()) {
+	if fn == nil {
+		return
+	}
+	r.mu.Lock()
+	r.postReloadHooks = append(r.postReloadHooks, fn)
+	r.mu.Unlock()
 }
 
 // watchReloadBound caps how long a watcher-triggered reload may hold the scan
@@ -575,6 +592,7 @@ func (r *ConfigReloader) finishReloadSuccess(start time.Time) {
 	r.blockedReason = ""
 	successAt := r.lastReload
 	hook := r.postReloadHook
+	extra := append([]func(){}, r.postReloadHooks...)
 	r.mu.Unlock()
 	// Successful cycle: 0 validation errors, no staged-pending.
 	r.metrics.observeReload(true, 0, false, successAt)
@@ -585,6 +603,9 @@ func (r *ConfigReloader) finishReloadSuccess(start time.Time) {
 	// to peers"). Best-effort: a panicking hook would otherwise
 	// poison the return path, so isolate it in a recover.
 	if hook != nil {
+		extra = append([]func(){hook}, extra...)
+	}
+	for _, h := range extra {
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -593,7 +614,7 @@ func (r *ConfigReloader) finishReloadSuccess(start time.Time) {
 						Msg("config reload: postReloadHook panicked; ignoring")
 				}
 			}()
-			hook()
+			h()
 		}()
 	}
 }

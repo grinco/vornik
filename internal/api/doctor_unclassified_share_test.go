@@ -3,6 +3,8 @@ package api
 import (
 	"strings"
 	"testing"
+
+	"vornik.io/vornik/internal/config"
 )
 
 // Finding D of docs/audits/2026-08-26-silent-controls-audit.md: a control with
@@ -16,14 +18,14 @@ import (
 // check that could not evaluate reports SKIPPED, never OK. An empty window is
 // not a healthy classifier — it is no evidence at all.
 func TestUnclassifiedShare_EmptyWindowIsSkippedNotOK(t *testing.T) {
-	got := evaluateUnclassifiedShare(0, 0, 0.15)
+	got := evaluateUnclassifiedShare(0, 0, defaultShare(0.15), defaultWindow())
 	if got.Status != "SKIPPED" {
 		t.Fatalf("a window with no failed steps must be SKIPPED, got %q (%s)", got.Status, got.Message)
 	}
 }
 
 func TestUnclassifiedShare_AboveThresholdWarns(t *testing.T) {
-	got := evaluateUnclassifiedShare(40, 100, 0.15)
+	got := evaluateUnclassifiedShare(40, 100, defaultShare(0.15), defaultWindow())
 	if got.Status != "WARNING" {
 		t.Fatalf("40%% unclassified against a 15%% threshold must WARN, got %q", got.Status)
 	}
@@ -37,7 +39,7 @@ func TestUnclassifiedShare_AboveThresholdWarns(t *testing.T) {
 }
 
 func TestUnclassifiedShare_BelowThresholdIsOK(t *testing.T) {
-	got := evaluateUnclassifiedShare(9, 100, 0.15)
+	got := evaluateUnclassifiedShare(9, 100, defaultShare(0.15), defaultWindow())
 	if got.Status != "OK" {
 		t.Fatalf("9%% against a 15%% threshold must be OK, got %q", got.Status)
 	}
@@ -47,7 +49,7 @@ func TestUnclassifiedShare_BelowThresholdIsOK(t *testing.T) {
 // when the check passes. A green check that hides its coverage is the defect
 // this whole class is about.
 func TestUnclassifiedShare_OKStillPublishesTheDenominator(t *testing.T) {
-	got := evaluateUnclassifiedShare(9, 100, 0.15)
+	got := evaluateUnclassifiedShare(9, 100, defaultShare(0.15), defaultWindow())
 	if !strings.Contains(got.Message, "100") {
 		t.Errorf("a passing check must still publish its denominator: %q", got.Message)
 	}
@@ -56,7 +58,7 @@ func TestUnclassifiedShare_OKStillPublishesTheDenominator(t *testing.T) {
 // Exactly at the threshold is not over it. Chosen deliberately so a threshold
 // set to the measured steady state does not warn permanently.
 func TestUnclassifiedShare_AtThresholdDoesNotWarn(t *testing.T) {
-	got := evaluateUnclassifiedShare(15, 100, 0.15)
+	got := evaluateUnclassifiedShare(15, 100, defaultShare(0.15), defaultWindow())
 	if got.Status != "OK" {
 		t.Fatalf("exactly at the threshold must not warn, got %q (%s)", got.Status, got.Message)
 	}
@@ -65,11 +67,50 @@ func TestUnclassifiedShare_AtThresholdDoesNotWarn(t *testing.T) {
 // Zero unclassified in a window that HAD failures is a real, reportable
 // result — distinct from the empty window above.
 func TestUnclassifiedShare_ZeroOfManyIsOKNotSkipped(t *testing.T) {
-	got := evaluateUnclassifiedShare(0, 271, 0.15)
+	got := evaluateUnclassifiedShare(0, 271, defaultShare(0.15), defaultWindow())
 	if got.Status != "OK" {
 		t.Fatalf("zero unclassified of 271 failures is OK, got %q", got.Status)
 	}
 	if got.Status == "SKIPPED" {
 		t.Fatal("a window with failures is evidence, not an absence of it")
+	}
+}
+
+// defaultShare / defaultWindow wrap a bare number in the resolved form the
+// check now takes. They report UNCONFIGURED, which is what a test fixture
+// honestly is — the provenance half is asserted by its own test below rather
+// than smuggled into every existing case.
+func defaultShare(f float64) config.ResolvedFloat { return config.ResolvedFloat{Value: f} }
+func defaultWindow() config.ResolvedInt {
+	return config.ResolvedInt{Value: config.DefaultUnclassifiedShareWindowDays}
+}
+
+// THE PROVENANCE IS THE POINT of making these tunable. A threshold that does
+// not suit a deployment used to be invisible: the check warned permanently or
+// never warned, and neither read as misconfiguration. Rendering which source
+// supplied the bound is what makes a mis-set (or mis-spelt) key visible.
+func TestUnclassifiedShare_MessageNamesWhereTheThresholdCameFrom(t *testing.T) {
+	fromDefault := evaluateUnclassifiedShare(1, 100, config.ResolvedFloat{Value: 0.05}, defaultWindow())
+	if !strings.Contains(fromDefault.Message, "threshold 5% (default)") {
+		t.Errorf("a compiled default must say so: %q", fromDefault.Message)
+	}
+
+	configured := evaluateUnclassifiedShare(1, 100, config.ResolvedFloat{Value: 0.25, Configured: true},
+		config.ResolvedInt{Value: 7, Configured: true})
+	if !strings.Contains(configured.Message, "threshold 25% (configured)") {
+		t.Errorf("an operator-set threshold must say so: %q", configured.Message)
+	}
+	if !strings.Contains(configured.Message, "7 days (configured)") {
+		t.Errorf("the window carries its provenance too: %q", configured.Message)
+	}
+}
+
+// The SKIPPED path renders the window as well — an operator whose window is too
+// short to catch anything must be able to see that from the check that told
+// them there was nothing to measure.
+func TestUnclassifiedShare_SkippedMessageCarriesTheWindow(t *testing.T) {
+	got := evaluateUnclassifiedShare(0, 0, defaultShare(0.05), config.ResolvedInt{Value: 3, Configured: true})
+	if !strings.Contains(got.Message, "last 3 days (configured)") {
+		t.Errorf("SKIPPED must name the window it looked at: %q", got.Message)
 	}
 }

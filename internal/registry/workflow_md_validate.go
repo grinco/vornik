@@ -300,6 +300,10 @@ func appendWorkflowSchemaFindings(report *WorkflowMDValidationReport, content []
 			Message:  err.Error(),
 		})
 	}
+	// An authoring-ergonomics WARNING rather than a schema rejection — see
+	// workflow_onfail_connector.go for why the rule is advisory and why it is
+	// scoped to steps reachable only as a recovery target.
+	appendOnFailConnectorFindings(report, wf)
 }
 
 func ValidateWorkflowMarkdown(content []byte, filename string) *WorkflowMDValidationReport {

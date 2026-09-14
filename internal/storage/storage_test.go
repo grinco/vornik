@@ -65,26 +65,14 @@ func TestOpen_SQLiteReturnsRepositories(t *testing.T) {
 	if backend.Repos == nil {
 		t.Fatal("backend.Repos is nil")
 	}
-	// postgresOnly lists Repositories fields the SQLite branch
-	// intentionally leaves nil — no SQLite mirror exists for them.
-	// Identity (migration 90 identity core) is postgres-only per
-	// oidc-identity-permissions-design.md / the Phase-2 plan: the
-	// identity tables ship on Postgres alongside most of the schema,
-	// and authz (its only consumer) runs against the Postgres backend.
-	postgresOnly := map[string]bool{
-		"Identity":   true,
-		"UISessions": true,
-	}
+	// Every repository field is non-nil on SQLite. Identity and UISessions
+	// were the last postgres-only holdouts (nil here until the 2026-09-13
+	// identity-core parity, config-assistant plan §2 / review R1); a nil
+	// field now means a backend branch forgot to wire a repository.
 	rv := reflect.ValueOf(*backend.Repos)
 	for i := 0; i < rv.NumField(); i++ {
 		field := rv.Field(i)
 		name := rv.Type().Field(i).Name
-		if postgresOnly[name] {
-			if !field.IsNil() {
-				t.Errorf("Repositories.%s should be nil on SQLite (postgres-only), got non-nil", name)
-			}
-			continue
-		}
 		if field.IsNil() {
 			t.Errorf("Repositories.%s is nil on SQLite", name)
 		}

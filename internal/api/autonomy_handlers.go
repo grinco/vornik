@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -619,36 +620,43 @@ func (s *Server) GetAutonomyHealth(w http.ResponseWriter, r *http.Request) {
 	if windowHrs > 24*30 {
 		windowHrs = 24 * 30 // cap at 30d to keep the aggregate cheap
 	}
+	payload, err := s.autonomyHealthPayload(r.Context(), project, projectID, windowHrs)
+	if err != nil {
+		s.logger.Error().Err(err).Str("project_id", projectID).Msg("autonomy health: aggregation failed")
+		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, payload)
+}
 
-	ctx := r.Context()
+// autonomyHealthPayload builds the autonomy/health table for one project.
+// Shared by GET /projects/{id}/autonomy/health and the configuration
+// assistant's evidence grounding (2026-09-13 design §4.1: the assistant
+// reads the health endpoint's own computation, never a second
+// implementation of the same measurement).
+func (s *Server) autonomyHealthPayload(ctx context.Context, project *registry.Project, projectID string, windowHrs int) (map[string]any, error) {
 	since := time.Now().UTC().Add(-time.Duration(windowHrs) * time.Hour)
 
 	rawCounts, err := s.autonomyEvalRepo.CountByOutcome(ctx, projectID, since, time.Time{})
 	if err != nil {
-		s.logger.Error().Err(err).Str("project_id", projectID).Msg("autonomy health: outcome count failed")
-		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to aggregate evaluations")
-		return
+		return nil, fmt.Errorf("failed to aggregate evaluations: %w", err)
 	}
 	outcomes := buildAutonomyOutcomesBlock(rawCounts)
 
 	feedsDeclared, feedsJSON, err := s.resolveAutonomyFeeds(ctx, project, projectID)
 	if err != nil {
-		s.logger.Error().Err(err).Str("project_id", projectID).Msg("autonomy health: task list for feed lag failed")
-		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load tasks for feed lag")
-		return
+		return nil, fmt.Errorf("failed to load tasks for feed lag: %w", err)
 	}
 
 	deliveryRows, truncated, judge, churn, unresolved, err := s.resolveAutonomyDelivery(ctx, projectID, since)
 	if err != nil {
-		s.logger.Error().Err(err).Str("project_id", projectID).Msg("autonomy health: delivery resolution failed")
-		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve delivery")
-		return
+		return nil, fmt.Errorf("failed to resolve delivery: %w", err)
 	}
 	if deliveryRows == nil {
 		deliveryRows = []autonomyDeliveryRow{}
 	}
 
-	respondJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"projectId":     projectID,
 		"windowHrs":     windowHrs,
 		"since":         since.Format(time.RFC3339),
@@ -665,5 +673,5 @@ func (s *Server) GetAutonomyHealth(w http.ResponseWriter, r *http.Request) {
 		},
 		"judge":      judge,
 		"routeChurn": churn,
-	})
+	}, nil
 }

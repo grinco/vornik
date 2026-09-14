@@ -12,7 +12,10 @@ import (
 )
 
 // fakeProposalRepo is a minimal ProposalRepository capturing Create calls.
+// The embedded interface promotes lookups the proposer never calls
+// (GetByIdempotencyKey) without declaring a second double for them.
 type fakeProposalRepo struct {
+	persistence.ProposalRepository
 	created []*persistence.ControlPlaneProposal
 	err     error
 }

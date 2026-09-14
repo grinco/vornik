@@ -34,14 +34,11 @@ import (
 )
 
 const (
-	// modelCallsLiveMinSamples is the smallest sample count worth judging. Below this,
-	// one or two bad calls should not trip an alarm — same reasoning as
-	// modelHealthMinSamples, and an operator who learns to ignore a noisy check is
-	// worse off than one with no check.
-	modelCallsLiveMinSamples = 5
-	// modelCallsLiveFailureRate is the failed fraction at/above which a
-	// (model, call_site) pair is flagged.
-	modelCallsLiveFailureRate = 0.5
+	// The sample floor and the failure rate are `doctor.thresholds` keys as of
+	// 2026-09-13, SHARED with model_health rather than duplicated: the two
+	// checks read the same question (is this model failing?) off different
+	// evidence, and two knobs for one judgement is an invitation for a
+	// deployment to answer it two ways.
 	// modelCallsLiveMaxReported bounds the rendered list so one broken gateway cannot
 	// produce a wall of text. Snapshot is sorted worst-first, so the cap keeps the
 	// entries that matter.
@@ -65,6 +62,7 @@ func (h *DoctorHandlers) checkModelCallsLive() DoctorCheck {
 		}
 	}
 
+	th := h.doctorThresholds()
 	var (
 		flagged  []string
 		assessed int
@@ -74,11 +72,11 @@ func (h *DoctorHandlers) checkModelCallsLive() DoctorCheck {
 	for _, s := range snap {
 		total += s.Calls
 		failures += s.Failures
-		if s.Calls < modelCallsLiveMinSamples {
+		if s.Calls < th.ModelMinSamples.Value {
 			continue
 		}
 		assessed++
-		if s.FailureRate() < modelCallsLiveFailureRate {
+		if s.FailureRate() < th.ModelFailureRate.Value {
 			continue
 		}
 		entry := fmt.Sprintf("%s via %s: %d/%d calls failing (%.0f%%)",
@@ -94,8 +92,8 @@ func (h *DoctorHandlers) checkModelCallsLive() DoctorCheck {
 			Name:   name,
 			Status: "OK",
 			Message: fmt.Sprintf(
-				"%d model/call-site pair(s) assessed since daemon start, %d call(s) total, %d failed — none above the %.0f%% failure threshold",
-				assessed, total, failures, modelCallsLiveFailureRate*100),
+				"%d model/call-site pair(s) assessed since daemon start, %d call(s) total, %d failed — none above the %.0f%% failure threshold (%s)",
+				assessed, total, failures, th.ModelFailureRate.Value*100, th.ModelFailureRate.Source()),
 		}
 	}
 

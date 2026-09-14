@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"vornik.io/vornik/internal/apikey"
 	"vornik.io/vornik/internal/artifacts"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/config"
@@ -39,99 +38,12 @@ import (
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/speedprofile"
 	"vornik.io/vornik/internal/storage"
+	"vornik.io/vornik/internal/taskkeys"
 	"vornik.io/vornik/internal/templates"
 	"vornik.io/vornik/internal/toolbudget"
 	"vornik.io/vornik/internal/verifier"
 	"vornik.io/vornik/internal/watchdog"
 )
-
-// taskKeyMinter implements executor.APIKeyMinter over the api_keys
-// repository. One struct per daemon; the executor calls it on every
-// container start.
-type taskKeyMinter struct{ repo persistence.APIKeyRepository }
-
-// MintTaskKey generates a fresh project-scoped key, persists only the
-// hash (never the raw key), and returns the raw key to the executor for
-// injection into the container's VORNIK_API_KEY env var.
-//
-// Key invariants:
-//   - client_kind is intentionally EMPTY — a non-empty client_kind would
-//     route the key through the companion-path allowlist in middleware.go
-//     (~line 382), blocking every internal agent call. Agent task keys
-//     are identified by Name alone: "agent:task_<taskID>".
-//   - expires_at is now+48h as belt-and-braces; the primary lifecycle is
-//     the RevokeTaskKey call at step teardown.
-func (m *taskKeyMinter) MintTaskKey(ctx context.Context, projectID, taskID string) (string, error) {
-	raw, err := apikey.Generate(projectID)
-	if err != nil {
-		return "", err
-	}
-	exp := time.Now().UTC().Add(48 * time.Hour)
-	err = m.repo.Create(ctx, &persistence.APIKey{
-		ID:        persistence.GenerateID("key"),
-		ProjectID: projectID,
-		Name:      persistence.TaskKeyNamePrefix + taskID,
-		KeyHash:   apikey.Hash(raw),
-		KeyPrefix: apikey.DisplayPrefix(raw),
-		ExpiresAt: &exp,
-		CreatedBy: "executor",
-		CreatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		return "", err
-	}
-	return raw, nil
-}
-
-// RevokeTaskKey revokes the key named "agent:task_<taskID>". Uses
-// RevokeByName so the caller doesn't need the key ID. Idempotent —
-// zero-row UPDATE is not an error.
-func (m *taskKeyMinter) RevokeTaskKey(ctx context.Context, taskID string) error {
-	return m.repo.RevokeByName(ctx, persistence.TaskKeyNamePrefix+taskID)
-}
-
-// warmAgentKeyNamePrefix is the reserved APIKey.Name prefix for
-// project-scoped warm-pool agent credentials (Finding B1(b)). The
-// (project, role) tuple is appended so each pool gets a stable,
-// distinguishable key. Deliberately NOT persistence.TaskKeyNamePrefix:
-// warm keys are project-scoped, not task-scoped, so they must not match
-// persistence.TaskIDFromKeyName (which would otherwise make the audit
-// handlers and CallMCPTool treat a warm key as bound to a bogus task ID).
-const warmAgentKeyNamePrefix = "agent:warm_"
-
-// MintProjectScopedKey generates a fresh PROJECT-scoped key for a
-// warm-pool container (Finding B1(b)) and persists only the hash. Unlike
-// MintTaskKey the key is not bound to any task — warm containers are
-// baked once and reused across tasks, so a project-scoped credential
-// (pools are keyed per project/role) is the tightest scope achievable
-// without restarting the container per task. expires_at is now+48h;
-// warm keys are reused for the pool's lifetime and a stale key simply
-// expires (a new one is minted on the next cold start).
-//
-// Invariants match MintTaskKey: empty client_kind (a non-empty value
-// routes through the companion-path allowlist in middleware.go and
-// blocks every internal agent call).
-func (m *taskKeyMinter) MintProjectScopedKey(ctx context.Context, projectID, role string) (string, error) {
-	raw, err := apikey.Generate(projectID)
-	if err != nil {
-		return "", err
-	}
-	exp := time.Now().UTC().Add(48 * time.Hour)
-	err = m.repo.Create(ctx, &persistence.APIKey{
-		ID:        persistence.GenerateID("key"),
-		ProjectID: projectID,
-		Name:      warmAgentKeyNamePrefix + projectID + ":" + role,
-		KeyHash:   apikey.Hash(raw),
-		KeyPrefix: apikey.DisplayPrefix(raw),
-		ExpiresAt: &exp,
-		CreatedBy: "executor-warm",
-		CreatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		return "", err
-	}
-	return raw, nil
-}
 
 // warnAgentLLMDirectRoute logs a startup breakage warning when agents would
 // route their minted per-task key direct to the upstream (topology 1).
@@ -465,7 +377,7 @@ func (c *Container) initScheduler() error {
 		// static-key-only path (no repo at all) leaves this nil.
 		executor.WithAPIKeyMinter(func() executor.APIKeyMinter {
 			if c.repos != nil && c.repos.APIKeys != nil {
-				return &taskKeyMinter{repo: c.repos.APIKeys}
+				return taskkeys.New(c.repos.APIKeys)
 			}
 			return nil
 		}()),

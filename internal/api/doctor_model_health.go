@@ -42,6 +42,8 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/registry"
+
+	"vornik.io/vornik/internal/config"
 )
 
 const (
@@ -50,12 +52,12 @@ const (
 	// modelHealthRowCap bounds the per-model aggregation scan so a busy
 	// deployment can't turn the check into a table sweep.
 	modelHealthRowCap = 50000
-	// modelHealthMinSamples is the smallest sample count we'll judge a model
-	// on — below this, one or two bad calls shouldn't trip an alarm.
-	modelHealthMinSamples = 5
-	// modelHealthFailureRate is the recent step-failure fraction at/above
-	// which a model is flagged.
-	modelHealthFailureRate = 0.5
+	// The sample floor and the failure rate moved to `doctor.thresholds`
+	// (2026-09-13) — config.DefaultModelMinSamples and
+	// config.DefaultModelFailureRate are the same numbers this check shipped
+	// with. They are shared with model_calls_live deliberately: it is ONE
+	// judgement about what "a model is failing" means, and two copies of one
+	// judgement is how the two checks would come to disagree.
 	// modelHealthDegenerateTokens is the median completion-token count below
 	// which a model's output is considered degenerate (empty/near-empty).
 	modelHealthDegenerateTokens = 10
@@ -268,7 +270,7 @@ func (h *DoctorHandlers) checkModelHealth(ctx context.Context) DoctorCheck {
 		}
 	}
 
-	findings := evalModelHealth(scoped, fallbacks)
+	findings := evalModelHealth(scoped, fallbacks, h.doctorThresholds())
 	if len(findings) == 0 {
 		// Scope named explicitly: see modelHealthHealthySummary for why the previous
 		// wording misled an operator through a live outage on 2026-07-30.
@@ -324,15 +326,15 @@ func collectModelFallbacks(swarms []*registry.Swarm) (referenced map[string]bool
 // evalModelHealth scores each stat and returns a finding per unhealthy model.
 // Pure — directly unit-testable. fallbacks maps model → its recommended
 // fallback ("" = none configured).
-func evalModelHealth(stats []modelHealthStat, fallbacks map[string]string) []modelHealthFinding {
+func evalModelHealth(stats []modelHealthStat, fallbacks map[string]string, th config.ResolvedDoctorThresholds) []modelHealthFinding {
 	var findings []modelHealthFinding
 	for _, s := range stats {
-		if s.samples < modelHealthMinSamples {
+		if s.samples < th.ModelMinSamples.Value {
 			continue
 		}
 		failRate := float64(s.failures) / float64(s.samples)
 		degenerate := s.medianCompletionTokens < modelHealthDegenerateTokens
-		highFail := failRate >= modelHealthFailureRate
+		highFail := failRate >= th.ModelFailureRate.Value
 		if !highFail && !degenerate {
 			continue
 		}

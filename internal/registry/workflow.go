@@ -107,6 +107,10 @@ type Workflow struct {
 	// contract. It is captured in WorkflowSnapshot at execution start, so a
 	// later config reload cannot reinterpret already-produced evidence.
 	QualityScoring *quality.ScoringPolicy `yaml:"qualityScoring,omitempty"`
+	// ConfigAssistantEnabled is the configuration assistant's per-subject
+	// kill switch for this workflow (design §8.2): explicit false disables;
+	// absent leaves it enabled.
+	ConfigAssistantEnabled *bool `yaml:"config_assistant_enabled,omitempty"`
 	// ResumeAfterChildren opts a custom workflow into the strict-adaptive
 	// resume guard: when a step delegates child task(s) (selected_workflow)
 	// and the parent pauses on WAITING_FOR_CHILDREN, the resumed execution

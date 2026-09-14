@@ -146,6 +146,38 @@ func TestGenericPath_NoCoordinator_StillCreatesTask(t *testing.T) {
 	assert.Equal(t, 1, taskRepo.CallCount.Create)
 }
 
+// THE GAP THIS INGRESS HAD (BACKLOG 2026-09-03, closed 2026-09-13). The push
+// off-switch and the draft opt-in were fields on the GitHub App channel's
+// installation config and reached only that door, so on this one — the relay
+// ingress the deployment actually uses — an operator who wanted "review on
+// open, never on push" had the per-PR `pause` command, re-issued by hand on
+// every new pull request, or a source event filter that also drops the
+// deliveries carrying comment commands.
+//
+// The rule now lives on the shared coordinator, so it arrives here as an
+// ordinary Skip with a reason the delivery records.
+func TestGenericPath_AutoReviewOnPushDisabled_FiltersThePush(t *testing.T) {
+	coord := &stubCoordinator{decision: forgereview.Decision{Skip: true, Reason: "auto_review_on_push_disabled"}}
+	rec, taskRepo := serveWebhook(t, reviewForgeJob(), coord)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 0, taskRepo.CallCount.Create, "a push must create no task when the project switched the push trigger off")
+	assert.Contains(t, rec.Body.String(), "auto_review_on_push_disabled",
+		"the delivery must say WHY it was filtered; a silent drop is indistinguishable from a lost webhook")
+}
+
+// With NO coordinator at all the policy still applies, at its defaults: the
+// coalescing half degrades to always-enqueue, but a draft is not reviewed.
+// Anything else would make an unwired node the most expensive one.
+func TestGenericPath_NoCoordinator_StillAppliesTheDefaultPolicy(t *testing.T) {
+	job := reviewForgeJob()
+	job.Action = "opened"
+	job.IsDraft = true
+	rec, taskRepo := serveWebhook(t, job, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 0, taskRepo.CallCount.Create, "a draft must not be reviewed by default, coordinator or not")
+	assert.Contains(t, rec.Body.String(), "draft_not_reviewed")
+}
+
 // A non-forge delivery must not reach the coordinator at all.
 func TestGenericPath_NonChangeRequest_SkipsTheCoordinator(t *testing.T) {
 	job := forgeapi.ForgeJob{Provider: forgeapi.ProviderGitHub, Repo: "acme/api", Number: 7, Action: "labeled"}

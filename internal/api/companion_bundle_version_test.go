@@ -45,7 +45,7 @@ var companionBundles = map[string]bundleBaseline{
 		manifest:        "../../contrib/codex-companion/.codex-plugin/plugin.json",
 		baselineVersion: "0.18.0+codex.20260904",
 		skill:           "../../contrib/codex-companion/skills/delegate/SKILL.md",
-		skillSHA256:     "14c7d25fb55eaffda97b00e9993d4f1a18ebd77597862f0b25ce25aec8e2e0c6",
+		skillSHA256:     "0f74b592f2112fe128ffc15bbf2bc724b3f6517bb63233030579411125ce50af",
 	},
 }
 

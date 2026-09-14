@@ -1,0 +1,90 @@
+{{define "operator_assist.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                {{template "navIconAdmin"}}
+                <h1 class="text-xl font-semibold text-gray-100">Configuration assistant</h1>
+                <a href="/ui/admin/control-plane?section=proposals" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">Proposals →</a>
+            </div>
+
+            <p class="text-xs text-gray-500">
+                Describe a change to a project's autonomy settings, swarm or workflows in plain language. The assistant edits a private, secret-sanitized copy of the configuration, validates the result with the daemon's own loaders, classifies its blast radius, has a separate judge model check it, and files a <strong>proposal</strong> for you to approve. Nothing is written to the live configuration here. Classes C, D and E never auto-apply; class E needs your explicit approval and shows the effective permission diff.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                The configuration assistant is not wired on this deployment. Enable it with <code class="font-mono">vornikctl doctor feature enable config-assistant</code>.
+            </div>
+            {{else}}
+            <form method="post" action="/ui/operator/assist" class="glass rounded-xl border border-dark-700 px-4 py-4 space-y-3">
+                <div class="flex flex-wrap items-end gap-3">
+                    <div class="flex flex-col gap-1">
+                        <label for="assist-project" class="text-xs text-gray-500 uppercase tracking-wider">Project</label>
+                        <select id="assist-project" name="project" required class="bg-dark-800 border border-dark-600 rounded-md px-2 py-1 text-sm text-gray-100">
+                            {{range .Projects}}<option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>{{end}}
+                        </select>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label for="assist-intent" class="text-xs text-gray-500 uppercase tracking-wider">What should change?</label>
+                    <textarea id="assist-intent" name="intent" rows="3" required placeholder="e.g. the czech-news feed feels stale — look at its measured lag and propose a cadence" class="bg-dark-800 border border-dark-600 rounded-md px-2 py-1 text-sm text-gray-100">{{.Intent}}</textarea>
+                </div>
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Ask the assistant</button>
+            </form>
+            {{end}}
+
+            {{if .Error}}
+            <div class="glass rounded-xl border border-red-700/50 bg-red-900/20 px-4 py-2.5 text-sm text-red-200">{{.Error}}</div>
+            {{end}}
+
+            {{with .Result}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-3 border-b border-dark-700/50 flex flex-wrap items-center gap-3">
+                    <span class="text-xs text-gray-500 font-mono">{{.RequestID}}</span>
+                    {{if .Refusal}}
+                    <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-red-900/50 text-red-700 dark:text-red-300">refused · {{.Refusal.Code}}</span>
+                    {{else}}
+                    <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-blue-900/50 text-blue-700 dark:text-blue-300">class {{.Class}}</span>
+                    {{if .Verdict}}{{if .Verdict.Judged}}
+                    <span class="px-2 py-0.5 text-xs font-mono rounded-md {{if eq .Verdict.Decision "pass"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300{{else}}bg-amber-900/50 text-amber-700 dark:text-amber-300{{end}}">judge: {{.Verdict.Decision}}</span>
+                    {{else}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-700 dark:text-amber-300">NOT JUDGED</span>{{end}}{{end}}
+                    {{if .AutoApplied}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/50 text-emerald-700 dark:text-emerald-300">auto-applied</span>{{end}}
+                    {{if .Duplicate}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-300">replay</span>{{end}}
+                    {{end}}
+                </div>
+                <div class="px-4 py-3 space-y-3 text-sm">
+                    {{if .Refusal}}
+                    <div class="text-red-200">{{.Refusal.Message}}</div>
+                    {{range .Refusal.Findings}}<div class="text-xs font-mono text-gray-400">· {{.}}</div>{{end}}
+                    {{else}}
+                    {{if .Proposal}}
+                    <div>Proposal <a href="/ui/admin/control-plane?section=proposals" class="font-mono text-brand-400 hover:text-brand-300">{{.Proposal.ID}}</a> · {{.Proposal.Status}} · <span class="text-gray-400">{{.Proposal.Title}}</span></div>
+                    {{end}}
+                    {{if .Summary}}<div class="text-gray-300">{{.Summary}}</div>{{end}}
+                    {{if .Verdict}}{{if .Verdict.Judged}}<div class="text-xs text-gray-400">Judge ({{.Verdict.Model}}): {{.Verdict.Summary}}</div>{{else}}<div class="text-xs text-amber-300">Not judged: {{.Verdict.Reason}}</div>{{end}}{{end}}
+                    {{if not .HasEvidence}}<div class="text-xs text-gray-500">No measurement supports this change — a requested change, not an evidence-driven one.</div>{{end}}
+                    {{if .Permissions}}
+                    <div class="text-xs">
+                        <div class="text-amber-300 uppercase tracking-wider">Effective permission diff — confirm the subject before approving</div>
+                        {{range .Permissions}}<div class="font-mono text-gray-300">{{.Subject}} gains: {{if .Gains}}{{range $i, $g := .Gains}}{{if $i}}, {{end}}{{$g}}{{end}}{{else}}nothing{{end}}; loses: {{if .Loses}}{{range $i, $l := .Loses}}{{if $i}}, {{end}}{{$l}}{{end}}{{else}}nothing{{end}}</div>{{end}}
+                    </div>
+                    {{end}}
+                    {{range .Ignored}}<div class="text-xs text-amber-300">Ignored deletion attempt: <span class="font-mono">{{.}}</span></div>{{end}}
+                    {{if .Diff}}<pre class="text-xs font-mono bg-dark-950 border border-dark-700 rounded-md p-3 overflow-x-auto whitespace-pre">{{.Diff}}</pre>{{end}}
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1487,10 +1487,57 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
     live_apply         INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL,
     decided_at         TEXT,
-    applied_at         TEXT
+    applied_at         TEXT,
+    -- Postgres migration 185 — identifier + actor columns (config-assistant
+    -- plan §7g). Nullable, no backfill; also in sqliteAdditiveColumns.
+    request_id          TEXT,
+    idempotency_key     TEXT,
+    door                TEXT,
+    actor_kind          TEXT,
+    actor_account_id    TEXT,
+    actor_credential_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cp_proposals_status ON control_plane_proposals (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cp_proposals_project ON control_plane_proposals (project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cp_proposals_idempotency_key
+    ON control_plane_proposals (idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- ============================================================
+-- config_apply_journal — durable multi-file config apply (LLD
+-- 2026-09-13-config-apply-journal-design §2). Postgres parity: migration
+-- 184. PREPARED is committed before the first file write; the unique
+-- partial index is "one open journal per proposal"; DRIFT rows stay open
+-- (terminal_at NULL) until an operator resolves them. pre_images holds
+-- REAL pre-apply bytes — operator scope only, never surfaced.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS config_apply_journal (
+    id                 TEXT PRIMARY KEY,
+    proposal_id        TEXT NOT NULL,
+    request_id         TEXT,
+    state              TEXT NOT NULL CHECK (state IN (
+                         'PREPARED','APPLYING','VERIFYING','APPLIED',
+                         'PENDING_RESTART','REVERTING','REVERTED',
+                         'DRIFT','FAILED')),
+    op_digest          TEXT NOT NULL,
+    schema_version     INTEGER NOT NULL,
+    deployment_root    TEXT NOT NULL,
+    affected_projects  TEXT NOT NULL,
+    writer_epoch       INTEGER NOT NULL,
+    ops                TEXT NOT NULL,
+    pre_images         TEXT NOT NULL,
+    read_set           TEXT NOT NULL,
+    progress           TEXT NOT NULL DEFAULT '[]',
+    generation_before  TEXT,
+    generation_after   TEXT,
+    failure            TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    terminal_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_config_apply_journal_open ON config_apply_journal (state)
+    WHERE terminal_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_config_apply_journal_open_proposal
+    ON config_apply_journal (proposal_id) WHERE terminal_at IS NULL;
 
 -- ============================================================
 -- cost_tuning_canaries — cost/quality canary + regression auto-rollback
@@ -1808,4 +1855,103 @@ CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_project_time
     ON execution_quality_scores (project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_workflow_time
     ON execution_quality_scores (workflow_id, recorded_at DESC);
+-- ============================================================
+-- identity core — users, groups, memberships, channel bindings,
+-- link codes and browser sessions. Postgres migrations 90 + 91 (and
+-- 183 for access_revoked_at); SQLite parity landed 2026-09-13
+-- (config-assistant plan §2, review amendment R1). Column-for-column
+-- translation per the header rules: TIMESTAMPTZ → TEXT ISO-8601, no
+-- NOW() defaults (the repositories pass the clock), partial indexes
+-- kept, COMMENT ON folded into these comments.
+--
+-- The DSN opens with foreign_keys(OFF), so the ON DELETE CASCADE
+-- clauses below document intent only — nothing in the repositories
+-- relies on cascade.
+-- ============================================================
+
+-- Human principals (oidc-identity-permissions-design.md §3.1).
+-- Machine credentials stay in api_keys.
+CREATE TABLE IF NOT EXISTS users (
+    id                 TEXT PRIMARY KEY,
+    display_name       TEXT NOT NULL,
+    created_at         TEXT NOT NULL,
+    disabled_at        TEXT,
+    -- Postgres migration 183 — deliberate access revocation marker
+    -- (2026-09-13 review R3): stamped by RemoveUserAccess, cleared by
+    -- SetUserAccess, so bootstrap never re-grants what an admin revoked.
+    access_revoked_at  TEXT
+);
+
+-- Permission groups: role admin = instance-wide; role user = scoped by
+-- group_projects.
+CREATE TABLE IF NOT EXISTS groups (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    role          TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    description   TEXT,
+    created_at    TEXT NOT NULL
+);
+
+-- role=admin groups ignore this table; project_id '*' = all projects
+-- for user-role groups.
+CREATE TABLE IF NOT EXISTS group_projects (
+    group_id      TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    project_id    TEXT NOT NULL,
+    PRIMARY KEY (group_id, project_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id      TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members (user_id);
+
+-- Channel bindings (google|github|microsoft|gitlab|telegram|slack|...).
+-- UNIQUE(channel, external_id) spans revoked rows: rebinding repoints
+-- the existing row.
+CREATE TABLE IF NOT EXISTS user_identities (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel       TEXT NOT NULL,
+    external_id   TEXT NOT NULL,
+    display       TEXT,
+    created_at    TEXT NOT NULL,
+    last_used_at  TEXT,
+    revoked_at    TEXT,
+    UNIQUE (channel, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities (user_id);
+
+-- Self-service channel-link codes. Raw codes are never stored — sha256
+-- only, same hygiene as api_keys.key_hash.
+CREATE TABLE IF NOT EXISTS link_codes (
+    code_hash             TEXT PRIMARY KEY,
+    user_id               TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at            TEXT NOT NULL,
+    expires_at            TEXT NOT NULL,
+    used_at               TEXT,
+    used_by_channel       TEXT,
+    used_by_external_id   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_link_codes_user ON link_codes (user_id);
+
+-- Browser login sessions (oidc-identity-permissions-design.md §4.3).
+-- The cookie carries the raw token; only its sha256 lands here.
+-- Sessions reference user_id and re-resolve permissions per request —
+-- no frozen permission snapshot.
+CREATE TABLE IF NOT EXISTS ui_sessions (
+    id            TEXT PRIMARY KEY,
+    token_hash    TEXT NOT NULL UNIQUE,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider      TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    revoked_at    TEXT,
+    ip            TEXT,
+    user_agent    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ui_sessions_hash ON ui_sessions (token_hash) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_ui_sessions_user ON ui_sessions (user_id);
 `

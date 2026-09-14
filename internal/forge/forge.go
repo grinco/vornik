@@ -107,6 +107,21 @@ type ForgeJob struct {
 	// comment, so a bot-authored command would let a review trigger another
 	// review. Callers must refuse to act on a job with this set.
 	AuthorIsBot bool `json:"author_is_bot,omitempty"`
+	// IsDraft reports that the change request is a DRAFT — work in progress
+	// that nobody has said is ready.
+	//
+	// SET BY THE PROVIDER, like AuthorIsBot and AuthorIsTrusted above, and for
+	// the same reason: draft is a provider-specific field while the rule built
+	// on it is not. The rule itself (suppress unless the project opted in, and
+	// never suppress the ready_for_review transition, which some deliveries
+	// still report as draft:true) lives with the other review-trigger rules in
+	// internal/forgereview, so both ingresses apply the same one.
+	//
+	// Carried on the job rather than acted on at classification time BECAUSE
+	// classification has no access to the project's config. Refusing there is
+	// what made `review_draft_prs` unreachable from the generic ingress.
+	IsDraft bool `json:"is_draft,omitempty"`
+
 	// Title and Body are the issue/CR text, carried so the agent can be given a
 	// clean spec (not the raw webhook JSON) and the change request gets a
 	// meaningful title/body instead of a bare "Fix #N".

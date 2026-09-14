@@ -666,10 +666,46 @@ func (r *IdentityRepository) setUserAccessWithExec(ctx context.Context, exec DBT
 		groupID, userID); err != nil {
 		return mapDBError(err)
 	}
+	// A grant is the admin's deliberate decision: clear the R3 revocation
+	// marker so provisioning may act on this user again (migration 183).
+	if _, err := exec.ExecContext(ctx, clearAccessRevokedSQL, userID); err != nil {
+		return mapDBError(err)
+	}
 	// Access changed → revoke the user's sessions so the new principal
 	// is resolved fresh on next request (mirrors SetGroupProjects).
 	return r.revokeSessionsForUserWithExec(ctx, exec, userID)
 }
+
+// stampAccessRevokedSQL / clearAccessRevokedSQL maintain
+// users.access_revoked_at, the "bootstrap must not re-grant deliberately
+// revoked access" marker (2026-09-13 config-assistant review R3, migration
+// 183). RemoveUserAccess stamps it as soon as the last-admin guard passes —
+// BEFORE the backing-group lookup — because the admin's decision is the
+// same whether or not a backing group happened to exist; SetUserAccess
+// clears it. The EE provisioning path reads it through its own accessor.
+const (
+	stampAccessRevokedSQL = `UPDATE users SET access_revoked_at = NOW() WHERE id = $1`
+	clearAccessRevokedSQL = `UPDATE users SET access_revoked_at = NULL WHERE id = $1`
+)
+
+// AccessRevokedAt implements persistence.AccessRevocationReader.
+func (r *IdentityRepository) AccessRevokedAt(ctx context.Context, userID string) (*time.Time, error) {
+	var at sql.NullTime
+	err := r.db.QueryRowContext(ctx, `SELECT access_revoked_at FROM users WHERE id = $1`, userID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, persistence.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if !at.Valid {
+		return nil, nil
+	}
+	t := at.Time
+	return &t, nil
+}
+
+var _ persistence.AccessRevocationReader = (*IdentityRepository)(nil)
 
 // RemoveUserAccess drops the user's backing-group membership (→ awaiting
 // access) and revokes their sessions, transactionally. No-op when the
@@ -699,11 +735,16 @@ func (r *IdentityRepository) removeUserAccessWithExec(ctx context.Context, exec 
 	if err := r.guardLastAdmin(ctx, exec, userID); err != nil {
 		return err
 	}
+	// R3 marker first: the deliberate revocation is recorded even when
+	// there is no backing-group membership to drop below.
+	if _, err := exec.ExecContext(ctx, stampAccessRevokedSQL, userID); err != nil {
+		return mapDBError(err)
+	}
 	var groupID string
 	err := exec.QueryRowContext(ctx,
 		`SELECT id FROM groups WHERE name = $1`, backingGroupName(userID)).Scan(&groupID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // no backing group → nothing to remove
+		return nil // no backing group → no membership to remove
 	}
 	if err != nil {
 		return mapDBError(err)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmjudge"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 )
@@ -212,7 +213,7 @@ func (j *LLMJudge) Evaluate(ctx context.Context, in JudgeInput) (*Verdict, *Judg
 	// drops on long-lived idle pools. Pre-fix the judge abstained
 	// on the first attempt — verdict tiles filled with
 	// "abstained: LLM error" rows that hid real signal.
-	resp, err := completeWithRetry(ctx, client, msgs, 3)
+	resp, err := llmjudge.CompleteJudgeWithRetry(ctx, client, msgs, 3)
 	if err != nil {
 		return abstainVerdict("LLM error: " + err.Error()), &JudgeMetrics{Model: j.Model}, nil
 	}
@@ -304,39 +305,21 @@ func (j *LLMJudge) formatEvidence(in JudgeInput) string {
 	return out
 }
 
-// parseVerdict tolerates models that wrap the JSON in code
-// fences or stick prefatory prose in front of it. Returns nil
-// on unrecoverable parse failure — the caller falls back to
-// abstain in that case.
+// parseVerdict is the hallucination-shaped wrapper over
+// llmjudge.ParseVerdict (the tolerant extraction — code fences,
+// prefatory prose, <think> blocks — lives there since the 2026-09-13
+// extraction so the configuration assistant's judge shares it). This
+// wrapper re-reads the raw JSON into the package's own Verdict so the
+// per-claim Signals survive, and stamps RecordedAt. Returns nil on
+// unrecoverable parse failure — the caller falls back to abstain in
+// that case.
 func parseVerdict(text string) *Verdict {
-	if text == "" {
+	_, _, _, raw, ok := llmjudge.ParseVerdict(text)
+	if !ok {
 		return nil
 	}
-	t := strings.TrimSpace(text)
-	// Strip <think>…</think> blocks emitted by reasoning models
-	// (nvidia.nemotron-nano-*, deepseek-r1, etc.). The block can
-	// itself contain `{` / `}` which would otherwise confuse the
-	// "find first {" extraction below. Multiple blocks possible.
-	t = stripThinkBlocks(t)
-	// Trim code fences and any leading non-JSON text.
-	if i := strings.Index(t, "{"); i > 0 {
-		t = t[i:]
-	}
-	if i := strings.LastIndex(t, "}"); i >= 0 && i < len(t)-1 {
-		t = t[:i+1]
-	}
-	t = strings.TrimPrefix(t, "```json")
-	t = strings.TrimPrefix(t, "```")
-	t = strings.TrimSuffix(t, "```")
-	t = strings.TrimSpace(t)
-
 	var v Verdict
-	if err := json.Unmarshal([]byte(t), &v); err != nil {
-		return nil
-	}
-	if v.Decision != persistence.JudgeVerdictPass &&
-		v.Decision != persistence.JudgeVerdictFail &&
-		v.Decision != persistence.JudgeVerdictAbstain {
+	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil
 	}
 	// Stamp RecordedAt on each signal so they persist with a
@@ -350,29 +333,6 @@ func parseVerdict(text string) *Verdict {
 	return &v
 }
 
-// stripThinkBlocks removes every <think>…</think> chain-of-
-// thought span from a model response. Reasoning models on
-// Bedrock (nvidia.nemotron-nano-*, deepseek.r1-*, qwen reasoning
-// variants) emit a <think> block before their final answer; the
-// block routinely contains JSON-like punctuation that breaks
-// the downstream "find first {" extraction. Tolerant of
-// unclosed blocks (truncated responses) — drops everything
-// after the opening tag in that case.
-func stripThinkBlocks(s string) string {
-	for {
-		open := strings.Index(s, "<think>")
-		if open < 0 {
-			return s
-		}
-		close := strings.Index(s[open:], "</think>")
-		if close < 0 {
-			// Unclosed — drop the open tag and everything after.
-			return strings.TrimSpace(s[:open])
-		}
-		s = s[:open] + s[open+close+len("</think>"):]
-	}
-}
-
 // abstainVerdict is the safe fallback for any judge failure —
 // LLM error, parse error, missing config. Renders as "abstain"
 // in the UI so the operator sees the judge ran but couldn't
@@ -381,97 +341,8 @@ func abstainVerdict(reason string) *Verdict {
 	return &Verdict{
 		Decision:   persistence.JudgeVerdictAbstain,
 		Confidence: 0.0,
-		Summary:    "judge abstained: " + reason,
+		Summary:    llmjudge.AbstainSummary(reason),
 	}
-}
-
-// completeWithRetry calls Complete up to maxAttempts times,
-// backing off between transient failures. "Transient" means:
-//
-//   - chat.GatewayError where Retryable() is true (5xx, 429)
-//   - net.OpError / syscall.ECONNRESET / "unexpected EOF" /
-//     other "connection dropped mid-request" shapes — captured
-//     by string match on the error message because the chat
-//     package's typed errors don't always wrap them
-//
-// Permanent errors (4xx other than 429, malformed-request errors,
-// auth failures) return immediately. Context cancellation also
-// returns immediately — no point retrying when the caller already
-// gave up.
-//
-// Backoff: 500ms, 2s, 8s. Capped at 3 attempts total. The whole
-// retry budget completes within ~10s so the judge's outer-context
-// timeout still bounds the overall call.
-func completeWithRetry(ctx context.Context, client chat.Provider, msgs []chat.Message, maxAttempts int) (*chat.ChatResponse, error) {
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-	// Attribute the judge's LLM calls in the llm-call log; without this they
-	// log call_site="unknown" (asked 2026-06-13).
-	ctx = chat.WithCallSite(ctx, "judge")
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, err := client.Complete(ctx, msgs)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-
-		// Caller cancelled — bail immediately, no retry.
-		if ctx.Err() != nil {
-			return nil, err
-		}
-
-		if attempt == maxAttempts {
-			break
-		}
-		if !isJudgeRetryableErr(err) {
-			break
-		}
-
-		// 500ms, 2s, 8s — geometric ×4. Bounded by maxAttempts so
-		// the wait can't exceed ~10s in aggregate.
-		backoff := time.Duration(500) * time.Millisecond
-		for i := 1; i < attempt; i++ {
-			backoff *= 4
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-	}
-	return nil, lastErr
-}
-
-// isJudgeRetryableErr classifies LLM errors into transient (worth
-// retrying) vs permanent. Chat-layer GatewayError exposes
-// Retryable() for the HTTP-status-aware case. Connection-drop
-// shapes ("unexpected EOF", "connection reset") aren't typed
-// errors at the chat layer; match by message substring.
-func isJudgeRetryableErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if ge, ok := err.(*chat.GatewayError); ok {
-		return ge.Retryable()
-	}
-	msg := err.Error()
-	for _, hint := range []string{
-		"unexpected EOF",
-		"connection reset",
-		"connection refused",
-		"broken pipe",
-		"i/o timeout",
-		"context deadline exceeded",
-		"RESOURCE_EXHAUSTED",
-		"queue is full",
-	} {
-		if strings.Contains(msg, hint) {
-			return true
-		}
-	}
-	return false
 }
 
 // StubJudge is a deterministic test path that returns a fixed

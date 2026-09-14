@@ -36,6 +36,10 @@ var reservedProposers = map[string]bool{
 	"diagnose":      true,
 	"self-heal":     true,
 	"instinct-lift": true,
+	// The configuration assistant (2026-09-13 design): its proposals carry
+	// the assistant's class, verdict and evidence record; an external
+	// caller must not be able to forge one.
+	"config-assistant": true,
 }
 
 // IsReservedProposer reports whether a ProposedBy value is a reserved

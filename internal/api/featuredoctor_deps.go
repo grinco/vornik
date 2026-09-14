@@ -48,7 +48,30 @@ func (s *Server) featureDeps() featuredoctor.Deps {
 		SecretsDir:     secretsDir,
 		RoleLibraryDir: resolveConfigsDirBestEffort(s.setupConfigPath),
 		Logger:         s.logger,
+		Identity:       s.featureIdentityRepo,
+		AdminAudit:     s.adminAuditRepo,
+		Durability:     s.featureDurability,
+		A2APeers:       s.featureA2APeers,
 	}
+}
+
+// ConfigA2APeerLister lists a2a.peers keys from the daemon config so the
+// architect-consult feature can confirm its configured peer exists.
+func ConfigA2APeerLister(cfg *config.Config) featuredoctor.A2APeerLister {
+	return configA2APeerLister{cfg: cfg}
+}
+
+type configA2APeerLister struct{ cfg *config.Config }
+
+func (l configA2APeerLister) A2APeerNames() []string {
+	if l.cfg == nil {
+		return nil
+	}
+	out := make([]string, 0, len(l.cfg.A2A.Peers))
+	for k := range l.cfg.A2A.Peers {
+		out = append(out, k)
+	}
+	return out
 }
 
 // resolveConfigsDirBestEffort derives the daemon's configs root from

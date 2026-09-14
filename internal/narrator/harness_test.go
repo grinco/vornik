@@ -79,6 +79,26 @@ func newTestHarness(t *testing.T, configure ...func(n *Narrator)) *testHarness {
 // expectNoLine deliberately does NOT use this — there, the window IS the
 // assertion, and stretching it would only slow the suite down.
 //
+// RESOLVED 2026-09-13, at the third occurrence: the flake was REPORTING A REAL
+// DEFECT, and the deadline had been hiding how real. `emitLine` dropped any
+// line landing within `min_line_interval` of the previous one, and `sweepIdle`
+// tore the execution's state down on the statement after emitting the
+// completion line — so under load, when the step line's debounce pushed it
+// close enough to the sweep, the completion was dropped and then made
+// unrecoverable. The test was not slow; it was waiting for a line that would
+// never arrive. Fixed by exempting the completion line from the coalescer
+// (narrator.go) and pinned deterministically by
+// TestEmitLine_CompletionSurvivesTheMinLineInterval, which drives the same
+// race through the nowFn seam instead of waiting for a busy machine.
+//
+// The floor stays at 60s. It is no longer compensating for anything — a
+// waiting test returns the instant its line lands, so it costs a passing run
+// nothing — and it is now a genuine load allowance rather than a number
+// covering a bug.
+//
+// The history below is kept because the pattern is the lesson: a deadline
+// raised twice was a defect being re-described as slowness.
+//
 // RAISED 15s → 60s on 2026-09-09, the SECOND occurrence of the same flake
 // (`make test`, i.e. `go test -v -race -short ./...`, on a host also running
 // the daemon and Postgres: 15.02s, and the same test passed alone under

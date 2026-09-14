@@ -31,64 +31,6 @@ func TestExtractCheckpointID_FindsMessagesSegment(t *testing.T) {
 	}
 }
 
-// TestIsEnvSourcedRaw_SkipsTemplateRefs — the secret-hygiene
-// doctor needs to treat `${VAR}` references as non-secrets
-// (their actual value is supplied by the environment at start).
-// Empty strings also pass (nothing to leak). Anything else is
-// candidate-secret material.
-func TestIsEnvSourcedRaw_SkipsTemplateRefs(t *testing.T) {
-	cases := map[string]bool{
-		"":              true,
-		"   ":           true,
-		"${SECRET}":     true,
-		"${X}":          true,
-		"sk-real-token": false,
-		"$SECRET":       false, // un-braced form is NOT considered safe by this check
-		"prefix${X}":    false, // partial template; doctor flags
-	}
-	for in, want := range cases {
-		if got := isEnvSourcedRaw(in); got != want {
-			t.Errorf("isEnvSourcedRaw(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
-// TestLooksLikeRawSecret_RejectsPlaceholders — the doctor's
-// false-positive defence: things like "CHANGE_ME" / "<your-key>"
-// must NOT trip the secret-leak warning, otherwise operators
-// learn to ignore the check.
-func TestLooksLikeRawSecret_RejectsPlaceholders(t *testing.T) {
-	for _, placeholder := range []string{
-		"", "   ",
-		"${ENV_VAR}",
-		"CHANGE_ME",
-		"changeme",
-		"YOUR_KEY_HERE",
-		"<your-token>",
-		"<replace-me>",
-		"dev-key-123",
-	} {
-		if looksLikeRawSecret(placeholder) {
-			t.Errorf("looksLikeRawSecret(%q) flagged a placeholder", placeholder)
-		}
-	}
-}
-
-// TestLooksLikeRawSecret_FlagsRealKeys — the positive path. Real
-// API keys and tokens (~32+ chars of mixed characters) MUST trip
-// the heuristic.
-func TestLooksLikeRawSecret_FlagsRealKeys(t *testing.T) {
-	for _, candidate := range []string{
-		"sk-1234567890abcdefghijklmnopqrstuv",
-		"AKIAIOSFODNN7EXAMPLE",                     // looks like an AWS key
-		"ghp_1234567890abcdefghijklmnopqrstuvwxyz", // looks like a GitHub PAT
-	} {
-		if !looksLikeRawSecret(candidate) {
-			t.Errorf("looksLikeRawSecret(%q) missed a real-shape secret", candidate)
-		}
-	}
-}
-
 // TestServerOptionSetters — every option setter in api.go is a
 // 2-line `s.field = v; return` shape. Driving them through
 // NewServer in one pass exercises ~40 LOC at once for cheap.

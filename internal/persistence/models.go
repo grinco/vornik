@@ -1344,6 +1344,17 @@ type APIKey struct {
 	MemoryRead  bool `json:"memory_read,omitempty"`
 	MemoryWrite bool `json:"memory_write,omitempty"`
 
+	// OwnerUserID is the account (users.id) that OWNS this key, or "" for
+	// an unowned key (2026-09-13 identity plan §5, review R2). Ownership
+	// NARROWS: an owned key's effective permission is the intersection of
+	// its own restrictions and its owner's current grants, and a disabled
+	// or missing owner denies the key outright. It never promotes a key.
+	// Executor-minted per-task and warm-pool keys are always unowned, and
+	// internal/executor's TestUnownedTaskKey_E2E_RealMinterRealStore pins
+	// that. Set only by an audited account-management action, never from
+	// caller headers.
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+
 	// SkillRead / SkillWrite / SkillAdmin gate the knowledge-skill MCP
 	// tools (LLD 2026-07-07-knowledge-skill-store-design). All default
 	// false; set per-key by `vornikctl companion grant --skill-read /
@@ -1823,6 +1834,11 @@ const (
 	// model with a judge attached should see its own
 	// effective-cost figure unaffected by the judge's spend).
 	TaskLLMUsageSourceJudge = "judge"
+	// TaskLLMUsageSourceConfigAssist — the configuration assistant's
+	// model calls (assistant loop + its judge), attributed to the project
+	// the request was about (2026-09-13 design §10: an operator-invoked
+	// assistant always has a project in scope).
+	TaskLLMUsageSourceConfigAssist = "config_assistant"
 	// TaskLLMUsageSourcePostMortem — one row per failed-task
 	// explainer call. Triggered by the operator from the failed-
 	// task UI; idempotent per task (cached result returns

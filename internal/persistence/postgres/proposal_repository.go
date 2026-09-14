@@ -24,7 +24,8 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 const pgProposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
 	apply_target, apply_content, apply_ops, applied_by, live_apply,
-	created_at, decided_at, applied_at`
+	created_at, decided_at, applied_at,
+	request_id, idempotency_key, door, actor_kind, actor_account_id, actor_credential_id`
 
 // Create inserts a new proposal, rejecting an oversized text field.
 func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlPlaneProposal) error {
@@ -39,13 +40,32 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+pgProposalColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+		        $21,$22,$23,$24,$25,$26)`,
 		p.ID, pgNullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
 		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		p.CreatedAt, p.DecidedAt, p.AppliedAt,
+		pgNullStr(p.RequestID), pgNullStr(p.IdempotencyKey), pgNullStr(p.Door),
+		pgNullStr(p.ActorKind), pgNullStr(p.ActorAccountID), pgNullStr(p.ActorCredentialID),
 	)
+	// mapDBError turns 23505 (uq_cp_proposals_idempotency_key, or the id PK)
+	// into ErrDuplicateKey — the retry signal of plan §7g R8.
 	return mapDBError(err)
+}
+
+// GetByIdempotencyKey fetches the proposal filed under key; ErrNotFound when
+// absent. An empty key never matches: legacy rows carry NULL.
+func (r *ProposalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*persistence.ControlPlaneProposal, error) {
+	if key == "" {
+		return nil, persistence.ErrNotFound
+	}
+	row := r.db.QueryRowContext(ctx, `SELECT `+pgProposalColumns+` FROM control_plane_proposals WHERE idempotency_key = $1`, key)
+	p, err := scanPGProposal(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, persistence.ErrNotFound
+	}
+	return p, err
 }
 
 func validatePGProposalFieldSizes(p *persistence.ControlPlaneProposal) error {
@@ -265,16 +285,20 @@ func scanPGProposal(sc pgSkillScanner) (*persistence.ControlPlaneProposal, error
 		projectID sql.NullString
 		decidedAt sql.NullTime
 		appliedAt sql.NullTime
+		ids       [6]sql.NullString // request_id … actor_credential_id
 	)
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
 		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy, &p.LiveApply,
 		&p.CreatedAt, &decidedAt, &appliedAt,
+		&ids[0], &ids[1], &ids[2], &ids[3], &ids[4], &ids[5],
 	); err != nil {
 		return nil, err
 	}
 	p.ProjectID = projectID.String
+	p.RequestID, p.IdempotencyKey, p.Door = ids[0].String, ids[1].String, ids[2].String
+	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = ids[3].String, ids[4].String, ids[5].String
 	if decidedAt.Valid {
 		t := decidedAt.Time
 		p.DecidedAt = &t

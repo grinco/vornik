@@ -1121,18 +1121,20 @@ func TestAuthSettings_Phase3_Validate(t *testing.T) {
 			wantError: false,
 		},
 		{
-			// Hardening 2026-06-15: a login provider on sqlite would
-			// silently no-op (identity core is postgres-only). Boot
-			// must refuse rather than run a config that can't log in.
-			name: "github provider + sqlite driver → error",
+			// Hardening 2026-06-15 refused a login provider on sqlite because
+			// the identity core was postgres-only. Lifted 2026-09-13: the
+			// identity core ships on BOTH stores (config-assistant review R1,
+			// SQLite parity), so a sqlite deployment may configure a
+			// provider; a backend that still lacks the repository is reported
+			// by name at login-wiring time instead.
+			name: "github provider + sqlite driver → accepted (identity core on both stores)",
 			setup: func(c *Config) {
 				c.Database.Driver = "sqlite"
 				c.Database.Path = "/tmp/vornik-test.db"
 				c.Auth.ExternalBaseURL = "http://host:8080"
 				c.Auth.Providers.GitHub = validGitHub()
 			},
-			wantError: true,
-			errFrag:   "sqlite",
+			wantError: false,
 		},
 	}
 

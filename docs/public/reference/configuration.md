@@ -34,6 +34,18 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|---|
 | `named_secrets` | list | Per-secret allowlist of env credentials injected into agent containers, scoped by project. | — |
 
+## doctor
+
+| Key | Type | Description | Environment override |
+|---|---|---|---|
+| `doctor.thresholds.unclassified_share` | float | Share of classified step failures that may be unclassified before unclassified_step_failures warns (0-1). Default 0.05. | — |
+| `doctor.thresholds.unclassified_share_window_days` | int | How many days of failures unclassified_step_failures divides over. Default 30. | — |
+| `doctor.thresholds.model_failure_rate` | float | Failed fraction at or above which model_health and model_calls_live flag a model (0-1). Default 0.5. | — |
+| `doctor.thresholds.model_min_samples` | int | Smallest call count model_health and model_calls_live will judge a model on. Default 5. | — |
+| `doctor.thresholds.cost_attribution_fraction` | float | Share of recent cost rows that must carry a DB-backed key before cost_attribution is satisfied (0-1). Default 0.9. | — |
+| `doctor.thresholds.cost_attribution_min_total` | int | Sample floor below which cost_attribution stays OK regardless of distribution. Default 10. | — |
+| `doctor.thresholds.fallback_rung_min_attempts` | int | Attempts a fallback rung needs before a zero-success record is reported. Default 2. | — |
+
 ## telemetry
 
 | Key | Type | Description | Environment override |
@@ -467,6 +479,18 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `composer.enabled` | bool | Activate the NL automation composer (wizard tier-3). | — |
 | `composer.max_tier` | int | Highest composer tier allowed (2 disables free-form synthesis; 3 = full). | — |
 | `composer.max_tier3_turns` | int | Per-session cap on expensive tier-3 composer turns. | — |
+
+## identity
+
+| Key | Type | Description | Environment override |
+|---|---|---|---|
+| `identity` | struct | CE identity core: user accounts, channel→account linking, key→account ownership. | — |
+
+## config_assistant
+
+| Key | Type | Description | Environment override |
+|---|---|---|---|
+| `config_assistant` | struct | Configuration assistant: natural-language config edits filed as reviewable proposals. | — |
 
 ## web
 

@@ -194,11 +194,47 @@ func (c *Container) forgeReviewCoordinator() *forgereview.Coordinator {
 	if c == nil || c.repos == nil || c.repos.ForgePRReviewState == nil || c.repos.Tasks == nil {
 		return nil
 	}
-	return forgereview.New(
+	coord := forgereview.New(
 		c.repos.ForgePRReviewState,
 		taskStatusReader{tasks: c.repos.Tasks},
 		c.Logger.With().Str("component", "forge_review").Logger(),
 	)
+	// THE REVIEW-TRIGGER POLICY IS RESOLVED HERE, ONCE, for both ingresses —
+	// which is the whole point of them sharing this instance. `auto_review_on_push`
+	// and `review_draft_prs` were fields on the GitHub App channel's
+	// installation config until 2026-09-13, so the generic `webhooks.sources`
+	// relay had no project-wide push off switch and could not opt into draft
+	// review (BACKLOG 2026-09-03, design §13.4).
+	//
+	// An unknown project resolves to the documented defaults rather than to
+	// "no rules": review pushes, skip drafts. A lookup miss must not become a
+	// licence to spend the budget on every draft it sees.
+	coord.SetPolicyResolver(forgeReviewPolicyResolver(c.Registry))
+	return coord
+}
+
+// forgeReviewPolicyResolver maps a project ID to its resolved review-trigger
+// policy.
+//
+// A NIL registry or an unknown project resolves to the documented DEFAULTS,
+// not to "no rules": review pushes, skip drafts. A lookup miss must not become
+// a licence to spend the review budget on every draft it sees — the failure
+// would be invisible and expensive, which is the worst pair.
+func forgeReviewPolicyResolver(projects projectGetter) forgereview.PolicyResolver {
+	return func(projectID string) forgereview.Policy {
+		if projects == nil {
+			return forgereview.DefaultPolicy()
+		}
+		p := projects.GetProject(projectID)
+		if p == nil {
+			return forgereview.DefaultPolicy()
+		}
+		resolved := p.ForgeReview()
+		return forgereview.Policy{
+			AutoReviewOnPush: resolved.AutoReviewOnPush,
+			ReviewDraftPRs:   resolved.ReviewDraftPRs,
+		}
+	}
 }
 
 // taskStatusReader adapts the task repository to the one question the coalescing

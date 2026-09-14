@@ -184,7 +184,8 @@ Small n, one ability, and an easy subset — the caveats are published alongside
 > **Editions.** This repository is **Vornik Community Edition** (AGPL-3.0) — the
 > complete orchestration core, fully usable on its own for personal and small-team
 > work. A proprietary **Enterprise Edition** adds advanced capabilities on the same
-> core. See [Editions](docs/public/editions.md) for the feature matrix.
+> core. See [Editions](docs/public/editions.md) for the feature matrix and
+> [Licensing](docs/public/licensing.md) for what the AGPL asks of you in practice.
 
 ## Documentation
 
@@ -223,7 +224,8 @@ make lint     # gofmt + go vet
 
 **If Vornik is useful to you, a ⭐ helps other people find it.**
 
-[AGPL-3.0](LICENSE) — © Vadim Grinco · Contributions welcome under a
-[CLA](docs/public/contributing.md)
+[AGPL-3.0](LICENSE) — © 2026 EaseIT Labs s.r.o. and contributors ·
+[Licensing](docs/public/licensing.md) · [Trademarks](TRADEMARKS.md) ·
+Contributions welcome under a [CLA](docs/public/contributing.md)
 
 </div>

@@ -6,11 +6,13 @@ section below before opening a pull request.
 ## Contributor License Agreement (CLA)
 
 Vornik requires a **Contributor License Agreement**. By contributing you grant a
-broad copyright + patent license for your contribution to **Vadim Grinco** (the
-project's IP owner), who licenses the project — including contributions — to
-EaseIT Labs for the commercial offerings. This is what lets the project sustain a
-proprietary Enterprise overlay and a hosted SaaS while keeping the Community
-Edition open under AGPL.
+broad copyright + patent license for your contribution to **EaseIT Labs s.r.o.**
+(the project's IP holder), which publishes the Community Edition under AGPL and
+ships the same core inside the commercial Enterprise Edition. This is what lets
+the project sustain a proprietary Enterprise overlay while keeping the Community
+Edition open under AGPL. You keep your copyright; the CLA is a licence, not an
+assignment. What the AGPL means for *using* or *forking* Vornik (no CLA needed
+for either) is on the [Licensing](licensing.md) page.
 
 - The agreement is the [Contributor License Agreement](https://github.com/grinco/vornik/blob/main/CLA.md)
   (`CLA.md` at the repo root).

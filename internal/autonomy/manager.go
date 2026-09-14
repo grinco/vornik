@@ -1774,10 +1774,18 @@ func (m *Manager) buildStateContext(ctx context.Context, project *registry.Proje
 				}
 				lookupIDs = append(lookupIDs, t.ID)
 			}
+			// execRepo is nil-guarded like every sibling repository on
+			// this path. It is always wired by
+			// service.container_autonomy, so a nil here is a construction
+			// bug — but this is the TICK path, where a panic takes the
+			// whole autonomy loop down instead of failing one request.
+			// Without the repo the history still renders, just without
+			// result= enrichment, which is what a project whose completed
+			// tasks have no execution rows already produces.
 			var execMap map[string]*persistence.Execution
-			if len(lookupIDs) > 0 {
-				if m, err := m.execRepo.GetByTaskIDs(ctx, lookupIDs); err == nil {
-					execMap = m
+			if len(lookupIDs) > 0 && m.execRepo != nil {
+				if found, err := m.execRepo.GetByTaskIDs(ctx, lookupIDs); err == nil {
+					execMap = found
 				}
 			}
 			for _, t := range completed {

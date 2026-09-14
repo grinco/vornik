@@ -20,9 +20,11 @@ import (
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/configassist"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/llmspend"
@@ -301,6 +303,15 @@ type Server struct {
 	// regardless of auth_enabled. (An earlier fix keyed on auth-off
 	// alone missed CE's default auth_enabled=true.)
 	allUICallersAdmin bool
+	// accounts backs /ui/operator/accounts (the CE operator shell,
+	// 2026-09-13). Nil → "not wired" page, 503 on POST.
+	accounts *authz.Accounts
+	// operatorCapability is admin.allowed_keys, accepted by the CE shell as
+	// an explicit operator capability in both editions.
+	operatorCapability config.AdminConfig
+	// configAssist backs /ui/operator/assist (the console door). Nil →
+	// "not wired" page.
+	configAssist *configassist.Engine
 	// enterpriseAdmin is the edition switch c.providers.Admin, surfaced to
 	// the admin console so EE-only surfaces (Black Box, instincts, audit,
 	// health, …) are hidden in Community. True only in Enterprise builds.
@@ -2363,6 +2374,13 @@ func (s *Server) Handler() http.Handler {
 	// has marked them as admin in context.
 	mux.HandleFunc("/admin", s.adminRouter)
 	mux.HandleFunc("/admin/", s.adminRouter)
+
+	// CE operator shell — account management (2026-09-13 review R1/R2).
+	// Community routes, gated per handler by operatorCapable (operator
+	// scope + explicit capability), never by the EE admin router.
+	mux.HandleFunc("/operator/accounts", s.operatorAccountsRouter)
+	mux.HandleFunc("/operator/accounts/", s.operatorAccountsRouter)
+	mux.HandleFunc("/operator/assist", s.operatorAssistRouter)
 
 	// Memory hardening section (Phase 2-4): per-project view of
 	// epochs, quarantine, rollback history.

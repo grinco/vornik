@@ -753,6 +753,25 @@ func APIKeyClientKindFromContext(ctx context.Context) string {
 // so production code doesn't accidentally reach for it; the
 // helper is the only seam through which the unexported context
 // keys leak into other packages.
+// ContextWithAuthEnabled stamps the auth-enabled flag. Exported for the
+// ui package's tests of the CE operator shell (2026-09-13), which gate on
+// IsAuthEnabledFromContext; the middleware is the only production writer.
+func ContextWithAuthEnabled(ctx context.Context, enabled bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, authEnabledKey, enabled)
+}
+
+// ContextWithAPIKeyForTesting stamps the presented API key the way the
+// middleware does after a successful static-key match. Test seam only.
+func ContextWithAPIKeyForTesting(ctx context.Context, key string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, apiKeyKey, key)
+}
+
 func ContextWithScopeForTesting(ctx context.Context, projects ...string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

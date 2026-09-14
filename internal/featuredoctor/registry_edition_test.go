@@ -26,6 +26,11 @@ func TestFeatureEditionMapping(t *testing.T) {
 		"auth":           version.EditionCommunity,
 		"memory-rag":     version.EditionCommunity,
 		"composer":       version.EditionEnterprise,
+		// 2026-09-13 plan §2: identity core, the configuration assistant and
+		// the contract-gated architect consultation are all COMMUNITY.
+		"identity":          version.EditionCommunity,
+		"config-assistant":  version.EditionCommunity,
+		"architect-consult": version.EditionCommunity,
 	}
 	got := map[string]string{}
 	for _, f := range Registry() {

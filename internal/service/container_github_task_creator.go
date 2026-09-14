@@ -455,6 +455,9 @@ func forgeJobFromEvent(ev github.TaskCreationEvent) *forge.ForgeJob {
 		// explicit command asking to ignore that baseline.
 		HeadSHA:    ev.HeadSHA,
 		FullReview: ev.FullReview,
+		// The draft flag reaches the shared review-trigger policy through the
+		// job, exactly as it does on the generic ingress (design §13.4).
+		IsDraft: ev.Draft,
 		// AUTHORIZATION INPUTS for an explicitly requested review. The
 		// coordinator refuses an OnDemand job whose author has no standing in
 		// the repository, and it can only do that if the job carries both

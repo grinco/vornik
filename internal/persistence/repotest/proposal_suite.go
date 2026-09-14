@@ -30,6 +30,79 @@ func RunProposalSuite(t *testing.T, repo persistence.ProposalRepository) {
 	t.Run("MarkRegressed_from_applied", func(t *testing.T) { proposalMarkRegressedFromApplied(t, repo) })
 	t.Run("MarkRegressed_from_rolled_back", func(t *testing.T) { proposalMarkRegressedFromRolledBack(t, repo) })
 	t.Run("MarkRegressed_rejects_draft", func(t *testing.T) { proposalMarkRegressedRejectsDraft(t, repo) })
+	// Identifier + actor columns (config-assistant plan §7g, migration 185).
+	t.Run("identifier_columns_round_trip", func(t *testing.T) { proposalIdentifiersRoundTrip(t, repo) })
+	t.Run("legacy_rows_have_empty_identifiers", func(t *testing.T) { proposalIdentifiersLegacyNull(t, repo) })
+	t.Run("idempotency_key_collision_is_ErrDuplicateKey", func(t *testing.T) { proposalIdempotencyCollision(t, repo) })
+	t.Run("GetByIdempotencyKey_unknown_is_ErrNotFound", func(t *testing.T) {
+		AssertMissRepo(t, "ProposalRepository.GetByIdempotencyKey", repo.GetByIdempotencyKey)
+	})
+}
+
+// proposalIdentifiersRoundTrip pins the door/actor/request/idempotency
+// columns through Create → GetByID and GetByIdempotencyKey.
+func proposalIdentifiersRoundTrip(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	p := newTestProposal(uniqueID("ident"), "p1")
+	p.RequestID, p.IdempotencyKey, p.Door = "req-42", uniqueID("idem"), "console"
+	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = "user", "acct-7", "key-9"
+	mustCreateProposal(t, repo, p)
+	got, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.RequestID != "req-42" || got.IdempotencyKey != p.IdempotencyKey || got.Door != "console" ||
+		got.ActorKind != "user" || got.ActorAccountID != "acct-7" || got.ActorCredentialID != "key-9" {
+		t.Fatalf("identifier columns did not round-trip: %+v", got)
+	}
+	byKey, err := repo.GetByIdempotencyKey(ctx, p.IdempotencyKey)
+	if err != nil || byKey.ID != p.ID {
+		t.Fatalf("GetByIdempotencyKey = (%v, %v), want %s", byKey, err, p.ID)
+	}
+}
+
+// proposalIdentifiersLegacyNull pins that a row created without the columns
+// reads back empty (persisted NULL) and that the empty key never matches.
+func proposalIdentifiersLegacyNull(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	p := newTestProposal(uniqueID("legacy"), "p1")
+	mustCreateProposal(t, repo, p)
+	got, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.RequestID != "" || got.IdempotencyKey != "" || got.Door != "" ||
+		got.ActorKind != "" || got.ActorAccountID != "" || got.ActorCredentialID != "" {
+		t.Fatalf("legacy row must read back with empty identifiers: %+v", got)
+	}
+	// Two legacy rows with no key must not collide on the unique index.
+	mustCreateProposal(t, repo, newTestProposal(uniqueID("legacy"), "p1"))
+	if _, err := repo.GetByIdempotencyKey(ctx, ""); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("empty key must be ErrNotFound (NULL never matches), got %v", err)
+	}
+}
+
+// proposalIdempotencyCollision is the R8 retry-safety property: a second
+// Create under the same key is ErrDuplicateKey and the first row is what the
+// key resolves to.
+func proposalIdempotencyCollision(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	key := uniqueID("idem")
+	first := newTestProposal(uniqueID("idem-a"), "p1")
+	first.IdempotencyKey = key
+	mustCreateProposal(t, repo, first)
+	retry := newTestProposal(uniqueID("idem-b"), "p1")
+	retry.IdempotencyKey = key
+	if err := repo.Create(ctx, retry); !errors.Is(err, persistence.ErrDuplicateKey) {
+		t.Fatalf("retry under the same idempotency key must be ErrDuplicateKey, got %v", err)
+	}
+	if _, err := repo.GetByID(ctx, retry.ID); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("the colliding row must not exist, got %v", err)
+	}
+	got, err := repo.GetByIdempotencyKey(ctx, key)
+	if err != nil || got.ID != first.ID {
+		t.Fatalf("GetByIdempotencyKey = (%v, %v), want the first row %s", got, err, first.ID)
+	}
 }
 
 // proposalMarkRegressedFromApplied pins APPLIED → REGRESSED (design §4.4).

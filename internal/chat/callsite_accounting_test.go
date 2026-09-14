@@ -110,6 +110,12 @@ var callSiteRegistry = map[string]callSiteAccounting{
 			"(architect turns are operator- or schedule-triggered, not per-request), so " +
 			"this is the smaller half of the 2026-07-30 discrepancy.",
 	},
+	"config-assistant": {
+		accounted: true,
+		note: "configassist.Engine records assistant loop usage through its Usage recorder " +
+			"(wired from container_http.go as llmspend source config_assist) after RunLoop returns. " +
+			"Every operator request has a project_id, so task_llm_usage attribution is project-scoped.",
+	},
 }
 
 // TestEveryCallSiteIsClassified fails when production code declares a

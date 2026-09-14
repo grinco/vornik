@@ -102,7 +102,10 @@ func (f *fakeCanaryRepo) LastApplyActorForKnob(context.Context, string, string, 
 	return "", false, nil
 }
 
+// The embedded interface promotes lookups the guard never calls
+// (GetByIdempotencyKey) without declaring a second double for them.
 type guardProposals struct {
+	persistence.ProposalRepository
 	rows               map[string]*persistence.ControlPlaneProposal
 	markRegressedErr   error
 	markRegressedCalls int

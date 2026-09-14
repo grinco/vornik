@@ -64,7 +64,7 @@ Example:
 mcp__vornik__delegate(
   workflow="companion-architectural-review",
   prompt="Review the attached diff for shutdown, concurrency, and API contract risks.",
-  repo_scope="github.com/grinco/vornik"
+  repo_scope="github.com/acme/widgets"
 )
 ```
 
@@ -115,7 +115,7 @@ them to `mcp__vornik__delegate` as `inputArtifacts`:
 {
   "workflow": "companion-architectural-review",
   "prompt": "Review the attached design doc for architectural issues.",
-  "repo_scope": "github.com/grinco/vornik",
+  "repo_scope": "github.com/acme/widgets",
   "inputArtifacts": [
     {
       "name": "design.md",
@@ -162,8 +162,8 @@ companion's hook uses, so scopes don't drift between clients):
 Examples (all normalize to the SAME token):
 
 ```text
-https://github.com/grinco/vornik.git  -> github.com/grinco/vornik
-git@github.com:grinco/vornik-enterprise.git      -> github.com/grinco/vornik
+https://github.com/acme/widgets.git  -> github.com/acme/widgets
+git@github.com:acme/widgets.git      -> github.com/acme/widgets
 ```
 
 Do NOT hand-guess or lowercase the token (e.g. `github.com/easeit/vornik-ee`

@@ -5,7 +5,7 @@ sources:
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: 3f9e5dd3e508ba9712e960b2ad876d49edf99ad659ceb7269037a639283166a7
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: 438ab139df3ca282451fab5f036f6dc2b2fdb64327b89f112eed56cca29d764e
+      sha256: f1bb30238d2b5ed5f19e03fba87859fcdea4d232d6e56aecbc8f8ad13e41f1b8
 ---
 # Companion plugin
 

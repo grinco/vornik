@@ -54,6 +54,14 @@ const insertMemberSQL = `INSERT INTO group_members (group_id, user_id) VALUES ($
 const deleteMemberSQL = `DELETE FROM group_members WHERE group_id = $1 AND user_id = $2`
 const revokeUserSessSQL = `UPDATE ui_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`
 
+// R3 marker statements (migration 183): a grant clears
+// users.access_revoked_at, a removal stamps it — inside the same
+// transaction as the membership change.
+const (
+	clearAccessRevokedTestSQL = `UPDATE users SET access_revoked_at = NULL WHERE id = $1`
+	stampAccessRevokedTestSQL = `UPDATE users SET access_revoked_at = NOW() WHERE id = $1`
+)
+
 func TestIdentityRepository_ListUsers_Aggregates(t *testing.T) {
 	// One awaiting user (no groups), one admin (no projects), one
 	// user-role member with two projects. Verifies role = max, projects
@@ -157,6 +165,8 @@ func TestIdentityRepository_SetUserAccess_CreatesBackingGroup(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), "janka").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(insertMemberSQL)).
 		WithArgs(sqlmock.AnyArg(), "user_await").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(clearAccessRevokedTestSQL)).
+		WithArgs("user_await").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(revokeUserSessSQL)).
 		WithArgs("user_await").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -186,6 +196,8 @@ func TestIdentityRepository_SetUserAccess_PromotesExistingToAdmin(t *testing.T) 
 	// No insertProject — admin role.
 	mock.ExpectExec(regexp.QuoteMeta(insertMemberSQL)).
 		WithArgs("grp_existing", "u1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(clearAccessRevokedTestSQL)).
+		WithArgs("u1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(revokeUserSessSQL)).
 		WithArgs("u1").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
@@ -229,6 +241,8 @@ func TestIdentityRepository_RemoveUserAccess_DropsMembership(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(adminGuardSQL)).
 		WithArgs("u1").
 		WillReturnRows(sqlmock.NewRows([]string{"a", "b"}).AddRow(false, true))
+	mock.ExpectExec(regexp.QuoteMeta(stampAccessRevokedTestSQL)).
+		WithArgs("u1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(selectBackingGroupIDSQL)).
 		WithArgs("auto-user-u1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("grp_existing"))
@@ -268,7 +282,9 @@ func TestIdentityRepository_SetUserDisabled_LastAdminGuard(t *testing.T) {
 }
 
 func TestIdentityRepository_RemoveUserAccess_NoBackingGroupIsNoop(t *testing.T) {
-	// No backing group → no-op (no delete, no revoke, no error).
+	// No backing group → no membership delete, no session revoke, no
+	// error. The R3 marker IS still stamped (2026-09-13): the admin's
+	// decision to revoke does not depend on a backing group existing.
 	repo, mock, done := newIdentityMock(t)
 	defer done()
 	mock.ExpectBegin()
@@ -277,6 +293,8 @@ func TestIdentityRepository_RemoveUserAccess_NoBackingGroupIsNoop(t *testing.T) 
 	mock.ExpectQuery(regexp.QuoteMeta(adminGuardSQL)).
 		WithArgs("u1").
 		WillReturnRows(sqlmock.NewRows([]string{"a", "b"}).AddRow(false, true))
+	mock.ExpectExec(regexp.QuoteMeta(stampAccessRevokedTestSQL)).
+		WithArgs("u1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(selectBackingGroupIDSQL)).
 		WithArgs("auto-user-u1").
 		WillReturnError(sqlNoRows())

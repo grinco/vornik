@@ -40,6 +40,16 @@ type DoctorReport struct {
 
 // DoctorHandlers provides the /api/v1/doctor endpoint.
 type DoctorHandlers struct {
+	// thresholds holds the resolved doctor bounds — the operator's
+	// doctor.thresholds folded over the compiled defaults, each value carrying
+	// which of the two supplied it. thresholdsKnown distinguishes "no config
+	// was ever wired" from "config was wired and set nothing", because the
+	// second is a statement and the first is not; doctorThresholds() resolves
+	// the first to the defaults so a handler built without config still checks
+	// against the shipped numbers rather than against zero.
+	thresholds      config.ResolvedDoctorThresholds
+	thresholdsKnown bool
+
 	// modelRefs maps a daemon-scope config SURFACE to the model id it names —
 	// "chat.model" → "glm-5.2" and so on. Snapshotted at boot beside
 	// secretFields and retentionWindows, and for the same reason
@@ -310,6 +320,11 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	// Resolved ONCE here, not per check: the bounds are read on every run and
+	// folding defaults in per call would give two checks sharing a threshold a
+	// way to disagree about it.
+	h.thresholds = cfg.Doctor.Thresholds.Resolve()
+	h.thresholdsKnown = true
 	h.serverAddress = cfg.Server.Address
 	h.apiAuthEnabled = cfg.API.AuthEnabled
 	h.apiKeys = append(h.apiKeys[:0], cfg.API.APIKeys...)
@@ -480,6 +495,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
+	report.Checks = append(report.Checks, h.checkProjectConfigSkew())
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
@@ -559,6 +575,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
+	report.Checks = append(report.Checks, h.checkProjectConfigSkew())
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
@@ -1829,4 +1846,19 @@ func (h *DoctorHandlers) checkSecretsPermissions(fix bool) DoctorCheck {
 		}
 	}
 	return DoctorCheck{Name: name, Status: status, Message: msg, Items: problems, Fixed: fixed}
+}
+
+// SecretFieldsSnapshot returns a copy of the boot-time secret-field
+// snapshot (dotted key → post-expansion value), or nil when none was
+// captured. The configuration assistant's hygiene gate re-evaluates it
+// FRESH against config.yaml on every request (2026-09-13 design §7.3).
+func (h *DoctorHandlers) SecretFieldsSnapshot() map[string]string {
+	if h == nil || h.secretFields == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h.secretFields))
+	for k, v := range h.secretFields {
+		out[k] = v
+	}
+	return out
 }

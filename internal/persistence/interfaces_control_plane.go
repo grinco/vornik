@@ -199,6 +199,23 @@ type ControlPlaneProposal struct {
 	// https://docs.vornik.io
 	LiveApply bool
 
+	// Identifier and actor columns (config-assistant plan §7g, review R8/R2;
+	// migration 185). All NULL on legacy rows and persisted NULL when "".
+	//
+	// RequestID links the proposal to the assistant request that produced it.
+	// IdempotencyKey is UNIQUE where not null: a client retry carrying the
+	// same key gets ErrDuplicateKey from Create instead of filing a second
+	// proposal (GetByIdempotencyKey then returns the first). Door names the
+	// surface the proposal came through (operator | console | chat | agent);
+	// ActorKind/ActorAccountID/ActorCredentialID record WHO, resolved to an
+	// account where §5's key mapping allows and to the credential otherwise.
+	RequestID         string
+	IdempotencyKey    string
+	Door              string
+	ActorKind         string
+	ActorAccountID    string
+	ActorCredentialID string
+
 	CreatedAt time.Time
 	DecidedAt *time.Time
 	AppliedAt *time.Time
@@ -222,11 +239,18 @@ type ProposalListFilter struct {
 type ProposalRepository interface {
 	// Create inserts a new proposal. Defaults Status to DRAFT and CreatedAt
 	// to now when unset. Rejects a text field over ProposalMaxFieldBytes with
-	// ErrProposalFieldTooLarge.
+	// ErrProposalFieldTooLarge. A non-empty IdempotencyKey that another row
+	// already carries is ErrDuplicateKey — the retry-safety of plan §7g: a
+	// client retry must not file a second proposal.
 	Create(ctx context.Context, p *ControlPlaneProposal) error
 
 	// GetByID fetches a proposal by id. Returns ErrNotFound if absent.
 	GetByID(ctx context.Context, id string) (*ControlPlaneProposal, error)
+
+	// GetByIdempotencyKey fetches the proposal filed under key (the row a
+	// retried Create collided with). Returns ErrNotFound if absent, including
+	// for an empty key — legacy rows carry NULL and are never matched.
+	GetByIdempotencyKey(ctx context.Context, key string) (*ControlPlaneProposal, error)
 
 	// List returns proposals matching the filter, newest-created first.
 	List(ctx context.Context, f ProposalListFilter) ([]*ControlPlaneProposal, error)

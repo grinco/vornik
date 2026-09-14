@@ -4,20 +4,28 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"vornik.io/vornik/internal/config"
 )
 
-// unclassifiedShareWindowDays bounds the check to recent evidence. Long enough
-// that a quiet fleet still has failures to divide by, short enough that a
-// classifier degrading now is not averaged away by months of healthy history.
-const unclassifiedShareWindowDays = 30
-
-// unclassifiedShareThreshold is the share above which the check warns.
+// The window and the threshold are now TUNABLE — `doctor.thresholds` in
+// config.yaml, resolved through DoctorHandlers.thresholds (2026-09-13). The
+// values below remain the compiled defaults and live in internal/config so the
+// generated config reference documents the same number the check uses; the
+// calibration reasoning stays here, where the check is.
 //
-// A named constant, not a config key: every threshold in the doctor surface is
-// one, and this check is not the place to invent a config seam none of its
-// neighbours has. Retuning is a one-line change plus a rebuild. The gap —
-// doctor thresholds being uniformly unconfigurable — is filed in the backlog
-// rather than solved half-way here for one check.
+// The window is long enough that a quiet fleet still has failures to divide
+// by, short enough that a classifier degrading now is not averaged away by
+// months of healthy history.
+
+// The share above which the check warns; the default is
+// config.DefaultUnclassifiedShare.
+//
+// It was a named constant "not a config key: every threshold in the doctor
+// surface is one, and this check is not the place to invent a config seam none
+// of its neighbours has". That reasoning was right and its premise is now
+// false — the seam exists for all of them, uniformly, so this check reads
+// `doctor.thresholds.unclassified_share` like its neighbours read theirs.
 //
 // NOT zero, which would warn permanently: some residual is expected and
 // healthy.
@@ -50,7 +58,6 @@ const unclassifiedShareWindowDays = 30
 // NEXT unnamed class, and it is doing that already: the 65 remaining rows are
 // dominated by "agent fabrication detected", which is nameable and is filed as
 // follow-up work. A check whose residual is small is a check that is working.
-const unclassifiedShareThreshold = 0.05
 
 // checkUnclassifiedShare publishes the denominator behind the residual failure
 // bucket.
@@ -75,6 +82,9 @@ func (h *DoctorHandlers) checkUnclassifiedShare(ctx context.Context) DoctorCheck
 	// spelled in lower case. On SQLite it reported `near "'30 days'": syntax
 	// error` as an ERROR verdict on every run. The window is computed in Go
 	// and bound; FILTER becomes SUM(CASE …), which is exact for integer counts.
+	thresholds := h.doctorThresholds()
+	windowDays := thresholds.UnclassifiedShareWindowDays
+
 	var unclassified, failures int
 	err := h.db.QueryRowContext(ctx, `
 		SELECT SUM(CASE WHEN error_class = 'unclassified' THEN 1 ELSE 0 END),
@@ -82,23 +92,22 @@ func (h *DoctorHandlers) checkUnclassifiedShare(ctx context.Context) DoctorCheck
 		  FROM execution_step_outcomes
 		 WHERE error_class IS NOT NULL AND error_class <> ''
 		   AND recorded_at > $1`,
-		time.Now().UTC().AddDate(0, 0, -unclassifiedShareWindowDays),
+		time.Now().UTC().AddDate(0, 0, -windowDays.Value),
 	).Scan(&unclassified, &failures)
 	if err != nil {
 		return DoctorCheck{Name: name, Status: "ERROR", Message: fmt.Sprintf("query failed: %v", err)}
 	}
-	return evaluateUnclassifiedShare(unclassified, failures, unclassifiedShareThreshold)
+	return evaluateUnclassifiedShare(unclassified, failures, thresholds.UnclassifiedShare, windowDays)
 }
 
 // evaluateUnclassifiedShare turns the two counts into a verdict. Split from the
 // query so the contract is testable without a database.
 //
-// threshold is a parameter rather than a closed-over constant precisely so the
-// tests can exercise the boundary (at, above, below) without rebuilding — the
-// production caller passes unclassifiedShareThreshold and nothing else does.
-//
-//nolint:unparam // threshold varies only in tests, deliberately; see above.
-func evaluateUnclassifiedShare(unclassified, failures int, threshold float64) DoctorCheck {
+// The threshold and window arrive as RESOLVED values — each carrying whether it
+// came from config or from the compiled default — because the verdict message
+// says which. The nolint:unparam that used to sit here (threshold "varies only
+// in tests, deliberately") is gone: it varies in production now.
+func evaluateUnclassifiedShare(unclassified, failures int, threshold config.ResolvedFloat, windowDays config.ResolvedInt) DoctorCheck {
 	const name = "unclassified_step_failures"
 
 	// No failed steps in the window is NO EVIDENCE, not a healthy classifier.
@@ -108,19 +117,24 @@ func evaluateUnclassifiedShare(unclassified, failures int, threshold float64) Do
 		return DoctorCheck{
 			Name:    name,
 			Status:  "SKIPPED",
-			Message: fmt.Sprintf("no failed steps in the last %d days; nothing to measure", unclassifiedShareWindowDays),
+			Message: fmt.Sprintf("no failed steps in the last %d days (%s); nothing to measure", windowDays.Value, windowDays.Source()),
 		}
 	}
 
 	share := float64(unclassified) / float64(failures)
 	// The denominator is published on EVERY path, passing included: a green
 	// check that hides its coverage is the defect this class is about.
-	summary := fmt.Sprintf("%d of %d classified step failures (%.1f%%) are unclassified over %d days; threshold %.0f%%",
-		unclassified, failures, share*100, unclassifiedShareWindowDays, threshold*100)
+	// The threshold's SOURCE is published beside it. The gap this check's
+	// tunability closed was that a mismatched bound is invisible — the check
+	// warns permanently or never warns, and neither reads as misconfiguration.
+	// "(default)" versus "(configured)" is what tells an operator whether the
+	// key they edited is the one being used.
+	summary := fmt.Sprintf("%d of %d classified step failures (%.1f%%) are unclassified over %d days (%s); threshold %.0f%% (%s)",
+		unclassified, failures, share*100, windowDays.Value, windowDays.Source(), threshold.Value*100, threshold.Source())
 
 	// Strictly above, so a threshold set at the measured steady state does not
 	// warn permanently.
-	if share > threshold {
+	if share > threshold.Value {
 		return DoctorCheck{
 			Name:    name,
 			Status:  "WARNING",

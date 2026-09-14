@@ -30,6 +30,9 @@ Vornik comes in two editions built from the same core:
 | Log shipping (Logship) | — | ✅ |
 | Cross-project orchestration (`call_project`) | — | ✅ |
 | NL Automation Composer (describe-it project setup) | — | ✅ |
+| User accounts and channel/key→account mapping | ✅ | ✅ |
+| Configuration assistant | ✅ | ✅ |
+| Architect consultation over A2A (contract-gated) | ✅ | ✅ |
 
 <!-- END GENERATED editions-matrix -->
 
@@ -43,4 +46,5 @@ they are not merely hidden, they are not present in the binary.
 - **Enterprise** is for teams that need the advanced capabilities above, SSO and
   governance, horizontal scale, or commercial support / the hosted SaaS.
 
-See [Support](support.md) for commercial options.
+See [Support](support.md) for commercial options, and [Licensing](licensing.md)
+for what the AGPL-3.0 does and does not require when you use or fork Community.

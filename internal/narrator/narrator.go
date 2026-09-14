@@ -322,8 +322,15 @@ func (n *Narrator) runOnce(ctx context.Context) {
 			n.handleDebounceFired(ctx, f)
 		case f := <-n.heartbeatCh:
 			n.handleHeartbeatFired(ctx, f)
-		case now := <-ticker.C:
-			n.sweepIdle(ctx, now)
+		case <-ticker.C:
+			// n.now(), NOT the ticker's own timestamp. Every other time in
+			// this package — st.lastEventAt, st.lastLineAt — comes from the
+			// n.now() seam, so taking the tick's wall-clock value here mixed
+			// two clocks: under a test clock the sweep compared a real
+			// timestamp against a fake one and the idle window became
+			// meaningless (it could even be negative). Identical in
+			// production, where nowFn is nil and n.now() is time.Now().
+			n.sweepIdle(ctx, n.now())
 		}
 	}
 }
@@ -649,8 +656,30 @@ func (n *Narrator) emitLine(ctx context.Context, executionID string, st *executi
 		return
 	}
 	now := n.now()
-	if !st.lastLineAt.IsZero() && now.Sub(st.lastLineAt) < n.minLineInterval() {
-		return // min_line_interval coalescing — dropped, not queued (story is advisory)
+	// min_line_interval coalescing — dropped, not queued (the story is
+	// advisory, and a suppressed progress line is followed by another).
+	//
+	// THE COMPLETION LINE IS EXEMPT, and the exemption is load-bearing rather
+	// than a nicety. sweepIdle tears the execution's state down on the very
+	// next statement after emitting it, so a completion dropped here is
+	// dropped FOREVER: the story ends on "Finished step N" and reads as though
+	// the task never finished — the same failure the attempt-failed line above
+	// exists to prevent. There is at most one completion per execution, so
+	// exempting it cannot produce the spam the interval is there to stop.
+	//
+	// Found as a test flake (TestSweepIdle_TerminalCompletion, three timeouts
+	// 2026-09-09..13, always on a loaded host): under load the step line's
+	// debounce pushes it close enough to the sweep that the two land inside
+	// the interval. The flake was reporting this defect at the rate the race
+	// happened to occur. Pinned deterministically by
+	// TestEmitLine_CompletionSurvivesTheMinLineInterval.
+	if storageKind != persistence.ExecutionNarrationKindCompletion &&
+		!st.lastLineAt.IsZero() && now.Sub(st.lastLineAt) < n.minLineInterval() {
+		// COUNTED. This returned silently, so a coalesced line and a line that
+		// was never triggered looked identical from outside — and that is what
+		// let the completion case hide for as long as it did.
+		n.metricDropped("min_line_interval")
+		return
 	}
 
 	var text string

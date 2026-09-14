@@ -329,6 +329,8 @@ func LoadFromPathWithProvenance(path string) (*Config, *Provenance, error) {
 	}
 
 	recordChanged(cfg, prov, func(c *Config) { c.Composer.applyDefaults() }, derivedBy("composer.applyDefaults"))
+	recordChanged(cfg, prov, func(c *Config) { c.Identity.applyDefaults() }, derivedBy("identity.applyDefaults"))
+	recordChanged(cfg, prov, func(c *Config) { c.ConfigAssistant.applyDefaults() }, derivedBy("config_assistant.applyDefaults"))
 
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("configuration validation failed: %w", err)

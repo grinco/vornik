@@ -7803,4 +7803,116 @@ COMMENT ON COLUMN forge_ci_outcomes.commented_at IS 'When Forge posted a CI-stat
 ALTER TABLE forge_ci_outcomes DROP COLUMN IF EXISTS commented_at;
 `,
 	},
+	{
+		Version: 183,
+		Name:    "users_access_revoked_at",
+		// Deliberate access-revocation marker (2026-09-13 config-assistant
+		// review R3: "bootstrap must not re-grant deliberately revoked access
+		// on the next login"). IdentityRepository.RemoveUserAccess stamps it
+		// in the same transaction that drops the backing-group membership;
+		// SetUserAccess clears it. NULL = never deliberately revoked, which
+		// is the state of every existing row. The EE provisioning path reads
+		// it; the column exists on BOTH backends (SQLite: schema.go +
+		// sqliteAdditiveColumns).
+		Up: `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS access_revoked_at TIMESTAMPTZ;
+COMMENT ON COLUMN users.access_revoked_at IS 'When an admin deliberately removed this user''s access (RemoveUserAccess); cleared by SetUserAccess. NULL = never revoked. Bootstrap/provisioning must not re-grant while set (2026-09-13 review R3).';
+`,
+		Down: `
+ALTER TABLE users DROP COLUMN IF EXISTS access_revoked_at;
+`,
+	},
+	{
+		Version: 184,
+		Name:    "config_apply_journal",
+		// Durable multi-file config apply (https://docs.vornik.io
+		// config-apply-journal-design.md §2). apply.go writes each file
+		// atomically, but a bundle of N files plus the ledger row is not one
+		// transaction: a crash between the second rename and MarkApplied left
+		// two files new, one old, and a ledger saying APPROVED. This row is
+		// committed BEFORE the first temp file (§1.1) with every pre-image and
+		// read-set hash, so a restart can finish a proven-complete generation
+		// or restore every pre-image — never guess (§5).
+		//
+		// The unique partial index is the "one open journal per proposal"
+		// constraint: a retry that finds an open row resumes reconciliation
+		// instead of preparing a second one (R8). DRIFT rows stay open
+		// (terminal_at NULL) until an operator resolves them, which is why
+		// retention prunes on terminal_at and nothing else.
+		//
+		// pre_images carries REAL file bytes (the same bytes the ledger's
+		// pre_apply_snapshot holds, derived from here on the terminal
+		// transition) and may include secret values: operator-scope only,
+		// never surfaced by read handlers.
+		Up: `
+CREATE TABLE IF NOT EXISTS config_apply_journal (
+    id                 TEXT PRIMARY KEY,
+    proposal_id        TEXT NOT NULL,
+    request_id         TEXT,
+    state              TEXT NOT NULL CHECK (state IN (
+                         'PREPARED','APPLYING','VERIFYING','APPLIED',
+                         'PENDING_RESTART','REVERTING','REVERTED',
+                         'DRIFT','FAILED')),
+    op_digest          TEXT NOT NULL,
+    schema_version     INTEGER NOT NULL,
+    deployment_root    TEXT NOT NULL,
+    affected_projects  JSONB NOT NULL,
+    writer_epoch       BIGINT NOT NULL,
+    ops                JSONB NOT NULL,
+    pre_images         JSONB NOT NULL,
+    read_set           JSONB NOT NULL,
+    progress           JSONB NOT NULL DEFAULT '[]',
+    generation_before  TEXT,
+    generation_after   TEXT,
+    failure            TEXT,
+    created_at         TIMESTAMPTZ NOT NULL,
+    updated_at         TIMESTAMPTZ NOT NULL,
+    terminal_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_config_apply_journal_open ON config_apply_journal (state)
+    WHERE terminal_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_config_apply_journal_open_proposal
+    ON config_apply_journal (proposal_id) WHERE terminal_at IS NULL;
+COMMENT ON TABLE config_apply_journal IS 'Durable record of a multi-file config apply (LLD 2026-09-13 config-apply-journal §2). PREPARED is committed before the first file write; pre_images holds REAL pre-apply bytes (may contain secrets) — operator scope only.';
+COMMENT ON COLUMN config_apply_journal.terminal_at IS 'Set on APPLIED/PENDING_RESTART/REVERTED/FAILED. NULL = open, including DRIFT, which waits for an operator and is never pruned.';
+`,
+		Down: `
+DROP INDEX IF EXISTS uq_config_apply_journal_open_proposal;
+DROP INDEX IF EXISTS idx_config_apply_journal_open;
+DROP TABLE IF EXISTS config_apply_journal;
+`,
+	},
+	{
+		Version: 185,
+		Name:    "control_plane_proposals_identifiers",
+		// Ledger identifier + actor columns (config-assistant plan §7g, review
+		// R8 idempotency and R2 attribution). All nullable, no backfill: a
+		// legacy row has no request, no door and no resolved actor, and
+		// inventing one would make an unattributed decision look attributed.
+		//
+		// idempotency_key is UNIQUE where present: a client retry carrying the
+		// same key collides on insert (ErrDuplicateKey) instead of filing a
+		// second proposal or firing a second consult.
+		Up: `
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS request_id TEXT;
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS door TEXT;
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS actor_kind TEXT;
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS actor_account_id TEXT;
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS actor_credential_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cp_proposals_idempotency_key
+    ON control_plane_proposals (idempotency_key) WHERE idempotency_key IS NOT NULL;
+COMMENT ON COLUMN control_plane_proposals.idempotency_key IS 'Client-supplied retry key; UNIQUE where not null so a retried Create collides instead of filing twice (plan §7g R8). NULL on legacy rows.';
+COMMENT ON COLUMN control_plane_proposals.door IS 'Surface the proposal came through: operator | console | chat | agent. NULL on legacy rows.';
+`,
+		Down: `
+DROP INDEX IF EXISTS uq_cp_proposals_idempotency_key;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS actor_credential_id;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS actor_account_id;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS actor_kind;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS door;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS idempotency_key;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS request_id;
+`,
+	},
 }

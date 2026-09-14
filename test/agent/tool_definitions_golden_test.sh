@@ -20,8 +20,16 @@
 # Allowlist axis: the shapes allowed_builtin_tools_json() distinguishes, named
 # for what task.json contains.
 #   no-task-json          the file is absent (the `|| printf` fallback)
-#   no-allowedtools-key   config.permissions has no allowedTools (the `//` fallback —
-#                         the 2026-08-22 state in which skill_fetch was advertised then refused)
+#   no-allowedtools-key   config.permissions has no allowedTools (the `//` fallback)
+#
+# RE-RECORDED 2026-09-13 for those two cells only (12 of 30). Absent
+# permissions used to fall back to ["file_read","file_write","run_shell"] and
+# now grant nothing but current_time and the exempt tools — see
+# allowed_builtin_tools_json in the entrypoint for why the fallback was both
+# inconsistent with the daemon's AlwaysGranted set and pointed the wrong way.
+# These fixtures ARE that specification, so changing the behaviour means
+# re-recording them deliberately; the other 18 cells were byte-identical, which
+# is what says the change is scoped to the fallback.
 #   default-four          allowedTools is exactly what the daemon substitutes for a role that declared none
 #   full                  every declared name
 #   file-read-only        ["file_read"]

@@ -61,8 +61,11 @@ func (b MissBehavior) String() string {
 var Contract = map[string]MissBehavior{
 	"A2APushConfigRepository.Get":                  MissErrNotFound, // *A2APushConfig
 	"APIKeyRepository.LookupActiveByHash":          MissErrNotFound, // *APIKey
+	"ApplyJournalRepository.Get":                   MissErrNotFound, // *ConfigApplyJournal
+	"ApplyJournalRepository.OpenForProposal":       MissErrNotFound, // *ConfigApplyJournal — no open row is a miss, not a state
 	"ArtifactRepository.Get":                       MissErrNotFound, // *Artifact
 	"ArtifactRepository.GetByHash":                 MissErrNotFound, // *Artifact
+	"AccessRevocationReader.AccessRevokedAt":       MissErrNotFound, // *time.Time
 	"ChannelSessionRepository.Load":                MissErrNotFound, // *ChannelSession
 	"ChatAuditRepository.GetByID":                  MissErrNotFound, // *ChatAuditEntry
 	"ChatMemoryWriteConfirmationRepository.Get":    MissErrNotFound, // *ChatMemoryWriteConfirmation
@@ -99,6 +102,7 @@ var Contract = map[string]MissBehavior{
 	"ProjectSpawnRepository.GetBySpawnedProject":     MissErrNotFound, // *ProjectSpawn
 	"ProjectWizardSessionRepository.Get":             MissErrNotFound, // *ProjectWizardSession
 	"ProposalRepository.GetByID":                     MissErrNotFound, // *ControlPlaneProposal
+	"ProposalRepository.GetByIdempotencyKey":         MissErrNotFound, // *ControlPlaneProposal — "" never matches (legacy NULL)
 	"ReminderRepository.Get":                         MissErrNotFound, // *Reminder
 	"SkillRepository.GetByID":                        MissErrNotFound, // *Skill
 	"SkillRepository.Get":                            MissErrNotFound, // *Skill

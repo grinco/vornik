@@ -144,14 +144,6 @@ type Config struct {
 	// Single-installation mode only.
 	PRReviewLabels []string
 
-	// AutoReviewOnPush / ReviewDraftPRs are the single-installation forms
-	// of the identically-named InstallationConfig fields; see there for
-	// the semantics and for why one is a pointer and the other is not.
-	//
-	// Single-installation mode only.
-	AutoReviewOnPush *bool
-	ReviewDraftPRs   bool
-
 	// SenderAllowlist lists GitHub login names allowed to trigger
 	// the @vornik reply path via issue_comment.created. Empty allows
 	// all logins (dev-mode pass-through, matching Telegram's
@@ -241,27 +233,12 @@ type InstallationConfig struct {
 	// deny-all default).
 	RepoAllowlist []string
 
-	// AutoReviewOnPush controls whether pull_request.synchronize (a new
-	// commit pushed to the PR branch) triggers a review.
-	//
-	// A *bool because the zero value must not mean "off": nil is UNSET and
-	// resolves to true, which is the behaviour docs/public/features/forge.md
-	// already documents. An operator who wants quiet pushes sets it false
-	// explicitly; per-PR there is also the pause command (phase 3).
-	AutoReviewOnPush *bool
-
 	// CIEnabled turns on reading completed CI runs
 	// (2026-09-08-forge-ci-outcomes-design.md §8). Default FALSE — the feature
 	// needs a NEW App permission (actions:read), and a daemon that upgrades
 	// must not start 403ing against an installation whose owner has not
 	// re-accepted it.
 	CIEnabled bool
-
-	// ReviewDraftPRs opts INTO auto-reviewing draft pull requests. Default
-	// false: a draft is work in progress, and ready_for_review is the
-	// transition that starts review. An explicit on-demand command still
-	// reviews a draft — asking is consent.
-	ReviewDraftPRs bool
 
 	// TaskLabels lists labels that, when applied to an issue, fire
 	// this installation's task-creation path. Empty disables that
@@ -349,6 +326,13 @@ type TaskCreationEvent struct {
 	// (repository.default_branch) — the base for opened change requests and
 	// the pre-work rebase target. Empty when the payload omitted it.
 	DefaultBranch string
+
+	// Draft reports that the pull request is a draft. CARRIED, not acted on:
+	// the draft rule is a review-trigger policy and lives in
+	// internal/forgereview with the push off-switch, so both forge ingresses
+	// apply the same one (design §13.4). This channel decided it locally until
+	// 2026-09-13, which is why the generic relay ingress had neither knob.
+	Draft bool
 
 	// OnDemand marks an event a HUMAN explicitly asked for, rather than one a
 	// push produced. Such events are never coalesced away: someone asking a
@@ -457,12 +441,6 @@ type installation struct {
 
 	taskCreator TaskCreator
 
-	// autoReviewOnPush / reviewDraftPRs are the resolved forms of the
-	// same-named InstallationConfig fields (see there for why one is a
-	// pointer and this one is not).
-	autoReviewOnPush bool
-	reviewDraftPRs   bool
-
 	// ciEnabled is the resolved form of the same-named InstallationConfig
 	// field. There is deliberately no ciWorkflowPaths beside it: the
 	// workflow-path filter lives in forgeci, where both ingresses see it.
@@ -559,10 +537,6 @@ func resolveInstallations(cfg Config) ([]*installation, error) {
 			SenderAllowlist: cfg.SenderAllowlist,
 			MentionHandle:   cfg.MentionHandle,
 			TaskCreator:     cfg.TaskCreator,
-			// Single-installation mode mirrors the per-installation
-			// knobs, so the two modes cannot drift in what they gate.
-			AutoReviewOnPush: cfg.AutoReviewOnPush,
-			ReviewDraftPRs:   cfg.ReviewDraftPRs,
 		})
 		return []*installation{inst}, nil
 	}
@@ -604,10 +578,7 @@ func buildInstallation(ic InstallationConfig) *installation {
 		sendersRaw:       append([]string(nil), ic.SenderAllowlist...),
 		taskCreator:      ic.TaskCreator,
 		mentionHandle:    resolveMentionHandle(ic.MentionHandle),
-		// nil == unset == ON. See InstallationConfig.AutoReviewOnPush.
-		autoReviewOnPush: ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush,
 		ciEnabled:        ic.CIEnabled,
-		reviewDraftPRs:   ic.ReviewDraftPRs,
 	}
 }
 
@@ -1303,32 +1274,18 @@ func (c *Channel) handlePullRequestReview(ctx context.Context, event, delivery s
 	if p.PullRequest == nil {
 		return
 	}
-	// The push trigger is the only one an operator can switch off, because it
-	// is the only one that fires repeatedly on a single PR. Deliberately does
-	// NOT suppress opened/reopened/ready_for_review: someone who wants quiet
-	// pushes must not silently lose first review as well.
-	if kind == "pull_request.synchronize" && !inst.autoReviewOnPush {
-		c.logger.Debug().
-			Str("event", event).
-			Str("delivery", delivery).
-			Str("repo", p.Repository.FullName).
-			Int("pr", p.PullRequest.Number).
-			Msg("github-app: auto_review_on_push disabled; not reviewing this push")
-		return
-	}
-	// A draft is work in progress. ready_for_review is EXEMPT because it is
-	// the action that ends draft state — GitHub still reports draft:true on
-	// some deliveries of it, and suppressing it there would swallow the very
-	// transition that is supposed to start the review.
-	if p.PullRequest.Draft && !inst.reviewDraftPRs && kind != "pull_request.ready_for_review" {
-		c.logger.Debug().
-			Str("event", event).
-			Str("delivery", delivery).
-			Str("repo", p.Repository.FullName).
-			Int("pr", p.PullRequest.Number).
-			Msg("github-app: draft PR; not auto-reviewing until ready for review")
-		return
-	}
+	// THE PUSH OFF-SWITCH AND THE DRAFT RULE ARE NOT DECIDED HERE any more
+	// (moved 2026-09-13). Both were evaluated at this point against
+	// inst.autoReviewOnPush / inst.reviewDraftPRs — per-INSTALLATION state on
+	// this channel — so the generic `webhooks.sources` relay, the ingress this
+	// deployment actually receives deliveries through, had no project-wide
+	// push off switch at all and could not opt into draft review.
+	//
+	// They are now review-trigger POLICY, applied by forgereview.Coordinator
+	// alongside pause and coalescing (design §13.4), which this path reaches
+	// through the task creator. The draft flag is carried on the event for the
+	// coordinator to read; deciding it twice is what let the two ingresses
+	// drift in the first place.
 	if len(inst.prLabels) > 0 {
 		hit := false
 		for _, l := range p.PullRequest.Labels {
@@ -1363,16 +1320,19 @@ func (c *Channel) handlePullRequestReview(ctx context.Context, event, delivery s
 		labels = append(labels, l.Name)
 	}
 	ev := TaskCreationEvent{
-		Kind:           kind,
-		SessionID:      sessionID,
-		Title:          p.PullRequest.Title,
-		Body:           p.PullRequest.Body,
-		Labels:         labels,
-		SenderLogin:    p.Sender.Login,
-		Repo:           p.Repository.FullName,
-		Number:         p.PullRequest.Number,
-		DefaultBranch:  p.Repository.DefaultBranch,
-		HeadSHA:        p.PullRequest.Head.SHA,
+		Kind:          kind,
+		SessionID:     sessionID,
+		Title:         p.PullRequest.Title,
+		Body:          p.PullRequest.Body,
+		Labels:        labels,
+		SenderLogin:   p.Sender.Login,
+		Repo:          p.Repository.FullName,
+		Number:        p.PullRequest.Number,
+		DefaultBranch: p.Repository.DefaultBranch,
+		HeadSHA:       p.PullRequest.Head.SHA,
+		// Carried for the shared review-trigger policy to decide on; see the
+		// note at the head of this function.
+		Draft:          p.PullRequest.Draft,
 		InstallationID: p.Installation.ID,
 		IdempotencyKey: "github-app:" + delivery,
 	}

@@ -1,4 +1,4 @@
-package service
+package taskkeys
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"vornik.io/vornik/internal/apikey"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
+	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // newMockDB builds a test *postgres.APIKeyRepository backed by sqlmock.
@@ -32,7 +33,7 @@ func TestTaskKeyMinter_MintTaskKey_CreatesKeyAndReturnsRaw(t *testing.T) {
 	repo, mock, cleanup := newMockAPIKeyRepo(t)
 	defer cleanup()
 
-	m := &taskKeyMinter{repo: repo}
+	m := New(repo)
 
 	// Expect an INSERT on api_keys. We pin the name and key prefix
 	// shape; the raw key is minted internally so we match on AnyArg
@@ -85,7 +86,7 @@ func TestTaskKeyMinter_MintTaskKey_KeyExpiry(t *testing.T) {
 	// Use an in-memory stub instead of sqlmock so we can inspect the
 	// inserted row directly.
 	stub := &inMemAPIKeyRepo{}
-	m := &taskKeyMinter{repo: stub}
+	m := New(stub)
 
 	raw, err := m.MintTaskKey(context.Background(), "proj-2", "task-def")
 	if err != nil {
@@ -130,7 +131,7 @@ func TestTaskKeyMinter_MintTaskKey_KeyExpiry(t *testing.T) {
 // requestAllowsProject accepts it for the pool's project only.
 func TestTaskKeyMinter_MintProjectScopedKey_IsProjectScopedNotTaskScoped(t *testing.T) {
 	stub := &inMemAPIKeyRepo{}
-	m := &taskKeyMinter{repo: stub}
+	m := New(stub)
 
 	raw, err := m.MintProjectScopedKey(context.Background(), "proj-warm", "coder")
 	if err != nil {
@@ -169,7 +170,7 @@ func TestTaskKeyMinter_RevokeTaskKey_DelegatesToRevokeByName(t *testing.T) {
 	stub.rows = append(stub.rows, &persistence.APIKey{
 		ID: "akey-1", ProjectID: "proj-3", Name: "agent:task_task-ghi",
 	})
-	m := &taskKeyMinter{repo: stub}
+	m := New(stub)
 
 	if err := m.RevokeTaskKey(context.Background(), "task-ghi"); err != nil {
 		t.Fatalf("RevokeTaskKey: %v", err)
@@ -188,8 +189,8 @@ func TestTaskKeyMinter_RevokeTaskKey_DelegatesToRevokeByName(t *testing.T) {
 
 // inMemAPIKeyRepo is a minimal persistence.APIKeyRepository stub that
 // stores inserted rows so MintTaskKey can be verified without sqlmock.
-// Only Create and RevokeByName need to be correct for these tests;
-// the other methods panic to catch unexpected calls.
+// Only Create and RevokeByName need to mutate state for these tests;
+// lookup still follows the repository miss contract so doubles stay honest.
 type inMemAPIKeyRepo struct {
 	rows []*persistence.APIKey
 }
@@ -209,7 +210,7 @@ func (r *inMemAPIKeyRepo) RevokeByName(_ context.Context, name string) error {
 	return nil
 }
 func (r *inMemAPIKeyRepo) LookupActiveByHash(context.Context, string) (*persistence.APIKey, error) {
-	panic("unexpected LookupActiveByHash")
+	return nil, persistence.ErrNotFound
 }
 func (r *inMemAPIKeyRepo) ListByProject(context.Context, string) ([]*persistence.APIKey, error) {
 	panic("unexpected ListByProject")
@@ -226,4 +227,11 @@ func (r *inMemAPIKeyRepo) UpdateAllowPush(context.Context, string, bool) error {
 
 func (*inMemAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+func TestInMemAPIKeyRepo_MissContract(t *testing.T) {
+	repo := &inMemAPIKeyRepo{}
+	repotest.AssertMiss(t, "APIKeyRepository.LookupActiveByHash", func() (*persistence.APIKey, error) {
+		return repo.LookupActiveByHash(context.Background(), "missing")
+	})
 }

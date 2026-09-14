@@ -20,8 +20,12 @@ package memory_test
 // by the production WHERE project_id = $1 clause, not a test shim.
 //
 // GATING: skips cleanly (never fails) when TEST_DATABASE_URL is unset, so
-// the unit lane and CI hosts without a throwaway Postgres stay green. Run
-// with the package's standard integration recipe, e.g.:
+// the unit lane and CI hosts without a throwaway Postgres stay green —
+// UNLESS VORNIK_REQUIRE_INTEGRATION_DB=1, which the CI integration job and
+// `make test-integration` set to make the same condition a failure (see
+// integration_lane_gate_test.go: a lane that skips this package reports a
+// pass for guarantees that never ran). Run with the package's standard
+// integration recipe, e.g.:
 //
 //	TEST_DATABASE_URL=postgres://swarmd:swarmd@127.0.0.1:5432/vornik_integration_test?sslmode=disable \
 //	  go test -tags=integration ./internal/memory/... -run TestIntegration_IngestRecall -race -count=1
@@ -76,7 +80,7 @@ func openIngestRecallDB(t *testing.T) *sql.DB {
 
 	rawURL := os.Getenv("TEST_DATABASE_URL")
 	if rawURL == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping memory ingest→recall integration test")
+		skipOrFail(t, "TEST_DATABASE_URL not set; no database for the memory integration suite")
 	}
 
 	u, err := url.Parse(rawURL)
@@ -89,12 +93,12 @@ func openIngestRecallDB(t *testing.T) *sql.DB {
 	// them — "vornik" (default) and "vornik_test" (see
 	// integration_guard_test.go for why the old vornik_test-only check was a gap).
 	if isProtectedDaemonDB(dbName) && os.Getenv("VORNIK_TEST_ALLOW_DAEMON") != "1" {
-		t.Skipf("TEST_DATABASE_URL points at a live daemon DB (%q); refusing to run. Set VORNIK_TEST_ALLOW_DAEMON=1 to override.", dbName)
+		skipOrFail(t, "TEST_DATABASE_URL points at a live daemon DB (%q); refusing to run. Set VORNIK_TEST_ALLOW_DAEMON=1 to override.", dbName)
 	}
 
 	db, err := sql.Open("postgres", rawURL)
 	if err != nil {
-		t.Skipf("postgres open failed, skipping: %v", err)
+		skipOrFail(t, "postgres open failed: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -117,7 +121,7 @@ func openIngestRecallDB(t *testing.T) *sql.DB {
 				"  TEST_DATABASE_URL='postgres://swarmd:swarmd@127.0.0.1:5432/vornik_integration_test?sslmode=disable'",
 				err)
 		}
-		t.Skipf("postgres unreachable, skipping: %v", err)
+		skipOrFail(t, "postgres unreachable: %v", err)
 	}
 
 	ingestRecallMigrateOnce.Do(func() {

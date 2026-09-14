@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 
@@ -155,6 +156,39 @@ type ApplyEngine struct {
 	// the file-based apply path unchanged.
 	KindAppliers map[string]KindApplier
 
+	// Journal, when set, switches FILE applies to the durable journaled path
+	// of apply_journal.go (LLD 2026-09-13-config-apply-journal-design): a
+	// PREPARED row with every pre-image is committed before the first write
+	// and APPLIED lands with the ledger in one transaction. Nil keeps the
+	// legacy in-memory reverse path below byte-for-byte.
+	Journal persistence.ApplyJournalRepository
+	// LeaderGate is the config-writer lease (§1.2), consulted through
+	// leaderelection.DangerousWriteAllowed before write #1, before each
+	// subsequent write and before the terminal transition. Nil proceeds.
+	LeaderGate any
+	// WriterEpoch reports the lease epoch stored on the journal row at
+	// PREPARE. Nil → 0.
+	WriterEpoch func() int64
+	// VerifyGeneration confirms, after a successful Reload, that the
+	// resolved runtime carries the intended content (§1.3: a reload that
+	// returns nil but leaves the old generation active is NOT applied). Nil
+	// accepts reload success.
+	VerifyGeneration func(ctx context.Context, ops []JournaledOp) error
+	// RestartOnly reports whether every changed key is restart-only (the
+	// featuredoctor RestartRequired classification), in which case the
+	// journal ends PENDING_RESTART with the ledger APPLIED (§3). Nil → never.
+	RestartOnly func(ctx context.Context, ops []JournaledOp) (bool, error)
+	// Generation returns the registry's current generation id for
+	// generation_before/after. Nil → "".
+	Generation func() string
+
+	// crashAfter is the test-only crash point (§7): when it returns true for
+	// a stage ("prepared", "write:<path>", "progress:<path>", "verifying",
+	// "reverting") the engine stops exactly there, as a process crash would.
+	crashAfter func(stage string) bool
+	// pendingRestart is the process-local PENDING_RESTART marker.
+	pendingRestart atomic.Bool
+
 	mu sync.Mutex // global apply lock (serialises all applies + rollbacks)
 }
 
@@ -191,6 +225,19 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	}
 	if p.Status != persistence.ProposalStatusApproved {
 		return persistence.ErrProposalNotApproved
+	}
+	// A retry that finds an open journal for this proposal resumes its
+	// reconciliation instead of preparing a second one (R8) — checked BEFORE
+	// the pre-flight below, whose create-target-exists refusal would
+	// otherwise read a half-landed bundle as a conflict.
+	if e.Journal != nil {
+		open, oerr := e.Journal.OpenForProposal(ctx, id)
+		if oerr == nil {
+			return e.resumeOpenJournal(ctx, open)
+		}
+		if !errors.Is(oerr, persistence.ErrNotFound) {
+			return fmt.Errorf("journal: %w", oerr)
+		}
 	}
 	if ka := e.kindApplier(p.Kind); ka != nil {
 		// Same daemon-ack gate as the file path below (apply.go's
@@ -307,6 +354,11 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 		if verr := e.ValidateChange(ctx, p); verr != nil {
 			return fmt.Errorf("change re-validation failed: %w", verr)
 		}
+	}
+	// Durable path (apply_journal.go): PREPARED committed before write #1,
+	// APPLIED with the ledger in one transaction, crash-recoverable.
+	if e.Journal != nil {
+		return e.applyJournaled(ctx, p, actor, resolved)
 	}
 	// Snapshot: single legacy replace keeps the bare pre-image string (Phase-2a
 	// back-compat); multi-op uses the versioned JSON envelope (§3).

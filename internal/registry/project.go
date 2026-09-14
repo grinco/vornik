@@ -2,7 +2,7 @@
 package registry
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/taintlineage"
@@ -231,6 +230,13 @@ type Project struct {
 	// can override per-execution. See
 	// https://docs.vornik.io §6.
 	Pedantic *bool `yaml:"pedantic,omitempty"`
+	// ConfigAssistantEnabled is the configuration assistant's LEVEL-2
+	// (per-subject) kill switch (2026-09-13 config-assistant design §8.2):
+	// only an explicit `false` disables the assistant for this project;
+	// absent or unparseable leaves it ENABLED, because a parse failure that
+	// silently disabled the assistant would be indistinguishable from it
+	// working (design test 16).
+	ConfigAssistantEnabled *bool `yaml:"config_assistant_enabled,omitempty"`
 	// AcceptCallsFrom gates inter-project orchestration (Phase A
 	// LLD: https://docs.vornik.io
 	// design.md §4.4). When another project's `call_project`
@@ -881,6 +887,25 @@ type ProjectForge struct {
 	// audit alongside the same handle being hardcoded on the App channel.
 	MentionHandle string `yaml:"mention_handle"`
 
+	// AutoReviewOnPush and ReviewDraftPRs are the two review-trigger knobs,
+	// held HERE rather than under `github_app:` because they are decisions
+	// about reviewing, not about one ingress.
+	//
+	// They lived on ProjectGitHubApp until 2026-09-13 and so reached only the
+	// GitHub App channel. The generic `webhooks.sources` relay — the ingress
+	// this deployment actually receives deliveries through — had neither, and
+	// an operator who wanted "review on open, never on push" there had only
+	// the per-PR `pause` command or a source event filter that also drops the
+	// deliveries carrying comment commands. Same shape as MentionHandle above:
+	// one setting, both ingresses, resolved in one place (Project.ForgeReview).
+	//
+	// Both are *bool because the zero value must not mean "off" for the first
+	// and must be distinguishable from "unset" for the second — unset falls
+	// back to the `github_app:` spelling, so every deployed config keeps
+	// working, and only then to the default.
+	AutoReviewOnPush *bool `yaml:"auto_review_on_push"`
+	ReviewDraftPRs   *bool `yaml:"review_draft_prs"`
+
 	// CI configures reading completed CI runs
 	// (2026-09-08-forge-ci-outcomes-design.md §8).
 	CI ProjectForgeCI `yaml:"ci"`
@@ -1056,6 +1081,48 @@ func (p *Project) ResolveForge() (forge.Config, bool) {
 // the back-compat top-level `github:` block.
 func (p *Project) MentionHandle() string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(p.Forge.MentionHandle), "@"))
+}
+
+// ForgeReview resolves the project's review-trigger policy, for EVERY forge
+// ingress. One function, so the two doors cannot disagree about whether a push
+// triggers a review — which is exactly what they did until 2026-09-13.
+//
+// Precedence, most specific first:
+//
+//  1. `forge.auto_review_on_push` / `forge.review_draft_prs` — the ingress-
+//     neutral spelling, and the one to write in new config.
+//  2. `github_app.auto_review_on_push` / `github_app.review_draft_prs` — the
+//     spelling that shipped in 2026.9.1. Kept because deployed configs use it;
+//     it now reaches both ingresses rather than only the App channel, which is
+//     a widening of where an EXISTING setting applies and is the point.
+//  3. The defaults: push reviews ON (what docs/public/features/forge.md
+//     promises), draft reviews OFF (a draft is work nobody has said is ready).
+func (p *Project) ForgeReview() ForgeReviewPolicy {
+	out := ForgeReviewPolicy{AutoReviewOnPush: true, ReviewDraftPRs: false}
+	if p == nil {
+		return out
+	}
+	switch {
+	case p.Forge.AutoReviewOnPush != nil:
+		out.AutoReviewOnPush = *p.Forge.AutoReviewOnPush
+	case p.GitHubApp.AutoReviewOnPush != nil:
+		out.AutoReviewOnPush = *p.GitHubApp.AutoReviewOnPush
+	}
+	switch {
+	case p.Forge.ReviewDraftPRs != nil:
+		out.ReviewDraftPRs = *p.Forge.ReviewDraftPRs
+	case p.GitHubApp.ReviewDraftPRs:
+		out.ReviewDraftPRs = true
+	}
+	return out
+}
+
+// ForgeReviewPolicy is the resolved form of the two knobs. Plain bools: every
+// "unset means X" question is already answered by ForgeReview, so nothing
+// downstream has to know the fallback order or can get it differently wrong.
+type ForgeReviewPolicy struct {
+	AutoReviewOnPush bool
+	ReviewDraftPRs   bool
 }
 
 // Enabled reports whether the GitHub App channel is configured
@@ -2441,16 +2508,24 @@ func loadProjects(dir string, index *TreeIndex) (map[string]*Project, error) {
 		// an over-permissive one fails nothing and says nothing.
 		//
 		// Design: https://docs.vornik.io
-		var project Project
-		dec := yaml.NewDecoder(bytes.NewReader(data))
-		dec.KnownFields(true)
-		if err := dec.Decode(&project); err != nil {
+		project, err := decodeProject(data)
+		if err != nil {
 			// Skip files with syntax errors rather than failing the entire
 			// registry. A corrupted or hand-edited file should not prevent
-			// other projects from loading. The error is printed to stderr so
-			// it appears in the daemon log.
-			fmt.Fprintf(os.Stderr, "vornik/registry: skipping %s: yaml parse error: %v\n", name, err)
-			index.reject("project", filepath.Join("projects", name), err)
+			// other projects from loading.
+			//
+			// DIAGNOSED, not merely reported (2026-09-13). This used to print
+			// the decoder's error and nothing else, which is how a ~30-minute
+			// outage on 2026-09-10 surfaced as "my project is gone" rather
+			// than "the upgrade rejected a key": `field feeds not found in
+			// type registry.ProjectAutonomy` does not say that the whole file
+			// was skipped, that `assistant` therefore does not exist, or what
+			// to do about it. The diagnosis says all three, and distinguishes
+			// a misspelt key (fix the line) from a key this binary has never
+			// heard of (the config is ahead of the binary — deploy ordering).
+			diag := DiagnoseProjectDecodeError(name, data, err)
+			fmt.Fprintf(os.Stderr, "vornik/registry: skipping %s\n%s", name, diag.Detail())
+			index.reject("project", filepath.Join("projects", name), errors.New(diag.Detail()))
 			continue
 		}
 

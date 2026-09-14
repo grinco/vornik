@@ -30,12 +30,23 @@ type stubUsersIdentityRepo struct {
 		off    bool
 	}
 	revoked []struct{ channel, externalID string }
+	created []persistence.User
 
 	setAccessErr error
 }
 
 func (s *stubUsersIdentityRepo) ListUsers(context.Context) ([]persistence.UserAdminView, error) {
 	return s.users, nil
+}
+
+func (s *stubUsersIdentityRepo) CreateUser(_ context.Context, u *persistence.User) error {
+	s.created = append(s.created, *u)
+	s.users = append(s.users, persistence.UserAdminView{
+		UserID:      u.ID,
+		DisplayName: u.DisplayName,
+		CreatedAt:   u.CreatedAt,
+	})
+	return nil
 }
 
 func (s *stubUsersIdentityRepo) SetUserAccess(_ context.Context, userID, role string, projects []string) error {

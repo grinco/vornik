@@ -122,6 +122,8 @@ func ValidateBytes(data []byte) error {
 		return fmt.Errorf("parse: %w", err)
 	}
 	cfg.Composer.applyDefaults()
+	cfg.Identity.applyDefaults()
+	cfg.ConfigAssistant.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
@@ -337,6 +339,16 @@ func DefaultConfig() *Config {
 			c.applyDefaults()
 			return c
 		}(),
+		Identity: func() IdentityConfig {
+			c := IdentityConfig{}
+			c.applyDefaults()
+			return c
+		}(),
+		ConfigAssistant: func() AssistantConfig {
+			c := AssistantConfig{}
+			c.applyDefaults()
+			return c
+		}(),
 		Watchdog: WatchdogConfig{
 			// Default on so a fresh deployment gets stuck-execution
 			// surfacing without operator action. Default action
@@ -450,6 +462,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported database driver: %s", driver)
 	}
+	// A doctor threshold outside its range produces a check that can never
+	// fire, which is indistinguishable from the check not existing — the exact
+	// invisibility the config seam was added to remove. Fail the boot instead.
+	if err := c.Doctor.Thresholds.Validate(); err != nil {
+		return err
+	}
 	if c.Logging.Level != "" {
 		validLevels := map[string]bool{
 			"debug": true,
@@ -549,16 +567,11 @@ func (c *Config) Validate() error {
 	}
 	// Phase-3 login config validation.
 	if c.Auth.Providers.GitHub != nil {
-		// Postgres prerequisite: the identity core (users / ui_sessions
-		// tables + the Identity repository) ships only in the Postgres
-		// migrations. On sqlite, buildSessionLogin finds a nil
-		// Identity/UISessions repo and silently disables login with only
-		// a WARN — an operator who configured a login provider then can't
-		// log in and gets no hard signal. Refuse to boot instead.
-		// (Hardening 2026-06-15, auth LLD review batch 2.)
-		if driver == "sqlite" {
-			return fmt.Errorf("auth.providers.github requires the postgres driver: the identity core (users/ui_sessions) is not available on sqlite, so login would be silently disabled")
-		}
+		// The identity core (users / ui_sessions + the Identity repository)
+		// ships on BOTH stores from 2026-09-13 (config-assistant review R1:
+		// SQLite parity), so the former "requires the postgres driver"
+		// refusal (hardening 2026-06-15) is lifted. A backend that still
+		// lacks the repository is reported by name at login wiring time.
 		// A public origin is required when any provider is configured. Either
 		// key satisfies it (Config.PublicOrigin), so a deployment that declares
 		// only server.public_base_url is valid — that is what lets an operator
@@ -656,6 +669,12 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.A2A.Validate(); err != nil {
+		return err
+	}
+	if err := c.Identity.Validate(); err != nil {
+		return err
+	}
+	if err := c.ConfigAssistant.Validate(); err != nil {
 		return err
 	}
 	// web.writes tri-state + insecure co-flag (fail startup on an invalid value

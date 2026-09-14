@@ -239,7 +239,9 @@ code nobody will look at again.
 - **Review volume goes up on active repositories.** On a project configured with
   `github_app:`, `github_app.auto_review_on_push: false` restores the previous
   first-review-only behaviour. On the generic `webhooks.sources` ingress that
-  key does not exist yet; use the per-pull-request `pause` command.
+  key did not exist in this release; use the per-pull-request `pause` command.
+  *(Closed since: `forge.auto_review_on_push` applies on both ingresses, and
+  the `github_app:` spelling now reaches both too. See the Forge feature page.)*
 
 **Only people with standing in the repository can run review commands** — the
 owner, organisation members, and invited collaborators. A review is real model

@@ -15,10 +15,12 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/configassist"
 	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/conversation/a2a"
@@ -917,6 +919,19 @@ type Server struct {
 	rateLimiter     ratelimit.ProjectLimiter
 	queue           *queue.Queue
 	projectRegistry *registry.Registry
+	// configAssist is the configuration assistant engine behind
+	// POST /api/v1/operator/assist (2026-09-13). Nil → 503. Built by
+	// EnableConfigAssistant once the server's own wiring exists.
+	configAssist *configassist.Engine
+	// accounts backs the CE operator shell's account-management routes
+	// (/api/v1/operator/accounts*, 2026-09-13 review R1). Nil → 503.
+	accounts *authz.Accounts
+	// featureIdentityRepo / featureDurability / featureA2APeers back the
+	// identity, config-assistant and architect-consult feature-doctor
+	// checks (2026-09-13). See WithFeatureIdentityDeps.
+	featureIdentityRepo persistence.IdentityRepository
+	featureDurability   featuredoctor.DurabilityProber
+	featureA2APeers     featuredoctor.A2APeerLister
 	// featureTradingProbe backs the "trading-series" feature-doctor check.
 	// nil in minimal deployments (the check degrades to a graceful skip).
 	featureTradingProbe featuredoctor.TradingSeriesProbe
@@ -1832,6 +1847,19 @@ func WithOperatorIdentityLinkRepository(repo persistence.OperatorIdentityLinkRep
 func WithProfileUseAuditRepository(repo persistence.ProfileUseAuditRepository) ServerOption {
 	return func(s *Server) {
 		s.profileUseAuditRepo = repo
+	}
+}
+
+// WithFeatureIdentityDeps wires the identity repository, the store
+// durability prober and the A2A peer lister the 2026-09-13 features
+// (identity, config-assistant, architect-consult) read through
+// featuredoctor.Deps. Any of the three may be nil; the doctor reports
+// "not wired" rather than panicking.
+func WithFeatureIdentityDeps(identity persistence.IdentityRepository, durability featuredoctor.DurabilityProber, peers featuredoctor.A2APeerLister) ServerOption {
+	return func(s *Server) {
+		s.featureIdentityRepo = identity
+		s.featureDurability = durability
+		s.featureA2APeers = peers
 	}
 }
 

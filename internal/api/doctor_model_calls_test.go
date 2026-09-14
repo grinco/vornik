@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+
+	"vornik.io/vornik/internal/config"
 )
 
 // INCIDENT 2026-07-30, customer deployment. `vornikctl doctor` reported "all 11
@@ -130,14 +132,21 @@ func TestModelHealthSummary_DoesNotOverclaim(t *testing.T) {
 	}
 }
 
-// Sanity: the flag thresholds are the ones documented, so a future edit that loosens them
-// has to change this test deliberately.
+// Sanity: the DEFAULT flag thresholds are the ones documented, so a future edit
+// that loosens them has to change this test deliberately.
+//
+// They became config keys on 2026-09-13 (doctor.thresholds), and this test
+// moved with them — from the check's own constants to the compiled defaults in
+// internal/config, which are what a deployment that configures nothing gets.
+// An operator CAN now set these outside the range asserted here; that is the
+// point of the seam, and it is their deployment's call. What must not drift
+// unnoticed is the number everyone else inherits.
 func TestModelCallsLiveThresholds(t *testing.T) {
-	if modelCallsLiveMinSamples < 5 {
-		t.Errorf("min samples = %d, too low to be trustworthy", modelCallsLiveMinSamples)
+	if config.DefaultModelMinSamples < 5 {
+		t.Errorf("default min samples = %d, too low to be trustworthy", config.DefaultModelMinSamples)
 	}
-	if modelCallsLiveFailureRate < 0.25 || modelCallsLiveFailureRate > 0.75 {
-		t.Errorf("failure rate threshold = %v, outside a defensible range", modelCallsLiveFailureRate)
+	if config.DefaultModelFailureRate < 0.25 || config.DefaultModelFailureRate > 0.75 {
+		t.Errorf("default failure rate = %v, outside a defensible range", config.DefaultModelFailureRate)
 	}
 	_ = time.Second
 }

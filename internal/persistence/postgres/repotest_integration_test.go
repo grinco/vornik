@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/repotest"
 )
 
@@ -268,12 +269,18 @@ func resetSuiteTables(t *testing.T, db *DB, tables ...string) {
 			"only the dedicated %q may be reset (unset POSTGRES_DB or point it at %q)",
 			tables, current, integrationDBName, integrationDBName)
 	}
-	for _, table := range tables {
-		if _, err := db.DB.Exec("TRUNCATE TABLE " + table); err != nil {
-			t.Fatalf("resetSuiteTables: truncate %s: %v", table, err)
-		}
+	// One statement for every table: Postgres refuses to TRUNCATE a table
+	// another table references by foreign key unless both are named in the
+	// same TRUNCATE, and the identity-core tables reference users/groups.
+	if _, err := db.DB.Exec("TRUNCATE TABLE " + strings.Join(tables, ", ")); err != nil {
+		t.Fatalf("resetSuiteTables: truncate %v: %v", tables, err)
 	}
 }
+
+// identityTables are the seven identity-core tables (migrations 90 + 91) in
+// one TRUNCATE so the FK graph (everything → users, memberships → groups)
+// clears together.
+var identityTables = []string{"ui_sessions", "link_codes", "user_identities", "group_members", "group_projects", "groups", "users"}
 
 func newIntegrationDB(t *testing.T) *DB {
 	t.Helper()
@@ -347,6 +354,16 @@ func TestProposalRepository_PostgresContract(t *testing.T) {
 	resetSuiteTables(t, db, "control_plane_proposals")
 	repotest.RunProposalSuite(t, NewProposalRepository(db.DB))
 	repotest.RunProposalObservationSuite(t, NewProposalRepository(db.DB))
+}
+
+// TestApplyJournalRepository_PostgresContract — the durable multi-file config
+// apply record (LLD 2026-09-13 config-apply-journal), the same suite that
+// runs against SQLite. MarkAppliedWithLedger spans both tables, so both are
+// reset.
+func TestApplyJournalRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, "config_apply_journal", "control_plane_proposals")
+	repotest.RunApplyJournalSuite(t, NewApplyJournalRepository(db.DB), NewProposalRepository(db.DB))
 }
 
 // TestCostTuningCanaryRepository_PostgresContract — the cost/quality canary
@@ -579,6 +596,68 @@ func TestAPIKeyRepository_PostgresContract(t *testing.T) {
 func TestIdentityRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunIdentityRepositorySuite(t, NewIdentityRepository(db.DB))
+}
+
+// TestIdentityAdminSuite_PostgresContract — the admin half of the identity
+// contract (ListUsers, SetUserAccess/RemoveUserAccess, last-admin guard,
+// session revocation in-tx). Same suite the SQLite backend runs since the
+// 2026-09-13 parity. The suite's last-admin case needs a store with no
+// other enabled admin, hence the reset.
+func TestIdentityAdminSuite_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, identityTables...)
+	repotest.RunIdentityAdminSuite(t, NewIdentityRepository(db.DB), NewUISessionRepository(db.DB))
+}
+
+// TestUISessionRepository_PostgresContract — browser login sessions
+// (migration 91). Same suite the SQLite backend runs.
+func TestUISessionRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunUISessionSuite(t, NewUISessionRepository(db.DB), NewIdentityRepository(db.DB))
+}
+
+// TestIdentityRepository_AccessRevokedMarker_Postgres pins the R3 marker on
+// the Postgres lane (migration 183; mirror of the SQLite test of the same
+// name): RemoveUserAccess stamps users.access_revoked_at, SetUserAccess
+// clears it.
+func TestIdentityRepository_AccessRevokedMarker_Postgres(t *testing.T) {
+	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, identityTables...)
+	repo := NewIdentityRepository(db.DB)
+	ctx := context.Background()
+	for _, id := range []string{"adm", "u1"} {
+		if err := repo.CreateUser(ctx, &persistence.User{ID: id, DisplayName: id, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("CreateUser(%s): %v", id, err)
+		}
+	}
+	revoked := func() bool {
+		var v bool
+		if err := db.DB.QueryRowContext(ctx, `SELECT access_revoked_at IS NOT NULL FROM users WHERE id = 'u1'`).Scan(&v); err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		return v
+	}
+	if err := repo.SetUserAccess(ctx, "adm", "admin", nil); err != nil {
+		t.Fatalf("SetUserAccess(adm): %v", err)
+	}
+	if err := repo.RemoveUserAccess(ctx, "u1"); err != nil {
+		t.Fatalf("RemoveUserAccess(no backing group): %v", err)
+	}
+	if !revoked() {
+		t.Fatal("RemoveUserAccess without a backing group did not stamp the marker")
+	}
+	if err := repo.SetUserAccess(ctx, "u1", "user", []string{"*"}); err != nil {
+		t.Fatalf("SetUserAccess: %v", err)
+	}
+	if revoked() {
+		t.Fatal("SetUserAccess did not clear the marker")
+	}
+	if err := repo.RemoveUserAccess(ctx, "u1"); err != nil {
+		t.Fatalf("RemoveUserAccess: %v", err)
+	}
+	if !revoked() {
+		t.Fatal("RemoveUserAccess did not stamp the marker")
+	}
 }
 
 // TestTaskLLMUsageRepository_PostgresContract — financial accounting.

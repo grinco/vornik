@@ -209,8 +209,6 @@ func installationConfigFromConfig(projectID string, cfg github.Config) github.In
 		SenderAllowlist: cfg.SenderAllowlist,
 		MentionHandle:   cfg.MentionHandle,
 
-		AutoReviewOnPush: cfg.AutoReviewOnPush,
-		ReviewDraftPRs:   cfg.ReviewDraftPRs,
 		// TaskCreator wired separately by the service container —
 		// each installation gets its own per-project adapter.
 		TaskCreator: nil,
@@ -252,9 +250,6 @@ func resolveGitHubAppConfig(project *registry.Project) (github.Config, error) {
 		// its own key would let a deployment answer commands under two
 		// different names.
 		MentionHandle: project.MentionHandle(),
-
-		AutoReviewOnPush: p.AutoReviewOnPush,
-		ReviewDraftPRs:   p.ReviewDraftPRs,
 	}
 
 	if strings.TrimSpace(p.PrivateKeyPath) != "" {

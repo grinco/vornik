@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"vornik.io/vornik/internal/config"
 )
 
 // TestCheckCostAttribution_MetricsUnwiredOK confirms the check
@@ -33,7 +35,7 @@ func TestCheckCostAttribution_BelowFloorOK(t *testing.T) {
 	h := &DoctorHandlers{apiMetrics: m}
 	got := h.checkCostAttribution()
 	if got.Status != "OK" {
-		t.Errorf("status = %q, want OK (below floor of %d)", got.Status, costAttributionMinTotal)
+		t.Errorf("status = %q, want OK (below floor of %d)", got.Status, config.DefaultCostAttributionMinTotal)
 	}
 }
 

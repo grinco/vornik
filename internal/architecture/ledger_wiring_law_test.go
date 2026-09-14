@@ -89,14 +89,12 @@ var ledgerWiringRegistry = map[string]ledgerWiring{
 		bills:   false,
 		note:    "UI READS the ledger for /ui/spend. The authoring assistant's BILLING moved to Server.assistantSpend, wired from the same option.",
 	},
-
 	"external_api": {
 		file:    "internal/service/container_http.go",
 		snippet: "api.WithLLMUsageRepository(c.repos.LLMUsage)",
 		bills:   false,
 		note:    "API READS the ledger for spend endpoints. Both writers (the OpenAI-compatible proxy and the agent's streaming upsert) moved to Server.externalAPISpend / workflowStepSpend, wired from the same option.",
 	},
-
 	// ---- readers, classified so a new one is still a decision ----
 	"telegram.budget_check": {
 		file:    "internal/service/container_subsystems.go",
@@ -280,11 +278,15 @@ func TestEveryWiringSiteIsClassified(t *testing.T) {
 //
 // Once a component takes an llmspend.Recorder at construction, the compiler
 // enforces its billing and a text-match entry here is stale — worse than absent,
-// because it reads as evidence somebody still checks this. So a file that imports
-// internal/llmspend must not have registry entries pointing at it.
+// because it reads as evidence somebody still checks this. Reader entries stay:
+// they document budget/spend consumers, and TestEveryWiringSiteIsClassified is
+// the permanent guard for raw repository handoffs.
 func TestMigratedComponentsLeaveTheRegistry(t *testing.T) {
 	root := moduleRoot(t)
 	for name, e := range ledgerWiringRegistry {
+		if !e.bills {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(root, e.file))
 		if err != nil {
 			continue // reported by TestEveryBillingComponentIsWired

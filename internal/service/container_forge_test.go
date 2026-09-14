@@ -213,3 +213,31 @@ func TestNewForgeClassifier(t *testing.T) {
 		t.Error("with registry → classifier built")
 	}
 }
+
+// The resolver is what makes the config keys REACH the shared gate. Without it
+// the coordinator would fall back to DefaultPolicy for every project and the
+// two knobs would be parsed, stored, and ignored — the exact class this change
+// exists to close, one layer further in.
+func TestForgeReviewPolicyResolver_ReachesTheGate(t *testing.T) {
+	off := false
+	projects := fakeProjects{
+		"quiet":  {Forge: registry.ProjectForge{AutoReviewOnPush: &off}},
+		"legacy": {GitHubApp: registry.ProjectGitHubApp{ReviewDraftPRs: true}},
+	}
+	resolve := forgeReviewPolicyResolver(projects)
+
+	if got := resolve("quiet"); got.AutoReviewOnPush {
+		t.Error("forge.auto_review_on_push=false did not reach the policy")
+	}
+	if got := resolve("legacy"); !got.ReviewDraftPRs || !got.AutoReviewOnPush {
+		t.Errorf("github_app.review_draft_prs did not reach the policy: %+v", got)
+	}
+	// An unknown project, and a resolver with no registry at all, both fall
+	// back to the DEFAULTS rather than to nothing.
+	if got := resolve("no-such-project"); !got.AutoReviewOnPush || got.ReviewDraftPRs {
+		t.Errorf("unknown project resolved to %+v, want the defaults {true false}", got)
+	}
+	if got := forgeReviewPolicyResolver(nil)("quiet"); !got.AutoReviewOnPush || got.ReviewDraftPRs {
+		t.Errorf("nil registry resolved to %+v, want the defaults {true false}", got)
+	}
+}

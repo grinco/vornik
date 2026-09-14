@@ -68,18 +68,38 @@ func TestClassify_PullRequestActions(t *testing.T) {
 	}
 }
 
-// A draft is work in progress; ready_for_review is the transition that starts
-// review, and it must not be suppressed by the draft flag it clears.
+// A draft is REPORTED here, not acted on (changed 2026-09-13).
+//
+// This asserted the opposite until 2026-09-13: classification refused a draft
+// delivery outright. That made the project's `review_draft_prs` opt-in
+// unreachable from this ingress, because classification cannot see a project's
+// config and so could only ever answer with the default. The rule moved to
+// internal/forgereview, where both ingresses apply it and where
+// TestPolicy_DraftSuppressedByDefault / _DraftReviewedWhenOptedIn /
+// _ReadyForReviewIsExemptFromTheDraftGate now own the behaviour.
+//
+// What this test still owns is the SIGNAL: the flag must reach the job
+// faithfully, including on ready_for_review, where GitHub still reports
+// draft:true on some deliveries.
 func TestClassify_DraftPullRequest(t *testing.T) {
-	if _, ok := classify(t, prPayload("synchronize", true)); ok {
-		t.Error("a draft PR was classified as actionable on synchronize")
-	}
-	if _, ok := classify(t, prPayload("opened", true)); ok {
-		t.Error("a draft PR was classified as actionable on opened")
+	for _, action := range []string{"synchronize", "opened"} {
+		job, ok := classify(t, prPayload(action, true))
+		if !ok {
+			t.Fatalf("a draft PR must classify on %s — suppression is the policy's call, not the classifier's", action)
+		}
+		if !job.IsDraft {
+			t.Errorf("IsDraft = false on a draft %s delivery; the policy gate cannot see what it is not told", action)
+		}
+		if !job.IsChangeRequest {
+			t.Errorf("IsChangeRequest = false for a draft pull request on %s", action)
+		}
 	}
 	job, ok := classify(t, prPayload("ready_for_review", true))
 	if !ok {
 		t.Fatal("ready_for_review was suppressed by the draft flag it ends")
+	}
+	if !job.IsDraft {
+		t.Error("IsDraft must be reported verbatim on ready_for_review too — GitHub still says draft:true there, and the exemption is the policy's")
 	}
 	// The exempted path must still carry a head, or the review it starts has no
 	// upper bound for its range (review round 1 of phase A, minor 3).

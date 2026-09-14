@@ -29,6 +29,7 @@ func WorkflowSchema() AssetSchema {
 					{Path: "displayName", Label: "Display name", Kind: KindString},
 					{Path: "description", Label: "Description", Kind: KindString, Multiline: true, Help: "One-paragraph summary; required by the workflow-shape doctor check and shown in the picker."},
 					{Path: "version", Label: "Version", Kind: KindString},
+					{Path: "config_assistant_enabled", Label: "Configuration assistant enabled", Kind: KindBool, Advanced: true, Help: "Per-workflow assistant kill switch. Only explicit false disables; leave unset in raw YAML to inherit the enabled default."},
 				},
 			},
 			{

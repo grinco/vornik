@@ -160,6 +160,21 @@ type IdentityRepository interface {
 	RemoveUserAccess(ctx context.Context, userID string) error
 }
 
+// AccessRevocationReader is the OPTIONAL read side of the R3 marker
+// (`users.access_revoked_at`, migration 183; 2026-09-13 config-assistant
+// review R3 "bootstrap must not re-grant deliberately revoked access on the
+// next login"). RemoveUserAccess stamps the marker; SetUserAccess clears it.
+// The Enterprise provisioner type-asserts this on its repository and skips
+// the bootstrap-admins re-assert for a user whose access an operator
+// deliberately revoked. Kept separate from IdentityRepository so the
+// resolver contract (and every test double of it) is unchanged.
+type AccessRevocationReader interface {
+	// AccessRevokedAt returns the marker, nil when access was never
+	// deliberately revoked (or was re-granted since), ErrUserNotFound for
+	// an unknown user.
+	AccessRevokedAt(ctx context.Context, userID string) (*time.Time, error)
+}
+
 // UISessionRepository owns browser login sessions (migration 91).
 type UISessionRepository interface {
 	CreateSession(ctx context.Context, s *UISession) error

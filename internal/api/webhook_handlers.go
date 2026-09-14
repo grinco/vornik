@@ -18,6 +18,7 @@ import (
 	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/secrets"
@@ -936,10 +937,26 @@ func (s *Server) applyForgeReviewRules(
 		return true
 	}
 
-	if s.forgeReview == nil {
-		return false // no coordinator: degrade to always-enqueue, never to silence
+	// THE REVIEW-TRIGGER POLICY APPLIES EVEN WITH NO COORDINATOR, because
+	// `auto_review_on_push` / `review_draft_prs` are questions about
+	// configuration, not about whether this node has review state wired. The
+	// COALESCING half still degrades to always-enqueue there, never to silence
+	// — it is a cost optimisation, while not reviewing at all is the failure
+	// the feature exists to prevent.
+	//
+	// The coordinator is held as an interface (see ForgeReviewCoordinator), so
+	// a nil one cannot be called; that path evaluates the DEFAULT policy
+	// through the same forgereview function rather than restating the rule.
+	d := forgereview.Decision{}
+	switch {
+	case s.forgeReview != nil:
+		d = s.forgeReview.Decide(ctx, project.ID, job, job.OnDemand)
+	default:
+		if reason, blocked := forgereview.DefaultPolicy().Suppresses(job, job.OnDemand); blocked {
+			d = forgereview.Decision{Skip: true, Reason: reason}
+		}
 	}
-	if d := s.forgeReview.Decide(ctx, project.ID, job, job.OnDemand); d.Skip {
+	if d.Skip {
 		s.recordWebhookEvent(ctx, project.ID, source.Name, eventID, body, persistence.WebhookEventStatusFiltered, nil, d.Reason, "")
 		respondJSON(w, http.StatusOK, map[string]string{"status": "filtered", "reason": d.Reason})
 		return true

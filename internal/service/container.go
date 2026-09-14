@@ -65,6 +65,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"vornik.io/vornik/internal/authz"
 
 	editionpkg "vornik.io/vornik/internal/version"
 
@@ -198,8 +199,12 @@ type Container struct {
 	// handlers). backend owns the lifecycle + driver-specific
 	// helpers (Close / Migrate / IsReady / PG pointer for the
 	// pg_stat_user_tables query that has no SQLite analog).
-	DB       *sql.DB
-	backend  *storage.Backend
+	DB      *sql.DB
+	backend *storage.Backend
+	// accounts is the CE account-management service (2026-09-13), shared
+	// by the API and UI operator shells. Nil when identity storage is
+	// not wired.
+	accounts *authz.Accounts
 	Registry *registry.Registry
 	// ProjectFirstSeen gates project_created telemetry on FIRST observation
 	// rather than on every registry load. Nil disables the file-drop emit

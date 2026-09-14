@@ -155,14 +155,16 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		if pl.PullRequest == nil || !isReviewAction(pl.Action) {
 			return forge.ForgeJob{}, false
 		}
-		// A draft is work in progress: reviewing it spends budget on code
-		// nobody has said is ready. ready_for_review is EXEMPT because it is
-		// the action that ENDS draft state — GitHub still reports draft:true on
-		// some deliveries of it, and suppressing it there would swallow the
-		// very transition that starts the review.
-		if pl.PullRequest.Draft && pl.Action != "ready_for_review" {
-			return forge.ForgeJob{}, false
-		}
+		// DRAFT IS REPORTED, NOT ACTED ON (changed 2026-09-13). This refused
+		// the delivery outright — `if draft && action != "ready_for_review"
+		// { return false }` — which made the project's `review_draft_prs`
+		// opt-in unreachable from this ingress: classification cannot see the
+		// project's config, so the only answer it could give was the default.
+		// The rule now lives with the other review-trigger rules in
+		// internal/forgereview, where both ingresses apply the same one and a
+		// suppressed draft is RECORDED as filtered with a reason rather than
+		// vanishing as "not a forge event".
+		job.IsDraft = pl.PullRequest.Draft
 		// Without this the incremental range has no upper bound and every
 		// review on this path silently falls back to the full diff.
 		job.HeadSHA = pl.PullRequest.Head.SHA

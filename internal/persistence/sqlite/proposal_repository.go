@@ -23,7 +23,8 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 const proposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
 	apply_target, apply_content, apply_ops, applied_by, live_apply,
-	created_at, decided_at, applied_at`
+	created_at, decided_at, applied_at,
+	request_id, idempotency_key, door, actor_kind, actor_account_id, actor_credential_id`
 
 // Create inserts a new proposal, rejecting an oversized text field.
 func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlPlaneProposal) error {
@@ -38,13 +39,34 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+proposalColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, nullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
 		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		sqliteTime(p.CreatedAt), sqliteTimePtr(p.DecidedAt), sqliteTimePtr(p.AppliedAt),
+		nullStr(p.RequestID), nullStr(p.IdempotencyKey), nullStr(p.Door),
+		nullStr(p.ActorKind), nullStr(p.ActorAccountID), nullStr(p.ActorCredentialID),
 	)
+	// An idempotency_key collision (uq_cp_proposals_idempotency_key) — or an
+	// id collision — is the retry signal, not a generic failure (plan §7g R8).
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return persistence.ErrDuplicateKey
+	}
 	return err
+}
+
+// GetByIdempotencyKey fetches the proposal filed under key; ErrNotFound when
+// absent. An empty key never matches: legacy rows carry NULL.
+func (r *ProposalRepository) GetByIdempotencyKey(ctx context.Context, key string) (*persistence.ControlPlaneProposal, error) {
+	if key == "" {
+		return nil, persistence.ErrNotFound
+	}
+	row := r.db.QueryRowContext(ctx, `SELECT `+proposalColumns+` FROM control_plane_proposals WHERE idempotency_key = ?`, key)
+	p, err := scanProposal(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, persistence.ErrNotFound
+	}
+	return p, err
 }
 
 // validateProposalFieldSizes rejects a text field over the 64 KiB cap.
@@ -264,16 +286,20 @@ func scanProposal(sc skillScanner) (*persistence.ControlPlaneProposal, error) {
 		decidedAt sql.NullString
 		appliedAt sql.NullString
 		createdAt sqlTime
+		ids       [6]sql.NullString // request_id … actor_credential_id
 	)
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
 		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy, &p.LiveApply,
 		&createdAt, &decidedAt, &appliedAt,
+		&ids[0], &ids[1], &ids[2], &ids[3], &ids[4], &ids[5],
 	); err != nil {
 		return nil, err
 	}
 	p.ProjectID = projectID.String
+	p.RequestID, p.IdempotencyKey, p.Door = ids[0].String, ids[1].String, ids[2].String
+	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = ids[3].String, ids[4].String, ids[5].String
 	p.CreatedAt = createdAt.Time
 	if decidedAt.Valid && decidedAt.String != "" {
 		if t, err := parseSqliteTime(decidedAt.String); err == nil {

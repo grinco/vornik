@@ -28,6 +28,10 @@ type Swarm struct {
 	// BuildEffectiveRolePrompt composes this with the daemon's
 	// BuiltinRolePrelude and the role's own SystemPrompt.
 	RolePrelude string `yaml:"rolePrelude"`
+	// ConfigAssistantEnabled is the configuration assistant's per-subject
+	// kill switch for this swarm (design §8.2): explicit false disables;
+	// absent leaves it enabled.
+	ConfigAssistantEnabled *bool `yaml:"config_assistant_enabled,omitempty"`
 	// SuppressedGuidanceBlocks names daemon-authored ADVISORY guidance
 	// blocks this swarm's agents should not receive (LLD 09 §13.3.1).
 	// Compiling guidance into the binary is what makes an upgrade reach

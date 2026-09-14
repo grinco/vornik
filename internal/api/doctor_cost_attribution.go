@@ -21,14 +21,16 @@ import (
 // freshly enabling DB keys may sit below this until their
 // clients migrate — the check stays WARNING (not ERROR) so
 // it's actionable backlog, not boot-blocking.
-const costAttributionWarnFraction = 0.90
+// Tunable as of 2026-09-13: doctor.thresholds.cost_attribution_fraction,
+// defaulting to config.DefaultCostAttributionFraction (the same 0.90).
 
 // costAttributionMinTotal is the floor below which the check
 // stays OK regardless of distribution. A daemon with three
 // total external API calls shouldn't WARN — the sample is too
 // small to draw conclusions. The threshold matches the typical
 // "fresh deployment / test" range.
-const costAttributionMinTotal = 10
+// Tunable as of 2026-09-13: doctor.thresholds.cost_attribution_min_total,
+// defaulting to config.DefaultCostAttributionMinTotal (the same 10).
 
 // checkCostAttribution reports the per-source distribution of
 // the vornik_api_cost_attribution_total counter:
@@ -46,15 +48,18 @@ func (h *DoctorHandlers) checkCostAttribution() DoctorCheck {
 	}
 	counts := readCostAttributionCounts(h.apiMetrics)
 	total := counts.total()
-	if total < costAttributionMinTotal {
+	th := h.doctorThresholds()
+	// The floor is a config int and the counter is a uint64; the threshold is
+	// validated non-negative at load, so the widening conversion is exact.
+	if total < uint64(th.CostAttributionMinTotal.Value) {
 		return DoctorCheck{
 			Name:    name,
 			Status:  "OK",
-			Message: fmt.Sprintf("%d cost-attribution sample(s) since boot — below the %d-row floor; check is informational only.", total, costAttributionMinTotal),
+			Message: fmt.Sprintf("%d cost-attribution sample(s) since boot — below the %d-row floor (%s); check is informational only.", total, th.CostAttributionMinTotal.Value, th.CostAttributionMinTotal.Source()),
 		}
 	}
 	keyBoundFrac := float64(counts.keyBound) / float64(total)
-	if keyBoundFrac >= costAttributionWarnFraction {
+	if keyBoundFrac >= th.CostAttributionFraction.Value {
 		return DoctorCheck{
 			Name:    name,
 			Status:  "OK",
@@ -78,7 +83,7 @@ func (h *DoctorHandlers) checkCostAttribution() DoctorCheck {
 		Status: "WARNING",
 		Message: fmt.Sprintf(
 			"only %.0f%% of %d cost rows came from a DB-backed key (key-bound: %d, header: %d, fallback: %d, anonymous: %d). Drive the key-bound fraction to ≥ %.0f%% to retire the legacy attribution paths.",
-			keyBoundFrac*100, total, counts.keyBound, counts.header, counts.fallback, counts.anonymous, costAttributionWarnFraction*100,
+			keyBoundFrac*100, total, counts.keyBound, counts.header, counts.fallback, counts.anonymous, th.CostAttributionFraction.Value*100,
 		),
 		Items: items,
 	}

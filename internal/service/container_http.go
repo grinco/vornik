@@ -26,6 +26,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/admin"
 	"vornik.io/vornik/internal/api"
+	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
@@ -33,7 +34,9 @@ import (
 	"vornik.io/vornik/internal/conversation/a2a"
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/executor"
+	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/httpx/realip"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/mediahandles"
 	"vornik.io/vornik/internal/memory"
@@ -317,6 +320,34 @@ func (c *Container) initHTTPServer() error {
 			Bool("edition_gate", false).
 			Msg("capability omitted")
 		c.adminCapabilityLogged = true
+	}
+	// 2026-09-13 identity / config-assistant / architect-consult feature
+	// doctor deps. Wired OUTSIDE the admin edition gate on purpose: all
+	// three features are Community, and the consult feature's audit sink
+	// (review R8) must exist in CE — a consult with no committed audit
+	// record makes no network call, so the sink is wired here even when
+	// the Enterprise admin suite is absent. WithAdminAuditRepository is
+	// idempotent, so the EE branch above setting it too is harmless.
+	if c.repos != nil {
+		var identity persistence.IdentityRepository
+		if c.repos.Identity != nil {
+			identity = c.repos.Identity
+		}
+		var durability featuredoctor.DurabilityProber
+		if c.backend != nil {
+			durability = storageDurabilityProber{backend: c.backend}
+		}
+		apiOpts = append(apiOpts, api.WithFeatureIdentityDeps(identity, durability, api.ConfigA2APeerLister(c.Config)))
+		if c.repos.AdminAudit != nil && !c.providers.Admin {
+			apiOpts = append(apiOpts, api.WithAdminAuditRepository(c.repos.AdminAudit))
+		}
+		// CE operator shell (review R1): account management over the shared
+		// identity repository, audited through the admin audit sink.
+		// Constructed once; the UI shell below shares the instance.
+		if identity != nil {
+			c.accounts = authz.NewAccounts(identity, c.repos.AdminAudit)
+			apiOpts = append(apiOpts, api.WithAccountsService(c.accounts))
+		}
 	}
 	// Fleet observability (slice C1) — ClusterNodes + LeaderLocks back
 	// GET /api/v1/cluster. Both are nil-safe: the handler returns 503 when
@@ -1469,6 +1500,22 @@ func (c *Container) initHTTPServer() error {
 			dh.SetConfigDir(c.Registry.GetConfigDir())
 		}
 		dh.SetServerConfig(c.Config)
+		// Configuration assistant (2026-09-13): the engine is built over the
+		// API server's own wiring; the doctor's secret snapshot feeds its
+		// fresh hygiene gate. Its root is the deployed configs tree — never
+		// the config.yaml directory, which holds secrets/ (design §10a).
+		if c.Registry != nil {
+			spend := c.llmSpend(persistence.TaskLLMUsageSourceConfigAssist, "config-assistant")
+			apiServer.EnableConfigAssistant(api.ConfigAssistDeps{
+				TreeRoot:       c.Registry.GetConfigDir(),
+				ApplyPrefix:    configAssistApplyPrefix(c.ConfigPath, c.Registry.GetConfigDir()),
+				ConfigPath:     c.ConfigPath,
+				SecretSnapshot: dh.SecretFieldsSnapshot,
+				Usage: func(ctx context.Context, projectID, _ string, model string, prompt, completion int) {
+					spend.Record(ctx, llmspend.Input{ProjectID: projectID, Model: model, PromptTokens: prompt, CompletionTokens: completion})
+				},
+			})
+		}
 		// How the tool-audit redaction seam was actually wired — the operator-
 		// facing half of the fail-open census. Reads the live decorator rather
 		// than the config, because "the operator asked for scanning" and "the
@@ -1736,6 +1783,15 @@ func (c *Container) initHTTPServer() error {
 	//   - auth off: admin.Middleware stamps IsAdmin for every caller.
 	if sessionLogin == nil || !c.Config.API.AuthEnabled {
 		uiOpts = append(uiOpts, ui.WithAllUICallersAdmin())
+	}
+	// CE operator shell (2026-09-13 review R1/R2): /ui/operator/accounts in
+	// both editions; the admin.allowed_keys list is its explicit capability.
+	uiOpts = append(uiOpts, ui.WithOperatorCapability(c.Config.Admin))
+	if c.accounts != nil {
+		uiOpts = append(uiOpts, ui.WithAccountsService(c.accounts))
+	}
+	if eng := apiServer.ConfigAssistant(); eng != nil {
+		uiOpts = append(uiOpts, ui.WithConfigAssistant(eng))
 	}
 	if c.archiveSweeper != nil {
 		uiOpts = append(uiOpts, ui.WithArchiveSweeper(c.archiveSweeper))
@@ -2622,4 +2678,18 @@ func templateModelIDs(ctx context.Context, provider chat.Provider) ([]string, er
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// configAssistApplyPrefix is the deployed configs tree relative to the apply
+// engine's ConfigDir (filepath.Dir(config.yaml)), e.g. "configs". When the
+// registry root is not under the config directory the prefix is empty and
+// the assistant's ops are refused by the apply engine's path guard rather
+// than silently re-rooted.
+func configAssistApplyPrefix(configPath, treeRoot string) string {
+	base := filepath.Dir(configPath)
+	rel, err := filepath.Rel(base, treeRoot)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }

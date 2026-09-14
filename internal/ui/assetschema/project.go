@@ -27,6 +27,7 @@ func ProjectSchema() AssetSchema {
 					{Path: "swarmId", Label: "Swarm", Kind: KindString, Required: true, Help: "The swarm definition this project uses."},
 					{Path: "defaultWorkflowId", Label: "Default workflow", Kind: KindString, Required: true},
 					{Path: "adaptiveCandidateWorkflows", Label: "Adaptive candidate workflows", Kind: KindStringList, Help: "Menu the lead picks from in the adaptive router; each must resolve to a known workflow."},
+					{Path: "config_assistant_enabled", Label: "Configuration assistant enabled", Kind: KindBool, Advanced: true, Help: "Per-project assistant kill switch. Only explicit false disables; leave unset in raw YAML to inherit the enabled default."},
 					// Surfaced in the form rather than deferred to YAML on purpose:
 					// invisibility is what caused the 2026-07-30 census to find five
 					// projects with every memory chunk unscoped. An operator who
@@ -230,6 +231,12 @@ var ProjectDeferredPaths = []string{
 	// PR re-review triggers (2026-09-01). YAML-only alongside the rest of the
 	// github_app block; both are per-installation review-policy switches rather
 	// than anything the project form edits.
+	//
+	// Since 2026-09-13 these are the LEGACY spelling of `forge.auto_review_on_push`
+	// / `forge.review_draft_prs` below — still read, and now applied on every
+	// ingress rather than only the App channel. Kept deferred rather than
+	// surfaced in the form precisely because the form should not teach the
+	// older of two spellings.
 	"github_app.auto_review_on_push", "github_app.review_draft_prs",
 	// CI outcome ingestion (2026-09-08). YAML-only for the same reason as its
 	// neighbours: a per-installation policy switch, not a field the project
@@ -250,6 +257,13 @@ var ProjectDeferredPaths = []string{
 	// alongside the credentials it belongs with, not a per-project knob the
 	// project form edits.
 	"forge.provider", "forge.mention_handle",
+	// Review-trigger policy (2026-09-13), ingress-neutral: it applies to the
+	// GitHub App channel and the generic webhook relay alike. YAML-only with
+	// the rest of the forge block — it is a review-policy switch set beside
+	// the ingress configuration it governs, not a per-project knob the project
+	// form edits, and it is the same decision the two github_app entries above
+	// are deferred for.
+	"forge.auto_review_on_push", "forge.review_draft_prs",
 	"forge.github.app_id", "forge.github.installation_id",
 	"forge.github.private_key_path", "forge.github.api_base_url",
 	"forge.github.repo",

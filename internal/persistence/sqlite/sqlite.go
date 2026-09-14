@@ -114,7 +114,13 @@ func Connect(ctx context.Context, cfg Config) (*DB, error) {
 	// example) has no parent row in tasks yet. Once TaskRepository
 	// + others land, flip this back to ON and seed parent rows in
 	// the shared test setup.
-	dsn := cfg.Path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)"
+	// synchronous(FULL) is the durability half of the config-apply journal
+	// contract (2026-09-13 config-assistant review R6, plan §7g): the
+	// journal's PREPARED row must be on disk before the first file write,
+	// and under WAL the driver default (NORMAL) can lose the last committed
+	// transactions on power loss. Set explicitly so the contract does not
+	// depend on a driver default; storage.ProbeDurability reads it back.
+	dsn := cfg.Path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=synchronous(FULL)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -189,6 +195,19 @@ var sqliteAdditiveColumns = []additiveColumn{
 	// (LLD 2026-09-08-forge-ci-outcomes-design §13.6). Nullable: NULL means
 	// "not yet commented", which is the state every existing row is in.
 	{"forge_ci_outcomes", "commented_at", `TEXT`},
+	// Postgres migration 183 — deliberate access revocation marker (2026-09-13 R3).
+	// Nullable: NULL = never deliberately revoked, which every existing row is.
+	{"users", "access_revoked_at", `TEXT`},
+	// Postgres migration 185 — proposal identifier + actor columns
+	// (config-assistant plan §7g). Nullable, no backfill: a legacy row has no
+	// request, door or resolved actor. schemaSQL indexes idempotency_key, so
+	// these MUST land before schemaSQL runs (Migrate orders it so).
+	{"control_plane_proposals", "request_id", `TEXT`},
+	{"control_plane_proposals", "idempotency_key", `TEXT`},
+	{"control_plane_proposals", "door", `TEXT`},
+	{"control_plane_proposals", "actor_kind", `TEXT`},
+	{"control_plane_proposals", "actor_account_id", `TEXT`},
+	{"control_plane_proposals", "actor_credential_id", `TEXT`},
 }
 
 // applyAdditiveColumns adds any registered column missing from an existing

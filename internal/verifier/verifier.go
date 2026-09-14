@@ -761,19 +761,45 @@ func verifyNoStatus429(cfg Config, in Input) (*Violation, error) {
 		blocked = append(blocked, rep)
 	}
 
-	// Nothing in scope at all = nothing to verify. Don't fabricate a
-	// violation; another verifier (must_contain_url) owns "the
-	// scraper was supposed to run and didn't".
-	//
-	// KNOWN RESIDUAL, recorded rather than quietly accepted: when
-	// unclassified > 0 and nothing classified, this returns "nothing to
-	// verify" for a step where entries WERE in scope and none could be read —
-	// which is zero coverage, not absence, and the two still render
-	// identically here. Reporting it needs a Violation, and this package has no
-	// other output channel (it is a pure function with no logger), so saying so
-	// would change pass/fail — exactly the threshold-semantics review the
-	// backlog item deferred. Filed as its own P3 rather than smuggled in.
 	if successful == 0 && len(blocked) == 0 && len(excused) == 0 {
+		// ZERO COVERAGE IS NOT ABSENCE, and the two used to return the same
+		// nil from here (Finding D's last case, closed 2026-09-13).
+		//
+		// Entries WERE in scope and not one could be read: the verifier
+		// examined nothing, and the step passed exactly as it would have if
+		// the scraper had never run. In production 2,651 of 4,481 web_fetch
+		// rows were unreadable at once after a blind 4096-char tool_output
+		// slice cut the JSON mid-object, so a step whose entries all landed in
+		// that population passed silently.
+		//
+		// WARN, not fail, and deliberately: this is a report about the
+		// verifier's own reach, not a finding about the work. It is visible
+		// (and persisted as a verifier_warn outcome), it does not change any
+		// step's pass/fail, and an operator who wants it to can say so with
+		// `severity: fail` — the override applies at the Run boundary. That is
+		// the middle of the three options the backlog item listed, and the
+		// reason it is the right one: the strongest option needs a
+		// threshold-semantics decision that is the operator's, while the
+		// weakest needs an output channel this pure function does not have.
+		if unclassified > 0 {
+			return &Violation{
+				VerifierName: cfg.Name,
+				Type:         cfg.Type,
+				Severity:     SeverityWarn,
+				Detail: fmt.Sprintf(
+					"zero coverage: %d in-scope audit entr%s could not be classified and 0 were, "+
+						"so no fetch was actually examined. This verifier's thresholds "+
+						"(max_block_ratio, min_successful_fetches) were evaluated against an "+
+						"EMPTY denominator and cannot have been met or missed. "+
+						"Usual cause: tool_output truncated mid-JSON. "+
+						"Not a finding about the fetches — a report that there were none to find.",
+					unclassified, pluralY(unclassified),
+				),
+			}, nil
+		}
+		// Genuinely nothing in scope = nothing to verify. Don't fabricate a
+		// violation; another verifier (must_contain_url) owns "the scraper was
+		// supposed to run and didn't".
 		return nil, nil
 	}
 

@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/forge/forge.go
-      sha256: b86dd991b35124dfb83880c283a3aa95c5ab5b39cf1a578a67fbd463f237caa2
+      sha256: 8fe94fe7e928d7d2e18eaabf8d0b149db4210746cebe491ccb8202ab8e221c88
     - path: internal/forge/github/github.go
-      sha256: e63d11c51e901252e39f9602d9d0b506eab77507e796e477970697401ff353b8
+      sha256: 1425739004234ca75a26d2102a1c9a245568a31cfda4326f995b99c5a7614c1b
 ---
 # Forge — GitHub automation
 
@@ -85,8 +85,22 @@ A mention that isn't one of these commands gets a conversational reply, exactly
 as before.
 
 To turn automatic review-on-push off for a whole project rather than one PR, set
-`github_app.auto_review_on_push: false`. Automatic review of drafts can be turned
-on with `github_app.review_draft_prs: true`.
+`forge.auto_review_on_push: false`. Automatic review of drafts can be turned on
+with `forge.review_draft_prs: true`. Both apply on **every ingress** — the
+GitHub App channel and the generic `webhooks.sources` relay alike.
+
+```yaml
+forge:
+  auto_review_on_push: false   # first review only; pushes stay quiet
+  review_draft_prs: true       # review drafts too (default: wait for ready_for_review)
+```
+
+The push switch suppresses the push trigger *alone*: a pull request being
+opened, reopened or marked ready for review is still reviewed, and an explicit
+`@<bot> review` always is — asking is asking. If you set these under
+`github_app:` before 2026.9.2 they still work, and they now apply to both
+ingresses rather than only the App channel; the `forge:` spelling wins where
+both are present.
 
 ## Backlog-origin pull requests
 

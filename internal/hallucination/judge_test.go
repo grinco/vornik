@@ -9,58 +9,6 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
-// TestParseVerdict_PlainJSON — the canonical happy path.
-// Models that obey the prompt return clean JSON; the parser
-// returns the verdict as-is.
-func TestParseVerdict_PlainJSON(t *testing.T) {
-	in := `{"decision":"pass","confidence":0.9,"summary":"all claims grounded","signals":[]}`
-	v := parseVerdict(in)
-	require.NotNil(t, v)
-	assert.Equal(t, persistence.JudgeVerdictPass, v.Decision)
-	assert.Equal(t, 0.9, v.Confidence)
-}
-
-// TestParseVerdict_CodeFenced — small models routinely wrap
-// their JSON in markdown code fences. The parser must strip
-// them so a perfectly-good verdict isn't lost to formatting.
-func TestParseVerdict_CodeFenced(t *testing.T) {
-	in := "```json\n{\"decision\":\"fail\",\"confidence\":0.7,\"summary\":\"URL X not in audit\"}\n```"
-	v := parseVerdict(in)
-	require.NotNil(t, v)
-	assert.Equal(t, persistence.JudgeVerdictFail, v.Decision)
-}
-
-// TestParseVerdict_PrefatoryText — some models say "Here is my
-// verdict: {...}". The parser strips prefatory text by skipping
-// to the first '{'.
-func TestParseVerdict_PrefatoryText(t *testing.T) {
-	in := "Sure, here's the analysis. {\"decision\":\"abstain\",\"confidence\":0.0,\"summary\":\"no audit\"}"
-	v := parseVerdict(in)
-	require.NotNil(t, v)
-	assert.Equal(t, persistence.JudgeVerdictAbstain, v.Decision)
-}
-
-// TestParseVerdict_InvalidDecision — a verdict with a decision
-// outside the {pass,fail,abstain} set is malformed; parser
-// returns nil so the caller falls back to abstain. Without this
-// guard a typo'd "passes" would land in the DB and pollute
-// dashboards.
-func TestParseVerdict_InvalidDecision(t *testing.T) {
-	in := `{"decision":"approved","confidence":1.0}`
-	v := parseVerdict(in)
-	assert.Nil(t, v)
-}
-
-// TestParseVerdict_Garbage — a model that fails to produce
-// JSON at all returns nil; the runner falls back to abstain
-// with an error string. No partial parsing — better to abstain
-// than misclassify.
-func TestParseVerdict_Garbage(t *testing.T) {
-	in := "I cannot determine this without more context."
-	v := parseVerdict(in)
-	assert.Nil(t, v)
-}
-
 // TestStubJudge_ReturnsConfiguredVerdict — sanity check on
 // the test stub itself, since runner tests rely on it being
 // transparent.
@@ -105,48 +53,30 @@ func TestAbstainVerdict_HasReason(t *testing.T) {
 	assert.Contains(t, v.Summary, "timeout")
 }
 
-// TestParseVerdict_ReasoningModelThinkBlock — reasoning models
-// (nvidia.nemotron-nano-9b-v2, deepseek r1, qwen reasoning
-// variants) emit a <think>…</think> block before the answer.
-// The block routinely contains JSON-like punctuation that would
-// confuse the "find first {" extraction. parseVerdict must
-// strip the block before parsing.
-func TestParseVerdict_ReasoningModelThinkBlock(t *testing.T) {
-	in := "<think>The user wants me to decide pass or fail. Looking at the audit {1: success}, all claims are grounded. So I'll go with pass.</think>\n\n{\"decision\":\"pass\",\"confidence\":0.85,\"summary\":\"grounded\",\"signals\":[]}"
-	v := parseVerdict(in)
-	require.NotNil(t, v, "expected verdict, got nil")
-	assert.Equal(t, persistence.JudgeVerdictPass, v.Decision)
-	assert.Equal(t, 0.85, v.Confidence)
-}
-
-func TestParseVerdict_MultipleThinkBlocks(t *testing.T) {
-	in := "<think>first thought</think>\nsome text\n<think>second {with} braces</think>\n{\"decision\":\"fail\",\"confidence\":0.7,\"summary\":\"x\",\"signals\":[]}"
+// TestParseVerdict_KeepsSignalsAndStampsRecordedAt pins what the
+// hallucination wrapper adds on top of llmjudge.ParseVerdict (the
+// 2026-09-13 extraction): the per-claim Signals survive the round trip
+// through the shared parser's raw JSON, and each gets a RecordedAt stamp
+// because the LLM never carries one. The tolerant-extraction cases
+// (fences, prose, <think> blocks) live in internal/llmjudge with the code.
+func TestParseVerdict_KeepsSignalsAndStampsRecordedAt(t *testing.T) {
+	in := "<think>{not json}</think>\n```json\n{\"decision\":\"fail\",\"confidence\":0.7,\"summary\":\"URL X not in audit\",\"signals\":[{\"detector\":\"judge\",\"severity\":\"warn\",\"claim_type\":\"url\",\"claim_value\":\"https://x\",\"detail\":\"not in audit\"}]}\n```"
 	v := parseVerdict(in)
 	require.NotNil(t, v)
 	assert.Equal(t, persistence.JudgeVerdictFail, v.Decision)
+	assert.Equal(t, 0.7, v.Confidence)
+	assert.Equal(t, "URL X not in audit", v.Summary)
+	require.Len(t, v.Signals, 1)
+	assert.Equal(t, "https://x", v.Signals[0].ClaimValue)
+	assert.False(t, v.Signals[0].RecordedAt.IsZero(), "RecordedAt must be stamped on parse")
 }
 
-func TestParseVerdict_UnclosedThinkBlock(t *testing.T) {
-	// Truncated response — the model started thinking but ran out
-	// of tokens before emitting the answer. parseVerdict should
-	// return nil so the caller falls back to abstain (rather than
-	// trying to interpret the partial think block as JSON).
-	in := "<think>Reasoning about the audit {1: ok"
-	v := parseVerdict(in)
-	assert.Nil(t, v, "unclosed think with no answer must yield nil verdict")
-}
-
-func TestStripThinkBlocks(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"hello", "hello"},
-		{"<think>hidden</think> visible", " visible"},
-		{"<think>a</think><think>b</think>final", "final"},
-		{"<think>unclosed and ran out", ""},
-		{"prefix <think>middle</think> suffix", "prefix  suffix"},
-	}
-	for _, c := range cases {
-		if got := stripThinkBlocks(c.in); got != c.want {
-			t.Errorf("stripThinkBlocks(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
+// TestParseVerdict_MalformedSignalsIsNil: a verdict whose head parses but
+// whose signals are the wrong shape is rejected whole, as it was before the
+// extraction — better to abstain than to persist a half-read verdict.
+func TestParseVerdict_MalformedSignalsIsNil(t *testing.T) {
+	in := `{"decision":"pass","confidence":0.9,"summary":"ok","signals":"not-a-list"}`
+	assert.Nil(t, parseVerdict(in))
+	assert.Nil(t, parseVerdict("I cannot determine this without more context."))
+	assert.Nil(t, parseVerdict(`{"decision":"approved","confidence":1.0}`))
 }

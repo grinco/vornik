@@ -232,9 +232,41 @@ get_duration() {
     fi
 }
 
+# The role's effective allowlist, as the container sees it.
+#
+# ABSENT PERMISSIONS GRANT NOTHING (2026-09-13). This used to fall back to
+# ["file_read","file_write","run_shell"] when .config.permissions.allowedTools
+# was missing, and that was wrong twice over.
+#
+# It DISAGREED with the daemon. agenttools.AlwaysGranted (memory_search,
+# skill_fetch) is folded onto every role by withAlwaysGrantedTools, and the
+# fallback had neither — so the two sides held different answers to "what may
+# every role call", and a tool could be advertised here and refused there
+# (backlog 2026-08-22).
+#
+# And it was BACKWARDS. This fallback fires only on input the daemon did not
+# produce — the daemon always writes allowedTools — so it handed run_shell and
+# file_write to the least trustworthy input the container ever sees. A malformed
+# or hand-written task.json got MORE latitude than a declared role with a narrow
+# allowlist. Verified before the change: a task.json with no permissions block
+# ran `echo hi` through run_shell.
+#
+# Granting nothing also makes the disagreement unrepresentable rather than
+# merely fixed: there is no second list left that could drift from
+# AlwaysGranted. Widening the fallback to match it was the other candidate and
+# is the wrong direction — a security default should not be loosened to settle
+# a consistency argument.
+#
+# current_time survives the union deliberately. It reads a clock, grants no
+# capability, and is unioned on EVERY path including a declared empty
+# allowlist; removing it is a change to that unconditional union, which is a
+# separate decision with its own backlog item.
+#
+# The jq failure arm returns the same minimum, for the same reason: an
+# unparseable task.json is not evidence of a grant.
 allowed_builtin_tools_json() {
-    jq -c '((.config.permissions.allowedTools // ["file_read","file_write","run_shell"]) + ["current_time"] | unique)' "$INPUT_FILE" 2>/dev/null \
-        || printf '%s\n' '["current_time","file_read","file_write","run_shell"]'
+    jq -c '((.config.permissions.allowedTools // []) + ["current_time"] | unique)' "$INPUT_FILE" 2>/dev/null \
+        || printf '%s\n' '["current_time"]'
 }
 
 # The declared builtin vocabulary — BUILTIN_TOOL_NAMES_JSON, sourced from the

@@ -102,3 +102,28 @@ const (
 func (e RepositoryError) Error() string {
 	return string(e)
 }
+
+// Is lets the identity-core "not found" sentinels satisfy
+// errors.Is(err, ErrNotFound) while keeping their own identity (a caller
+// that asks for ErrGroupNotFound still gets it). The generic miss
+// contract (internal/persistence/misscontract) registers
+// IdentityRepository.GetGroupByName and
+// UISessionRepository.GetActiveByTokenHash as MissErrNotFound, but
+// production returns the typed sentinels — without this method the
+// assertions in repotest.RunIdentityAdminSuite / RunUISessionSuite could
+// not hold on either backend, and the choice would be "weaken the
+// contract" or "lose the typed error". Neither is right; both stay.
+//
+// Scope is deliberately the four identity sentinels: widening it to every
+// "*not found" RepositoryError would silently change which branch
+// existing callers of errors.Is(err, ErrNotFound) take on lease errors.
+func (e RepositoryError) Is(target error) bool {
+	if target != ErrNotFound {
+		return false
+	}
+	switch e {
+	case ErrIdentityNotFound, ErrUserNotFound, ErrGroupNotFound, ErrSessionNotFound:
+		return true
+	}
+	return false
+}

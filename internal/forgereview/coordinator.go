@@ -62,11 +62,33 @@ type Decision struct {
 	Reason string
 }
 
-// Coordinator applies the pause and coalescing rules.
+// Coordinator applies the review-trigger policy, the pause gate and the
+// coalescing rules.
 type Coordinator struct {
 	state  StateStore
 	tasks  TaskStatusReader
 	logger zerolog.Logger
+	policy PolicyResolver
+}
+
+// SetPolicyResolver installs the per-project review-trigger lookup. Separate
+// from New because the resolver reads the project registry, which is wired
+// later in boot than the repositories — and because a Coordinator without one
+// is a valid thing that applies DefaultPolicy (see policyFor).
+func (c *Coordinator) SetPolicyResolver(r PolicyResolver) {
+	if c == nil {
+		return
+	}
+	c.policy = r
+}
+
+// policyFor resolves a project's policy, falling back to the documented
+// defaults for a nil coordinator or an unwired resolver.
+func (c *Coordinator) policyFor(projectID string) Policy {
+	if c == nil || c.policy == nil {
+		return DefaultPolicy()
+	}
+	return c.policy(projectID)
 }
 
 // New builds a Coordinator. Both dependencies may be nil, in which case every
@@ -119,6 +141,34 @@ func (c *Coordinator) Decide(ctx context.Context, projectID string, job forgeapi
 				Msg("forgereview: command from an author without repository standing; refusing")
 		}
 		return Decision{Skip: true, Reason: "author_untrusted"}
+	}
+
+	// THE REVIEW-TRIGGER POLICY IS THE SECOND GATE, and like author trust it
+	// sits ahead of the nil-store early return: whether a push or a draft is
+	// allowed to spend a review is a question about configuration, not about
+	// whether this node happens to have review state wired. A deployment with
+	// no state store must still honour `auto_review_on_push: false`.
+	//
+	// It lives HERE rather than in an ingress because it previously lived in
+	// one: both knobs were fields on the GitHub App channel's installation
+	// config, so the generic relay ingress — the one this deployment actually
+	// uses — had no project-wide off switch at all, and `review_draft_prs`
+	// could not be opted into there because the provider refused drafts before
+	// any config was consulted (BACKLOG 2026-09-03, design §13.4).
+	//
+	// onDemand is exempt for the same reason it is exempt from pause: a human
+	// asking for a review is asking for one.
+	{
+		if reason, blocked := c.policyFor(projectID).Suppresses(job, onDemand); blocked {
+			if c != nil {
+				c.logger.Debug().
+					Str("project_id", projectID).
+					Str("repo", job.Repo).Int("number", job.Number).
+					Str("action", job.Action).Str("reason", reason).
+					Msg("forgereview: review-trigger policy suppressed this delivery")
+			}
+			return Decision{Skip: true, Reason: reason}
+		}
 	}
 
 	if c == nil || c.state == nil || !job.IsChangeRequest || job.Repo == "" || job.Number == 0 {

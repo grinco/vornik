@@ -1,4 +1,4 @@
-package hallucination
+package llmjudge
 
 import (
 	"context"
@@ -22,8 +22,11 @@ import (
 // Both are transient infra failures the judge used to surface as
 // terminal abstain verdicts. Post-fix the judge retries with
 // capped exponential backoff before giving up.
+//
+// Moved from internal/hallucination/judge_retry_test.go with the code
+// (2026-09-13 extraction); the cases are unchanged.
 
-func TestIsJudgeRetryableErr_GatewayStatuses(t *testing.T) {
+func TestIsRetryableErr_GatewayStatuses(t *testing.T) {
 	cases := []struct {
 		status int
 		want   bool
@@ -41,14 +44,14 @@ func TestIsJudgeRetryableErr_GatewayStatuses(t *testing.T) {
 	}
 	for _, c := range cases {
 		err := &chat.GatewayError{Status: c.status, Message: "test"}
-		got := isJudgeRetryableErr(err)
+		got := IsRetryableErr(err)
 		if got != c.want {
 			t.Errorf("status %d: got retryable=%v want %v", c.status, got, c.want)
 		}
 	}
 }
 
-func TestIsJudgeRetryableErr_ConnectionShapes(t *testing.T) {
+func TestIsRetryableErr_ConnectionShapes(t *testing.T) {
 	cases := []struct {
 		msg  string
 		want bool
@@ -68,14 +71,14 @@ func TestIsJudgeRetryableErr_ConnectionShapes(t *testing.T) {
 	}
 	for _, c := range cases {
 		err := errors.New(c.msg)
-		if got := isJudgeRetryableErr(err); got != c.want {
+		if got := IsRetryableErr(err); got != c.want {
 			t.Errorf("%q: got retryable=%v want %v", c.msg, got, c.want)
 		}
 	}
 }
 
-func TestIsJudgeRetryableErr_NilSafe(t *testing.T) {
-	if isJudgeRetryableErr(nil) {
+func TestIsRetryableErr_NilSafe(t *testing.T) {
+	if IsRetryableErr(nil) {
 		t.Error("nil err must NOT be retryable")
 	}
 }
@@ -121,7 +124,7 @@ func TestCompleteWithRetry_SucceedsAfterTransient(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := completeWithRetry(ctx, fp, nil, 3)
+	resp, err := CompleteWithRetry(ctx, fp, nil, 3, "judge")
 	if err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
@@ -144,7 +147,7 @@ func TestCompleteWithRetry_GivesUpAfterMaxAttempts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err := completeWithRetry(ctx, fp, nil, 3)
+	_, err := CompleteWithRetry(ctx, fp, nil, 3, "judge")
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
@@ -159,7 +162,7 @@ func TestCompleteWithRetry_PermanentErrorNoRetry(t *testing.T) {
 			&chat.GatewayError{Status: 401, Message: "unauthorized"},
 		},
 	}
-	_, err := completeWithRetry(context.Background(), fp, nil, 3)
+	_, err := CompleteWithRetry(context.Background(), fp, nil, 3, "judge")
 	if err == nil {
 		t.Fatal("expected error to bubble up")
 	}
@@ -179,7 +182,7 @@ func TestCompleteWithRetry_ContextCancelStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err := completeWithRetry(ctx, fp, nil, 3)
+	_, err := CompleteWithRetry(ctx, fp, nil, 3, "judge")
 	if err == nil {
 		t.Fatal("expected error on context cancel")
 	}
@@ -204,7 +207,7 @@ func TestCompleteWithRetry_UnexpectedEOFRetried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := completeWithRetry(ctx, fp, nil, 3)
+	_, err := CompleteWithRetry(ctx, fp, nil, 3, "judge")
 	if err != nil {
 		t.Fatalf("unexpected EOF should retry to success, got %v", err)
 	}

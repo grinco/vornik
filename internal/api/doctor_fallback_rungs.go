@@ -52,10 +52,10 @@ const (
 	// primary already failed — so a short window would report "no data" for a
 	// rung that is genuinely dead and simply not reached often.
 	fallbackRungWindow = 30 * 24 * time.Hour
-	// fallbackRungMinAttempts is how many attempts a rung needs before a
-	// zero-success record means anything. Two: one failure is a bad day, and
-	// waiting for more than two on a path this rare would mean never reporting.
-	fallbackRungMinAttempts = 2
+	// The attempt floor is doctor.thresholds.fallback_rung_min_attempts as of
+	// 2026-09-13, defaulting to config.DefaultFallbackRungMinAttempts (two:
+	// one failure is a bad day, and waiting for more than two on a path this
+	// rare would mean never reporting).
 )
 
 // unreachedInferenceClasses are the failure classes that mean the rung never
@@ -242,7 +242,7 @@ func (h *DoctorHandlers) queryDeadFallbackRungs(ctx context.Context) ([]deadFall
 	//       backslash and matched nothing. Measured 2026-09-04: 0 rows without
 	//       the clause, the right row with it. Both drivers accept ESCAPE.
 	classPlaceholders := make([]string, 0, len(unreachedInferenceClasses))
-	args := []any{time.Now().Add(-fallbackRungWindow), fallbackRungMinAttempts}
+	args := []any{time.Now().Add(-fallbackRungWindow), h.doctorThresholds().FallbackRungMinAttempts.Value}
 	for _, c := range unreachedInferenceClasses {
 		args = append(args, c)
 		classPlaceholders = append(classPlaceholders, fmt.Sprintf("$%d", len(args)))

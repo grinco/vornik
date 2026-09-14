@@ -57,6 +57,12 @@ func Matrix() []Row {
 		{Capability: "Log shipping (Logship)", Enterprise: true},
 		{Capability: "Cross-project orchestration (`call_project`)", Enterprise: true},
 		{Capability: "NL Automation Composer (describe-it project setup)", Enterprise: true, FeatureID: "composer"},
+		// 2026-09-13 plan §2 "Declarations, concretely". The CE operator shell
+		// that serves account management is NOT the Admin suite row above and
+		// must not be labelled as one.
+		{Capability: "User accounts and channel/key→account mapping", Community: true, Enterprise: true, FeatureID: "identity"},
+		{Capability: "Configuration assistant", Community: true, Enterprise: true, FeatureID: "config-assistant"},
+		{Capability: "Architect consultation over A2A (contract-gated)", Community: true, Enterprise: true, FeatureID: "architect-consult"},
 	}
 }
 

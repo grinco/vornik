@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/repotest"
 	"vornik.io/vornik/internal/persistence/sqlite"
 )
@@ -54,6 +55,41 @@ func TestProposalRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunProposalSuite(t, sqlite.NewProposalRepository(db.DB))
 	repotest.RunProposalObservationSuite(t, sqlite.NewProposalRepository(db.DB))
+}
+
+// TestApplyJournalRepository_Contract — the durable multi-file config apply
+// record (LLD 2026-09-13 config-apply-journal §2/§3). Takes the proposal
+// ledger too: MarkAppliedWithLedger's atomicity across both tables is the
+// property the suite pins.
+func TestApplyJournalRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunApplyJournalSuite(t, sqlite.NewApplyJournalRepository(db.DB), sqlite.NewProposalRepository(db.DB))
+}
+
+// TestConfigApplyJournal_PartialIndexes_SQLite pins the two partial indexes
+// the journal's correctness rests on: "one open journal per proposal"
+// (UNIQUE WHERE terminal_at IS NULL) and the open-row scan the reconciler
+// uses. A plain index here would let a retry prepare a second open row.
+func TestConfigApplyJournal_PartialIndexes_SQLite(t *testing.T) {
+	db := newTestDB(t)
+	for name, wantUnique := range map[string]bool{
+		"uq_config_apply_journal_open_proposal": true,
+		"idx_config_apply_journal_open":         false,
+		"uq_cp_proposals_idempotency_key":       true,
+	} {
+		var sqlText string
+		err := db.DB.QueryRowContext(context.Background(), `
+			SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&sqlText)
+		if err != nil {
+			t.Fatalf("index %s lookup: %v", name, err)
+		}
+		if !strings.Contains(sqlText, "IS NULL") && !strings.Contains(sqlText, "IS NOT NULL") {
+			t.Fatalf("%s is not a partial index: %q", name, sqlText)
+		}
+		if strings.Contains(sqlText, "UNIQUE") != wantUnique {
+			t.Fatalf("%s uniqueness = %v, want %v: %q", name, !wantUnique, wantUnique, sqlText)
+		}
+	}
 }
 
 // TestCostTuningCanaryRepository_Contract — the cost/quality canary guard's row
@@ -129,6 +165,75 @@ func TestTaskRepository_Contract(t *testing.T) {
 func TestAPIKeyRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunAPIKeyRepositorySuite(t, sqlite.NewAPIKeyRepository(db.DB))
+}
+
+// TestIdentityRepository_Contract — identity-core contract (Postgres
+// migration 90; SQLite parity 2026-09-13, config-assistant plan §2 /
+// review R1). The resolver suite and the admin suite run on SEPARATE
+// databases: the admin suite's last-admin case needs a store with no
+// other enabled admin, and the resolver suite leaves admin members behind.
+func TestIdentityRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunIdentityRepositorySuite(t, sqlite.NewIdentityRepository(db.DB))
+	adminDB := newTestDB(t)
+	repotest.RunIdentityAdminSuite(t, sqlite.NewIdentityRepository(adminDB.DB), sqlite.NewUISessionRepository(adminDB.DB))
+}
+
+// TestUISessionRepository_Contract — browser login sessions (migration 91;
+// SQLite parity 2026-09-13). Same suite the Postgres lane runs.
+func TestUISessionRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunUISessionSuite(t, sqlite.NewUISessionRepository(db.DB), sqlite.NewIdentityRepository(db.DB))
+}
+
+// TestIdentityRepository_AccessRevokedMarker pins the R3 marker
+// (2026-09-13 config-assistant review: "bootstrap must not re-grant
+// deliberately revoked access"): RemoveUserAccess stamps
+// users.access_revoked_at, SetUserAccess clears it. The interface has no
+// reader yet (the EE provisioning path adds one), so this reads the
+// column directly.
+func TestIdentityRepository_AccessRevokedMarker(t *testing.T) {
+	db := newTestDB(t)
+	repo := sqlite.NewIdentityRepository(db.DB)
+	ctx := context.Background()
+	mk := func(id string) {
+		if err := repo.CreateUser(ctx, &persistence.User{ID: id, DisplayName: id, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("CreateUser(%s): %v", id, err)
+		}
+	}
+	revoked := func(id string) bool {
+		var v bool
+		if err := db.DB.QueryRowContext(ctx, `SELECT access_revoked_at IS NOT NULL FROM users WHERE id = ?`, id).Scan(&v); err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		return v
+	}
+	mk("adm") // keeps the last-admin guard quiet
+	if err := repo.SetUserAccess(ctx, "adm", "admin", nil); err != nil {
+		t.Fatalf("SetUserAccess(adm): %v", err)
+	}
+	mk("u1")
+	if revoked("u1") {
+		t.Fatal("fresh user carries the marker")
+	}
+	if err := repo.RemoveUserAccess(ctx, "u1"); err != nil { // no backing group yet
+		t.Fatalf("RemoveUserAccess(no backing group): %v", err)
+	}
+	if !revoked("u1") {
+		t.Fatal("RemoveUserAccess without a backing group did not stamp the marker")
+	}
+	if err := repo.SetUserAccess(ctx, "u1", "user", []string{"*"}); err != nil {
+		t.Fatalf("SetUserAccess: %v", err)
+	}
+	if revoked("u1") {
+		t.Fatal("SetUserAccess did not clear the marker")
+	}
+	if err := repo.RemoveUserAccess(ctx, "u1"); err != nil {
+		t.Fatalf("RemoveUserAccess: %v", err)
+	}
+	if !revoked("u1") {
+		t.Fatal("RemoveUserAccess did not stamp the marker")
+	}
 }
 
 // TestTaskLLMUsageRepository_Contract — financial cost accounting.

@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/safepath"
 
 	"github.com/lib/pq"
@@ -123,6 +124,13 @@ const (
 	// A number rather than "forever" because an unbounded table is a decision
 	// nobody made (ratings design §6).
 	DefaultExecutionRatingsDays = 400
+	// DefaultConfigApplyJournalDays keeps a config_apply_journal row for 30
+	// days after its TERMINAL transition (LLD 2026-09-13 config-apply-journal
+	// §1.5). The journal outlives the apply on purpose: its pre-images are the
+	// only record that can restore a bundle a later checkpoint turns out to
+	// have mis-applied. A row that is not terminal — in flight, or DRIFT
+	// waiting for an operator — is never pruned, whatever its age.
+	DefaultConfigApplyJournalDays = 30
 	// MinimumFloorDays is the absolute minimum any window can be pinned
 	// to regardless of operator config. Protects against typos that
 	// would nuke fresh operational data.
@@ -386,6 +394,9 @@ type GlobalCounts struct {
 	LinkCodes int
 	// ExecutionRatings is how many human verdicts aged past their horizon.
 	ExecutionRatings int
+	// ConfigApplyJournal is how many TERMINAL config-apply journal rows aged
+	// past their post-terminal horizon. Open rows are never counted.
+	ConfigApplyJournal int
 }
 
 // uiSessionGraceDays is the fixed window kept after a session
@@ -455,6 +466,10 @@ type GlobalPolicy struct {
 	// than "forever" because an unbounded table is a decision nobody made, so
 	// an operator who configures nothing still gets a horizon.
 	ExecutionRatingsDays int
+	// ConfigApplyJournalDays bounds config_apply_journal rows, measured from
+	// terminal_at. Zero → DefaultConfigApplyJournalDays, NOT skipped, for the
+	// same reason as ExecutionRatingsDays: the journal design states a horizon.
+	ConfigApplyJournalDays int
 }
 
 // SweepGlobal prunes non-project-scoped tables (caches, ratings, and the
@@ -511,8 +526,39 @@ func (s *Sweeper) runGlobal(ctx context.Context, p GlobalPolicy, previewOnly boo
 		s.pruneLinkCodes, &counts.LinkCodes, &firstErr)
 	s.runGlobalPrune(ctx, "execution_ratings", days(p.ExecutionRatingsDays, DefaultExecutionRatingsDays), previewOnly,
 		s.pruneExecutionRatings, &counts.ExecutionRatings, &firstErr)
+	s.runGlobalPrune(ctx, "config_apply_journal", days(p.ConfigApplyJournalDays, DefaultConfigApplyJournalDays), previewOnly,
+		s.pruneConfigApplyJournal, &counts.ConfigApplyJournal, &firstErr)
 
 	return counts, firstErr
+}
+
+// pruneConfigApplyJournal bounds config_apply_journal on the row's OWN
+// terminal transition (LLD 2026-09-13 config-apply-journal §1.5: retained
+// "30 days after the terminal transition").
+//
+// NEVER a non-terminal row. The WHERE carries `terminal_at IS NOT NULL` so a
+// row still in flight cannot age out under a running apply, and a DRIFT row
+// — open, parked, waiting for an operator to choose --keep or --restore —
+// keeps the pre-images that choice needs for as long as it waits. The state
+// guard is belt-and-braces on top of that: even a DRIFT row that somehow
+// acquired a terminal_at is refused.
+//
+// to_regclass guards a deployment whose migration 184 has not landed, the
+// same way the ratings sweep guards its table.
+func (s *Sweeper) pruneConfigApplyJournal(ctx context.Context, threshold time.Time, previewOnly bool) (int, error) {
+	var present bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.config_apply_journal') IS NOT NULL`).Scan(&present); err != nil {
+		return 0, fmt.Errorf("probe config_apply_journal: %w", err)
+	}
+	if !present {
+		return 0, nil
+	}
+	return s.pruneOlderThan(ctx,
+		"config_apply_journal", "terminal_at",
+		"terminal_at IS NOT NULL AND state <> $2", persistence.JournalStateDrift,
+		threshold, previewOnly,
+	)
 }
 
 // runGlobalPrune runs one global sweep and keeps the best-effort contract: a
@@ -1451,6 +1497,7 @@ func (s *Sweeper) pruneOlderThan(ctx context.Context, table, tsCol, extraWhere s
 		"memory_policy_evaluations": true,
 		"memory_eviction_audit":     true,
 		"memory_eviction_runs":      true,
+		"config_apply_journal":      true, // terminal rows only — see pruneConfigApplyJournal
 	}
 	allowedCols := map[string]bool{
 		"ts":           true,
@@ -1460,6 +1507,7 @@ func (s *Sweeper) pruneOlderThan(ctx context.Context, table, tsCol, extraWhere s
 		"ingested_at":  true,
 		"evaluated_at": true,
 		"evicted_at":   true,
+		"terminal_at":  true,
 	}
 	if evidenceTables[table] {
 		return 0, fmt.Errorf("refusing to prune %s: conformity evidence trail (AI Act Art 50 / Art 99) — see evidenceTables", table)

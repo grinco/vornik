@@ -936,3 +936,65 @@ func TestRecordEvaluation_PersistsRowShape(t *testing.T) {
 	assert.NotEmpty(t, got.PromptHash, "non-empty prompt must produce a non-empty hash")
 	assert.NotZero(t, got.DurationMs, "non-zero start time must produce a non-zero duration")
 }
+
+// TestBuildStateContext_CompletedTasksWithoutExecutionRepo pins the nil
+// guard on `m.execRepo` (BACKLOG 2026-09-11, "Nil-guard m.execRepo in
+// buildStateContext"). Before the guard this panicked: the completed-task
+// branch dereferenced the repository unconditionally, on the autonomy TICK
+// path, where a panic takes the loop down rather than failing one request.
+//
+// `New`'s execRepo parameter is a plain interface with no constructor
+// check, and every sibling repository on this path is already guarded —
+// so the reachable-by-construction-bug case is the one worth pinning.
+// The history still renders; it just carries no result= enrichment, which
+// is exactly what a real repo returning no execution rows produces.
+func TestBuildStateContext_CompletedTasksWithoutExecutionRepo(t *testing.T) {
+	created := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	tasks := []*persistence.Task{
+		{ID: "c1", ProjectID: "p1", Status: persistence.TaskStatusCompleted, CreatedAt: created,
+			Payload: []byte(`{"context":{"prompt":"nightly digest"}}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, nil)
+
+	got, hasActive, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.False(t, hasActive)
+	assert.Contains(t, got, "nightly digest", "completed history must still render without an execution repo")
+	assert.NotContains(t, got, "result=", "no execution repo means no result enrichment, not a fabricated one")
+}
+
+// TestBuildStateContext_CompletedTaskCarriesExecutionResult is the other
+// half: with a repository that DOES return an execution row, the result
+// message is rendered onto the task line. Without this the nil-guard test
+// above would pass against a guard that disabled enrichment entirely.
+func TestBuildStateContext_CompletedTaskCarriesExecutionResult(t *testing.T) {
+	tasks := []*persistence.Task{
+		{ID: "c1", ProjectID: "p1", Status: persistence.TaskStatusCompleted, CreatedAt: time.Now().Add(-time.Hour),
+			Payload: []byte(`{"context":{"prompt":"nightly digest"}}`)},
+	}
+	execs := map[string]*persistence.Execution{
+		"c1": {Result: []byte(`{"message":"digest posted to 3 channels"}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, &resultExecRepo{execs: execs})
+
+	got, _, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.Contains(t, got, `result="digest posted to 3 channels"`)
+}
+
+// resultExecRepo returns pre-canned execution rows, so the enrichment
+// branch can be exercised (stubExecRepo returns an empty map).
+type resultExecRepo struct {
+	persistence.ExecutionRepository
+	execs map[string]*persistence.Execution
+}
+
+func (r *resultExecRepo) GetByTaskIDs(_ context.Context, ids []string) (map[string]*persistence.Execution, error) {
+	out := make(map[string]*persistence.Execution, len(ids))
+	for _, id := range ids {
+		if e, ok := r.execs[id]; ok {
+			out[id] = e
+		}
+	}
+	return out, nil
+}

@@ -371,6 +371,16 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/operator/proposals/", server.OperatorProposalItem)
 		mux.HandleFunc("/api/v1/operator/diagnose", server.OperatorDiagnose)
 
+		// CE operator shell — account management (2026-09-13 identity work,
+		// review R1/R2). Community: NOT under /api/v1/admin/. Gated on
+		// requireOperatorCapability (operator scope + explicit capability).
+		mux.HandleFunc("/api/v1/operator/accounts", server.OperatorAccounts)
+		mux.HandleFunc("/api/v1/operator/accounts/", server.OperatorAccountItem)
+
+		// Configuration assistant — operator REST door (2026-09-13 design
+		// §6.3 door 1). Community; requireOperatorCapability-gated.
+		mux.HandleFunc("/api/v1/operator/assist", server.OperatorAssist)
+
 		// Continuous-learning instinct layer — read/inspect/retire surfaces.
 		// The list + per-id router go through the normal auth chain (no
 		// admin scope required: instincts are advisory evidence, reading

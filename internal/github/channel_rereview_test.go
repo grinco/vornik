@@ -79,50 +79,44 @@ func TestChannel_ReReviewTriggers_FireTaskCreator(t *testing.T) {
 	}
 }
 
-// A draft PR is explicitly "not ready to be looked at". Auto-reviewing it burns
-// budget on work in progress, and ready_for_review is the transition that starts
-// review — which is what forge.md already promises.
-func TestChannel_DraftPR_NotAutoReviewed(t *testing.T) {
-	for _, action := range []string{"opened", "synchronize", "reopened"} {
+// THE DRAFT RULE AND THE PUSH OFF-SWITCH MOVED OFF THIS CHANNEL on 2026-09-13.
+//
+// Three tests here asserted them at this layer — TestChannel_DraftPR_NotAutoReviewed,
+// TestChannel_AutoReviewOnPushDisabled_OnlySuppressesSynchronize and
+// TestChannel_AutoReviewOnPush_DefaultsOn — against per-INSTALLATION config
+// fields. That location was the defect: the generic `webhooks.sources` relay,
+// the ingress this deployment actually receives deliveries through, had no
+// project-wide push off switch at all and could not opt into draft review
+// (BACKLOG 2026-09-03). Both rules now live in internal/forgereview, which BOTH
+// ingresses call, and TestPolicy_* there own the behaviour.
+//
+// What this channel still owns is DELIVERY of the facts the rule reads. These
+// two tests pin that: every review action reaches the task creator, and the
+// draft flag reaches it intact — a gate cannot apply a fact it is never told.
+func TestChannel_DraftPR_ReachesTheTaskCreatorCarryingItsDraftFlag(t *testing.T) {
+	for _, action := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
 		t.Run(action, func(t *testing.T) {
 			creator := dispatchPR(t, validConfig(), action, "d-draft-"+action, true)
-			if got := creator.copyEvents(); len(got) != 0 {
-				t.Errorf("draft PR produced %d task(s) on %s, want 0", len(got), action)
+			got := creator.copyEvents()
+			if len(got) != 1 {
+				t.Fatalf("draft PR produced %d task(s) on %s, want 1 — suppression is the policy's call now", len(got), action)
+			}
+			if !got[0].Draft {
+				t.Errorf("Draft = false on a draft %s delivery; the shared policy gate cannot suppress what it is not told", action)
 			}
 		})
 	}
 }
 
-// ready_for_review is the one action that fires ON a PR leaving draft state, so
-// the draft flag in its payload must not suppress it.
-func TestChannel_ReadyForReview_FiresEvenWhenPayloadSaysDraft(t *testing.T) {
-	creator := dispatchPR(t, validConfig(), "ready_for_review", "d-rfr-draft", true)
-	if got := creator.copyEvents(); len(got) != 1 {
-		t.Fatalf("ready_for_review produced %d task(s), want 1 — the draft gate must not swallow the transition OUT of draft", len(got))
+// A non-draft delivery must not arrive claiming to be one, or the shared gate
+// would suppress ordinary pull requests.
+func TestChannel_NonDraftPR_CarriesNoDraftFlag(t *testing.T) {
+	got := dispatchPR(t, validConfig(), "synchronize", "d-nondraft-sync", false).copyEvents()
+	if len(got) != 1 {
+		t.Fatalf("synchronize produced %d task(s), want 1", len(got))
 	}
-}
-
-// The off switch. auto_review_on_push=false stops the push trigger and NOTHING
-// else: opened must still review, so an operator who wants quiet pushes does not
-// silently lose first-review too.
-func TestChannel_AutoReviewOnPushDisabled_OnlySuppressesSynchronize(t *testing.T) {
-	cfg := validConfig()
-	off := false
-	cfg.AutoReviewOnPush = &off // validConfig() is single-installation mode
-
-	if got := dispatchPR(t, cfg, "synchronize", "d-off-sync", false).copyEvents(); len(got) != 0 {
-		t.Errorf("synchronize produced %d task(s) with auto_review_on_push=false, want 0", len(got))
-	}
-	if got := dispatchPR(t, cfg, "opened", "d-off-open", false).copyEvents(); len(got) != 1 {
-		t.Errorf("opened produced %d task(s) with auto_review_on_push=false, want 1 — the switch is push-only", len(got))
-	}
-}
-
-// Unset must mean ON: it is the behaviour the customer asked for and the one
-// forge.md already documents.
-func TestChannel_AutoReviewOnPush_DefaultsOn(t *testing.T) {
-	if got := dispatchPR(t, validConfig(), "synchronize", "d-default-sync", false).copyEvents(); len(got) != 1 {
-		t.Fatalf("synchronize produced %d task(s) with auto_review_on_push unset, want 1 (default on)", len(got))
+	if got[0].Draft {
+		t.Error("Draft = true on a non-draft delivery")
 	}
 }
 

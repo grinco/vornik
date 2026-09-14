@@ -344,6 +344,11 @@ type Config struct {
 	// DETECTOR, not a store.
 	NamedSecrets []NamedSecret `yaml:"named_secrets" json:"named_secrets" doc:"Per-secret allowlist of env credentials injected into agent containers, scoped by project."`
 
+	// Doctor holds the tunable numeric bounds of the doctor checks. Every one
+	// of them was a Go literal until 2026-09-13; see doctor.go for which
+	// bounds are tunable and which deliberately are not.
+	Doctor DoctorConfig `yaml:"doctor" json:"doctor"`
+
 	Telemetry TelemetryConfig `yaml:"telemetry,omitempty" json:"telemetry,omitempty" doc:"Anonymous install and project-creation telemetry. Enabled by default; set enabled=false to opt out."`
 	Server    ServerConfig    `yaml:"server"`
 	Database  DatabaseConfig  `yaml:"database"`
@@ -453,6 +458,14 @@ type Config struct {
 	// feature completes its soak, design §9). See
 	// https://docs.vornik.io §5.4.
 	Composer ComposerConfig `yaml:"composer"`
+	// Identity is the CE identity core — accounts, channel bindings and
+	// key ownership (2026-09-13 plan §2/§4/§5; review R1–R5). Off by
+	// default; federated login stays under auth.providers (Enterprise).
+	Identity IdentityConfig `yaml:"identity" json:"identity" doc:"CE identity core: user accounts, channel→account linking, key→account ownership."`
+	// ConfigAssistant is the configuration and troubleshooting assistant in
+	// the control plane (2026-09-13 design). Off by default; enable via the
+	// feature doctor so its prerequisites are checked first.
+	ConfigAssistant AssistantConfig `yaml:"config_assistant" json:"config_assistant" doc:"Configuration assistant: natural-language config edits filed as reviewable proposals."`
 	// Scraper groups daemon-side scraper features (the scraper itself is a
 	// separate MCP service). See
 	// https://docs.vornik.io

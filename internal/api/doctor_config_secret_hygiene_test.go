@@ -120,27 +120,6 @@ func TestDoctorConfigSecretHygiene_GitHubClientSecretPath(t *testing.T) {
 	assert.Contains(t, got.Items[0], "auth.providers.github.client_secret")
 }
 
-func TestLooksLikeRawSecret(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want bool
-	}{
-		{name: "empty", in: "   ", want: false},
-		{name: "env placeholder", in: "${DB_PASSWORD}", want: false},
-		{name: "known placeholder marker", in: "CHANGE_ME-super-secret", want: false},
-		{name: "too short", in: "short-password", want: false},
-		{name: "long raw secret", in: "this_is_a_very_long_raw_secret_12345", want: true},
-		{name: "env var dollar only", in: "$ORACLE_HOME", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, looksLikeRawSecret(tt.in))
-		})
-	}
-}
-
 // TestConfigSecretHygiene_FileSourcedSecretIsNotAFinding pins the fix for a
 // false positive found on the dev box: the operator externalized the GitHub
 // OAuth secret to a 0600 file via client_secret_file — the STRONGEST option the

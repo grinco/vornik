@@ -125,40 +125,41 @@ func TestGitHubTaskCreator_UnknownKind_IsRejected(t *testing.T) {
 	}
 }
 
-// The knobs must survive the whole path from project YAML to the resolved
-// installation, in BOTH channel modes. A config key an operator can set that
-// never reaches the gate is the "parsed and did nothing" class this release
-// spent its time removing.
-func TestGitHubConfig_ReReviewKnobs_ReachTheInstallation(t *testing.T) {
-	off := false
-	p := registry.ProjectGitHubApp{
-		// Inbound-only: a private key is required as soon as app_id /
-		// installation_id are set, and this test is about config
-		// plumbing, not outbound auth.
-		RepoAllowlist:    []string{"acme/api"},
-		WebhookSecretEnv: "GH_SECRET_RR_TEST",
+// The knobs must survive the whole path from project YAML to the gate that
+// reads them. A config key an operator can set that never reaches the gate is
+// the "parsed and did nothing" class this release spent its time removing.
+//
+// CHANGED 2026-09-13: the path used to end at the GitHub App channel's
+// InstallationConfig, which is precisely why the generic `webhooks.sources`
+// relay had neither knob (BACKLOG 2026-09-03). It now ends at the shared
+// forgereview policy both ingresses consult, so this asserts the resolution
+// rather than the plumbing into one channel.
+func TestForgeReviewPolicy_ResolvesFromEitherSpelling(t *testing.T) {
+	off, on := false, true
+
+	// 1. The github_app: spelling that shipped in 2026.9.1 — the one deployed
+	//    configs carry — still resolves, and now reaches BOTH ingresses.
+	legacy := &registry.Project{GitHubApp: registry.ProjectGitHubApp{
 		AutoReviewOnPush: &off,
 		ReviewDraftPRs:   true,
-	}
-	t.Setenv("GH_SECRET_RR_TEST", "shhh")
-
-	cfg, err := resolveGitHubAppConfig(&registry.Project{GitHubApp: p})
-	if err != nil {
-		t.Fatalf("resolveGitHubAppConfig: %v", err)
-	}
-	if cfg.AutoReviewOnPush == nil || *cfg.AutoReviewOnPush {
-		t.Errorf("AutoReviewOnPush = %v, want explicit false", cfg.AutoReviewOnPush)
-	}
-	if !cfg.ReviewDraftPRs {
-		t.Error("ReviewDraftPRs did not survive into github.Config")
+	}}
+	if got := legacy.ForgeReview(); got.AutoReviewOnPush || !got.ReviewDraftPRs {
+		t.Errorf("github_app: spelling resolved to %+v, want {false true}", got)
 	}
 
-	// ...and on into the multi-installation form.
-	ic := installationConfigFromConfig("p-1", cfg)
-	if ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush {
-		t.Errorf("AutoReviewOnPush = %v in InstallationConfig, want explicit false", ic.AutoReviewOnPush)
+	// 2. The ingress-neutral forge: spelling wins over it, in both directions,
+	//    so an operator can override a legacy value without deleting it.
+	both := &registry.Project{
+		Forge:     registry.ProjectForge{AutoReviewOnPush: &on, ReviewDraftPRs: &off},
+		GitHubApp: registry.ProjectGitHubApp{AutoReviewOnPush: &off, ReviewDraftPRs: true},
 	}
-	if !ic.ReviewDraftPRs {
-		t.Error("ReviewDraftPRs did not survive into InstallationConfig")
+	if got := both.ForgeReview(); !got.AutoReviewOnPush || got.ReviewDraftPRs {
+		t.Errorf("forge: spelling did not win: %+v, want {true false}", got)
+	}
+
+	// 3. Neither set resolves to the documented defaults: review pushes
+	//    (forge.md's promise), skip drafts (work nobody has said is ready).
+	if got := (&registry.Project{}).ForgeReview(); !got.AutoReviewOnPush || got.ReviewDraftPRs {
+		t.Errorf("defaults = %+v, want {true false}", got)
 	}
 }

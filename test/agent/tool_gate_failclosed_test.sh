@@ -232,6 +232,67 @@ tools=$(tool_definitions)
 assert_not_contains "unregistered ungated extra is NOT advertised" "$tools" '"name": "tool_result_read"'
 teardown
 
+# ---------- the fallback for input the daemon did not build (2026-09-13) ----------
+#
+# allowed_builtin_tools_json() fell back to
+# ["file_read","file_write","run_shell"] + ["current_time"] when
+# .config.permissions.allowedTools was ABSENT. Two things were wrong with that.
+#
+# It DISAGREED with agenttools.AlwaysGranted (memory_search, skill_fetch),
+# which the daemon folds onto every role — so the container and the daemon held
+# two different answers to "what may every role call" (backlog 2026-08-22).
+#
+# And it was backwards. The fallback fires only on input the daemon did NOT
+# produce, since the daemon always writes allowedTools. Handing run_shell and
+# file_write to the least trustworthy input available is the most permissive
+# possible response to it. The item's alternative reading — "a task.json with
+# no declared permissions arguably should get nothing" — is the one taken:
+# absent permissions grant NOTHING, and the disagreement becomes
+# unrepresentable because there is no second list left to disagree.
+
+setup_no_permissions() {
+    TMP="$(mktemp -d)"
+    export PATH="$ORIG_PATH"
+    mkdir -p "$TMP/workspace" "$TMP/input"
+    # No config.permissions at all — the shape the fallback exists for.
+    printf '{"context":{"prompt":"hi"}}' > "$TMP/input/task.json"
+    export WORKSPACE="$TMP/workspace"
+    export INPUT_FILE="$TMP/input/task.json"
+    export OUTPUT_FILE="$TMP/output.json"
+    set +u
+    # shellcheck disable=SC1090
+    source "$ENTRYPOINT"
+    trap - EXIT
+    set -e +u
+    set +e
+}
+
+setup_no_permissions
+allowed=$(allowed_builtin_tools_json)
+assert_not_contains "absent permissions do NOT grant run_shell" "$allowed" '"run_shell"'
+assert_not_contains "absent permissions do NOT grant file_write" "$allowed" '"file_write"'
+assert_not_contains "absent permissions do NOT grant file_read" "$allowed" '"file_read"'
+# current_time survives deliberately: it reads a clock, grants no capability,
+# and is unioned in on EVERY path — removing it here would be a change to the
+# unconditional extras union, which is a separate decision.
+assert_contains "current_time still granted" "$allowed" '"current_time"'
+
+# The execution gate must agree with that list, or the refusal is decided
+# somewhere else than the allowlist.
+out=$(exec_tool run_shell '{"command":"echo hi"}')
+assert_contains "run_shell refused under absent permissions" "$out" "ERROR"
+teardown
+
+# A DECLARED empty allowlist is the same answer, reached the other way: it was
+# already "grant nothing but current_time" and stays so. Pinned because the two
+# shapes must not diverge — "absent" and "empty" mean the same thing to a gate
+# that fails closed.
+setup '[]'
+allowed=$(allowed_builtin_tools_json)
+assert_not_contains "empty allowlist grants no run_shell" "$allowed" '"run_shell"'
+assert_contains "empty allowlist still grants current_time" "$allowed" '"current_time"'
+teardown
+
 # ---------- summary ----------
 echo ""
 echo "================================"

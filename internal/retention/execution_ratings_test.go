@@ -28,6 +28,10 @@ func TestSweepGlobal_PrunesExecutionRatingsPastTheHorizon(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM execution_ratings WHERE created_at <")).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{})
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
@@ -55,6 +59,10 @@ func TestSweepGlobal_ZeroDaysMeansTheDefaultHorizonNotDisabled(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM execution_ratings WHERE created_at <")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	if _, err := s.SweepGlobal(context.Background(), GlobalPolicy{ExecutionRatingsDays: 0}); err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -79,6 +87,10 @@ func TestSweepGlobal_TolerantOfAnAbsentRatingsTable(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.execution_ratings')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
+	// The journal sweep runs after the ratings sweep and probes its own
+	// table the same way; absent keeps these cases about what they test.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.config_apply_journal')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 	counts, err := s.SweepGlobal(context.Background(), GlobalPolicy{})
 	if err != nil {
 		t.Fatalf("SweepGlobal errored on an absent table: %v", err)

@@ -9,9 +9,15 @@ commercial Enterprise edition.
 By signing (see **How to sign** below) you accept these terms for your past and
 future Contributions to this project.
 
-> This Agreement grants rights to **Vadim Grinco** ("the Owner"), who holds the
-> intellectual property in Vornik and licenses it for the project's open-source
-> and commercial offerings.
+> This Agreement grants rights to **EaseIT Labs s.r.o.**, IČO 29865751, a
+> company registered in the Czech Republic ("the Owner"), which holds the
+> intellectual property in Vornik and licenses it for the project's
+> open-source and commercial offerings.
+>
+> *Version 2 (2026-09-14).* Version 1 named the project's founder as the
+> Owner personally. The rights are now held by the company, so the beneficiary
+> changed; the grant you make is otherwise the same. Contributors who signed
+> version 1 are asked to sign again.
 
 ## 1. Definitions
 
@@ -35,6 +41,10 @@ proprietary/commercial licences. This is necessary to maintain Vornik as an
 open-core project (an open Community edition and a commercial Enterprise
 edition). You retain all right, title, and interest in Your Contributions — this
 Agreement is a licence, **not** an assignment of ownership.
+
+**Transfer.** The Owner may assign this Agreement, and the licences granted
+under it, to a successor that takes over the Vornik project or the Owner's
+business, and the successor then stands in the Owner's place.
 
 ## 3. Patent licence
 
@@ -86,6 +96,5 @@ signature covers your future Contributions.
 
 ---
 
-*This document is offered in good faith and is based on widely-used CLA
-templates; it is not legal advice. The Owner should have it reviewed by counsel
-before relying on it.*
+*This document is based on widely-used CLA templates and is offered in good
+faith; it is not legal advice to you.*

@@ -30,6 +30,7 @@ import (
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/configassist"
 	"vornik.io/vornik/internal/configrecon"
 	"vornik.io/vornik/internal/conversation/a2a"
 	"vornik.io/vornik/internal/email"
@@ -344,9 +345,8 @@ func (c *Container) initHTTPServer() error {
 		// CE operator shell (review R1): account management over the shared
 		// identity repository, audited through the admin audit sink.
 		// Constructed once; the UI shell below shares the instance.
-		if identity != nil {
-			c.accounts = authz.NewAccounts(identity, c.repos.AdminAudit)
-			apiOpts = append(apiOpts, api.WithAccountsService(c.accounts))
+		if acc := c.accountsService(); acc != nil {
+			apiOpts = append(apiOpts, api.WithAccountsService(acc))
 		}
 	}
 	// Fleet observability (slice C1) — ClusterNodes + LeaderLocks back
@@ -668,6 +668,19 @@ func (c *Container) initHTTPServer() error {
 		// EVERY backend, including sqlite, which never re-runs the postgres-only
 		// repo rebuild. Attach is idempotent; this block runs twice.
 		c.auditRedactMetrics.Attach(reg, &c.Logger)
+		// The §5.3 legacy-grant counter, same Attach rule and for the same
+		// reason: the holder is created during subsystem init, before any
+		// registry exists. This counter IS the removal gate ("14 consecutive
+		// days at zero"), so registering it on DefaultRegisterer would not
+		// make the gate unavailable — it would make it read zero forever.
+		// nil-safe by contract, and the nil is the NORMAL case: chatAuthMetrics
+		// is created inside chatAuthShim(), which returns early when there is
+		// no identity repository — so on every deployment without the identity
+		// core this field is nil when we get here. Attach checks m == nil
+		// first. Said out loud because a startup panic on the majority
+		// configuration would be the worst possible way to learn it
+		// (review-20260914-a786, minor).
+		c.chatAuthMetrics.Attach(reg)
 		// Taint-lineage tainted-write counter (taint-lineage-tracking §8). Same
 		// pass-2-only registry rule. Shared by BOTH surfaces: the query_api gate
 		// records directly via the api server; the forge park routes through
@@ -814,34 +827,10 @@ func (c *Container) initHTTPServer() error {
 		proposalsRepo = c.repos.WorkflowProposals
 	}
 	// Consumer B (instinct layer) — pass the instinct repo into the
-	// architect only when instinct.enabled && consumers.architect_priors.
-	// nil keeps the architect's behaviour byte-for-byte unchanged.
-	var architectInstincts persistence.InstinctRepository
-	if c.Config != nil && c.Config.Instinct.Enabled && c.Config.Instinct.Consumers.ArchitectPriors &&
-		c.repos != nil && c.repos.Instincts != nil {
-		architectInstincts = c.repos.Instincts
-	}
-	archAdapter := newWorkflowArchitectAdapter(
-		c.DB, c.ChatClient, proposalsRepo,
-		resolveRegistryConfigDir(c.ConfigPath),
-		architectInstincts,
-		// TRACK ARCH-METRIC — thread the shared instinct metrics so the
-		// architect's architect-evidence ApplicationsTotal counter is live.
-		// Lazily created+cached here (observability is up by this second
-		// initHTTPServer pass) and reused by wireComponentMetrics. nil when
-		// observability is disabled — counter dark, rows still recorded.
-		c.sharedInstinctMetrics(),
-		c.Logger,
-	)
-	if archAdapter != nil {
-		apiOpts = append(apiOpts, api.WithWorkflowArchitect(archAdapter))
-		// Wire the rejection write-back recorder (Consumer B). The
-		// accessor returns nil when the gate is off, so this is a
-		// no-op in that case.
-		if rec := archAdapter.RejectionRecorder(); rec != nil {
-			apiOpts = append(apiOpts, api.WithWorkflowRejectionRecorder(rec))
-		}
-	}
+	// The memetic architect is GONE (WP9 step 3, 2026-09-16). It was the
+	// healing candidate producer and the config assistant replaced it; the
+	// instinct "architect priors" consumer fed its prompt and has nothing to
+	// feed now. §6.3.4b records why the comparison window was skipped.
 	// Workflow proposals review surface — Slice 3a of the
 	// memetic-workflows arc. Powers GET / GET / POST-decide
 	// against /admin/workflow-proposals. Same nil-safety as the
@@ -944,7 +933,13 @@ func (c *Container) initHTTPServer() error {
 				workflowApplier,
 				c.healingObserverOnce(), // RecordPromotion → vornik_workflow_healing_promotions_total (EE only; nil-safe)
 				c.Logger.With().Str("component", "workflowhealing-promote").Logger(),
-			)
+			).
+				// The currency gate (2026-09-16). Promotion FAILS CLOSED without
+				// this, by design: a genome is a whole-file replacement, and
+				// promoting one generated against a superseded file silently
+				// reverts every edit made since. Not an optional hardening —
+				// leaving it unwired disables promotion rather than weakening it.
+				WithWorkflowLookup(c.Registry)
 			if p := newHealingPromoterAdapter(promoter); p != nil {
 				apiOpts = append(apiOpts, api.WithHealingCandidatePromoter(p))
 			}
@@ -1036,6 +1031,15 @@ func (c *Container) initHTTPServer() error {
 			composed.External = c.mcpManager
 		}
 		apiOpts = append(apiOpts, api.WithMCPExecutor(composed))
+		// Retained so the configuration assistant's AGENT entrypoint can be
+		// attached below. The executor is composed HERE and the assistant
+		// engine is not built until the API server exists, several hundred
+		// lines further down — the same init-order asymmetry that left the
+		// Telegram link-code redeemer wired to nil. Attaching later is safe
+		// because nothing is served until this function returns; attaching
+		// EARLIER is impossible, which is why the field is set rather than
+		// passed.
+		c.composedMCP = composed
 	}
 	if mh := c.Config.MCP.MediaHandles; mh != nil {
 		// Daemon-side media handles: stash large source-tool outputs (image
@@ -1436,6 +1440,25 @@ func (c *Container) initHTTPServer() error {
 		return fmt.Errorf("slack channel: %w", err)
 	}
 	if len(skChannels) > 0 {
+		// Phase 4 (§5.1/§5.3): every Slack channel shares the ONE shim
+		// instance Telegram uses, so the two cannot drift on the OR-matrix —
+		// and so the legacy-grant metric counts one population rather than
+		// one per channel. Nil when no identity repository is wired, leaving
+		// the sender allowlists as the sole authority.
+		if shim := c.chatAuthShim(); shim != nil {
+			for _, ch := range skChannels {
+				ch.SetIdentityShim(shim)
+			}
+		}
+		// §5.2 redemption, on the same instance for the same reason. Wired
+		// independently of the shim: redemption is what CREATES the bindings
+		// the shim later resolves, so it must work before the shim has
+		// anything to find.
+		if acc := c.accountsService(); acc != nil {
+			for _, ch := range skChannels {
+				ch.SetAccountLinker(acc)
+			}
+		}
 		c.SlackChannels = skChannels
 		c.SlackProjects = skProjects
 		muxLogger := c.Logger.With().Str("component", "slack_mux").Logger()
@@ -1472,6 +1495,17 @@ func (c *Container) initHTTPServer() error {
 
 	apiServer := api.NewServer(apiOpts...)
 	c.apiServer = apiServer
+
+	// Gate the post-task skill distiller against near-duplicates (LLD §12.2).
+	// Wired HERE rather than as an executor Option because the checker is
+	// backed by the API server, which does not exist when the executor is
+	// built — an Option would have been nil by construction. Until 2026-09-16
+	// the semantic gate reached only the companion `skill_propose` tool while
+	// this path produced 105 of 128 catalogue entries, 69 of which never fired
+	// once.
+	if c.Executor != nil {
+		c.Executor.SetSkillDupeChecker(apiServer)
+	}
 
 	// Dispatcher chat entry point for the NL Automation Composer
 	// (task 1.4; design §5.7 Phase 4). Wired here — not in
@@ -1510,6 +1544,7 @@ func (c *Container) initHTTPServer() error {
 				TreeRoot:       c.Registry.GetConfigDir(),
 				ApplyPrefix:    configAssistApplyPrefix(c.ConfigPath, c.Registry.GetConfigDir()),
 				ConfigPath:     c.ConfigPath,
+				WorkspaceRoot:  c.Config.Runtime.ProjectWorkspacePath,
 				SecretSnapshot: dh.SecretFieldsSnapshot,
 				Usage: func(ctx context.Context, projectID, _ string, model string, prompt, completion int) {
 					spend.Record(ctx, llmspend.Input{ProjectID: projectID, Model: model, PromptTokens: prompt, CompletionTokens: completion})
@@ -1787,11 +1822,67 @@ func (c *Container) initHTTPServer() error {
 	// CE operator shell (2026-09-13 review R1/R2): /ui/operator/accounts in
 	// both editions; the admin.allowed_keys list is its explicit capability.
 	uiOpts = append(uiOpts, ui.WithOperatorCapability(c.Config.Admin))
-	if c.accounts != nil {
-		uiOpts = append(uiOpts, ui.WithAccountsService(c.accounts))
+	// Name the Slack redemption command only when Slack is actually wired:
+	// the command is configurable, so a hardcoded one would tell some
+	// operators to type something their workspace does not answer.
+	if cmds := c.slackSlashCommands(); len(cmds) > 0 {
+		uiOpts = append(uiOpts, ui.WithSlackLinkCommands(cmds))
+	}
+	if acc := c.accountsService(); acc != nil {
+		uiOpts = append(uiOpts, ui.WithAccountsService(acc))
+		// The self-service /ui/account page needs to know who is signed in.
+		// Without this the page refuses every caller, which is the safe
+		// default but not a useful one.
+		uiOpts = append(uiOpts, ui.WithDefaultSessionUserResolver())
 	}
 	if eng := apiServer.ConfigAssistant(); eng != nil {
 		uiOpts = append(uiOpts, ui.WithConfigAssistant(eng))
+		// The CHAT entrypoint (config-assistant §6.3.3, plan §9). Wired HERE
+		// rather than beside each channel's other wiring, because the engine
+		// is built during HTTP init and initTelegram runs BEFORE it — the
+		// same init-order trap that left the Telegram link-code redeemer
+		// wired to nil, so a code issued in the UI was answered "not valid"
+		// forever. One adapter serves both channels so neither package grows
+		// its own rendering of classes and refusals.
+		//
+		// Gated on config_assistant.chat_entrypoint: the engine's own check
+		// refuses a chat request when it is off, but leaving the surface
+		// advertised and refusing every call is a worse shape than not
+		// advertising it — the person is told a feature exists and then that
+		// it does not work.
+		// The AGENT entrypoint (design §6.3.2a): a fourth built-in provider on
+		// the composed executor agents already reach, not a server. Gated
+		// separately from chat because it is a different exposure — an
+		// agent's prompt carries third-party text, so this is the path from
+		// untrusted input to a proposed config change.
+		//
+		// It audits its own calls: §6.3.2a verified that neither
+		// ComposedMCPExecutor.Execute nor the MCP handler above it writes a
+		// tool-audit row, so a provider assuming otherwise would leave the
+		// most exposed entrypoint with no record of what it refused.
+		if c.Config.ConfigAssistant.AgentEntrypoint && c.composedMCP != nil {
+			if ap := configassist.NewAgentProvider(eng, c.repos.ToolAudit); ap != nil {
+				c.composedMCP.Assistant = ap
+			}
+		}
+		// WP9 step 1: the read-only comparison window (§6.3.4). Gated on its
+		// own key because it costs an extra assistant run per healing trigger
+		// and is meant to be temporary — a window, closed by a stated
+		// criterion, not a permanent second opinion.
+		// WP9 step 3 (2026-09-16): the assistant IS the healing producer.
+		// Unconditional — this is no longer an opt-in second opinion behind
+		// a config key, it is the only producer for what the deterministic
+		// recipes do not handle.
+		apiServer.SetHealingAssistant(&healingComparisonAdapter{engine: eng})
+		if c.Config.ConfigAssistant.ChatEntrypoint {
+			adapter := configassist.NewChatAdapter(eng)
+			for _, ch := range c.SlackChannels {
+				ch.SetConfigAssistant(adapter)
+			}
+			if c.TelegramBot != nil {
+				c.TelegramBot.SetConfigAssistant(adapter)
+			}
+		}
 	}
 	if c.archiveSweeper != nil {
 		uiOpts = append(uiOpts, ui.WithArchiveSweeper(c.archiveSweeper))
@@ -2075,7 +2166,6 @@ func (c *Container) initHTTPServer() error {
 			apiServer:          apiServer,
 			workflowApplier:    workflowApplier,
 			workflowRollbacker: workflowRollbacker,
-			archAdapter:        archAdapter,
 			healingTrialRunner: uiHealingTrialRunner,
 			healingPromoter:    uiHealingPromoter,
 		})...)
@@ -2118,9 +2208,7 @@ func (c *Container) initHTTPServer() error {
 		// the UI and API agree on which bearer tokens authenticate.
 		uiAPIKeyRepo := c.repos.APIKeys
 		uiHandler = api.ProjectAuthMiddleware()(uiHandler)
-		uiAuthOpts := []api.AuthConfigOption{
-			api.WithAPIKeyLookup(uiAPIKeyRepo),
-			api.WithAPIKeyToucher(uiAPIKeyRepo),
+		uiAuthOpts := append(c.apiKeyAuthOptions(uiAPIKeyRepo),
 			api.WithAuthAPIKeyLimiter(c.apiKeyLimiter),
 			api.WithAuthRateLimitMetrics(c.rateLimitMetrics),
 			api.WithAuthPerIPLimiter(c.perIPLimiter,
@@ -2128,7 +2216,7 @@ func (c *Container) initHTTPServer() error {
 				c.Config.API.RateLimit.PerIP.Burst),
 			api.WithAuthDryRunMetrics(c.dryRunMetrics),
 			api.WithAuthChainMetrics(c.chainMetrics),
-		}
+		)
 		// Share the SAME session backend instance with the UI subtree so
 		// a cookie minted at login authenticates the browser on /ui pages
 		// (the redirect-to-login + CSRF gate live in AuthMiddleware).
@@ -2188,10 +2276,7 @@ func (c *Container) initHTTPServer() error {
 	// a flood cannot get a fresh budget by picking a different prefix.
 	if conn := c.mcpConnector(); conn != nil {
 		cbHandler := conn.CallbackHandler()
-		cbAuthOpts := []api.AuthConfigOption{
-			api.WithAPIKeyLookup(c.repos.APIKeys),
-			api.WithAPIKeyToucher(c.repos.APIKeys),
-		}
+		cbAuthOpts := c.apiKeyAuthOptions(c.repos.APIKeys)
 		if sessionLogin != nil {
 			cbAuthOpts = append(cbAuthOpts, api.WithSessionBackend(sessionLogin.backend))
 		}
@@ -2256,7 +2341,6 @@ type adminUIDeps struct {
 	apiServer          *api.Server
 	workflowApplier    ui.WorkflowApplierUI
 	workflowRollbacker ui.WorkflowRollbackerUI
-	archAdapter        *workflowArchitectAdapter
 	healingTrialRunner ui.HealingTrialRunnerUI
 	healingPromoter    ui.HealingCandidatePromoterUI
 }
@@ -2318,7 +2402,7 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 		// see https://docs.vornik.io §Slice-3
 		if c.DB != nil {
 			opts = append(opts, ui.WithWorkflowRollupSource(
-				&memeticTelemetrySource{svc: workflowtelemetry.NewService(c.DB)},
+				&workflowRollupSource{svc: workflowtelemetry.NewService(c.DB)},
 			))
 		}
 	}
@@ -2332,14 +2416,11 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 	if deps.workflowRollbacker != nil {
 		opts = append(opts, ui.WithWorkflowRollbackerUI(deps.workflowRollbacker))
 	}
-	// Black Box Phase B follow-on: the "Generate candidate" button
-	// on the workflow-healing trigger detail page calls the same
-	// architect the api surface uses. Reuses the api adapter's
-	// underlying *memetic.Architect via .UI(); nil-safe (the trigger
-	// detail page renders the "architect not wired" hint when absent).
-	if uiArch := deps.archAdapter.UI(); uiArch != nil {
-		opts = append(opts, ui.WithBlackBoxArchitect(uiArch))
-	}
+	// The "Generate candidate" button on the trigger detail page used to
+	// call the memetic architect directly from the UI. It now goes through
+	// the API's generate-candidate route like every other caller, so the
+	// producer is chosen in ONE place (WP9 step 3, 2026-09-16) rather than
+	// the UI holding its own reference to a proposer.
 	// Self-Healing Workflow Genome v1 — the run-trial / promote / reject
 	// buttons on /ui/admin/blackbox/candidates drive the SAME concrete
 	// runner + promoter the api surface wires (Unit 6). Nil-safe: when the
@@ -2349,6 +2430,15 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 	}
 	if deps.healingPromoter != nil {
 		opts = append(opts, ui.WithHealingCandidatePromoter(deps.healingPromoter))
+	}
+	// The Generate candidate button on the trigger page and the control-plane
+	// hub, backed by the SAME producer the admin API calls — recipe first,
+	// then the config assistant, with the intent derived from the trigger so
+	// the operator types nothing. Wiring it through the api server rather than
+	// rebuilding the orchestration is the point: the second copy that used to
+	// live in the ui package is what the 2026-09-16 cutover missed.
+	if g := newHealingGeneratorUIAdapter(deps.apiServer); g != nil {
+		opts = append(opts, ui.WithHealingCandidateGenerator(g))
 	}
 	opts = append(
 		opts,
@@ -2692,4 +2782,69 @@ func configAssistApplyPrefix(configPath, treeRoot string) string {
 		return ""
 	}
 	return filepath.ToSlash(rel)
+}
+
+// apiKeyAuthOptions returns the auth-chain options for a subtree that
+// authenticates API keys: the lookup, the toucher, and — inseparably — the
+// §5.0 disabled-owner door.
+//
+// They are bundled because they were separable once. The door was added to
+// `internal/auth` and to `internal/authz`, and joined on NO chain: the primary
+// router's, the /ui subtree's and the callback subtree's key lookups all
+// authenticated a disabled owner's key. Two of the three were found only after
+// the first was fixed, which is the recurrence this bundle removes — a caller
+// can no longer add a key lookup and forget the door, because there is no
+// call that gives them the lookup alone.
+//
+// The door is omitted only when there is no accounts service to derive it
+// from (no identity repository configured), which is a deployment with no
+// account to disable rather than a door left open.
+func (c *Container) apiKeyAuthOptions(repo persistence.APIKeyRepository) []api.AuthConfigOption {
+	opts := []api.AuthConfigOption{
+		api.WithAPIKeyLookup(repo),
+		api.WithAPIKeyToucher(repo),
+	}
+	if acc := c.accountsService(); acc != nil {
+		opts = append(opts, api.WithOwnerAccessCheck(acc.KeyOwnerAccess))
+	}
+	return opts
+}
+
+// accountsService returns the ONE account-management service, building it on
+// first use.
+//
+// Memoized rather than assigned during HTTP init because the init order is
+// not what a reader assumes: initTelegram runs BEFORE initHTTPServer, so a
+// field set in the HTTP path is still nil when the bot is built. Wiring the
+// bot's link-code redeemer off that field left it permanently nil — the same
+// built-but-not-hung shape as the §5.0 API-key door, arriving a third time
+// from a third direction. An accessor has no order to get wrong.
+func (c *Container) accountsService() *authz.Accounts {
+	if c.repos == nil || c.repos.Identity == nil {
+		return nil
+	}
+	c.accountsOnce.Do(func() { c.accounts = c.newAccountsService(c.repos.Identity) })
+	return c.accounts
+}
+
+// newAccountsService builds the CE account-management service with the Phase-4
+// stores attached (oidc-identity-permissions-design §5.2/§5.4).
+//
+// Both stores are optional: a deployment that never links a chat channel or
+// maps a key answers ErrLinkCodesUnavailable / ErrKeysUnavailable rather than
+// panicking, so the absence is a named refusal instead of a crash.
+func (c *Container) newAccountsService(identity persistence.IdentityRepository) *authz.Accounts {
+	acc := authz.NewAccounts(identity, c.repos.AdminAudit)
+	if c.repos.LinkCodes != nil {
+		acc.WithLinkCodes(c.repos.LinkCodes)
+	}
+	if c.repos.APIKeys != nil {
+		acc.WithAPIKeys(c.repos.APIKeys)
+	}
+	// §5.2's profile half of redemption. Nil on a deployment with no
+	// operator-profile store, which has no profile to move.
+	if l := c.profileLinkerFor(); l != nil {
+		acc.WithProfileLinker(l)
+	}
+	return acc
 }

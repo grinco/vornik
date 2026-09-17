@@ -31,6 +31,24 @@ type TraceReader interface {
 // return a smaller, cleaner-looking journal that reads exactly like a complete
 // one — the same class of silent-truncation error the abort path is marked for.
 func Rescore(ctx context.Context, j Journal, traces TraceReader, probes []Probe, gold *GoldManifest) (Journal, error) {
+	return RescoreWithTasks(ctx, j, traces, probes, gold, nil)
+}
+
+// RescoreWithTasks is Rescore plus the task set, which is what the TASK SCORES
+// need: a score's policy (producer step, verifier step, kind) lives in the task
+// spec, not in the journal.
+//
+// Task scores used to pass through verbatim while the harness stamp moved,
+// which was harmless only while every contract change was a PROBE change. The
+// 2026-09-17 extras rule changed pinned_case_validation, so a v5 journal
+// rescored to v6 kept its v5 metric under a v6 claim — verified on the
+// 2026.9.4 arm, where dp-01-nilguard rescored 5->6 and kept
+// 0.000/invalid_evidence while the current scorer on the same stored snapshot
+// returns 1.000 with three extras counted.
+//
+// A journal that carries task scores is therefore re-scored WITH them or not at
+// all: supplying no task set is refused rather than silently passing them on.
+func RescoreWithTasks(ctx context.Context, j Journal, traces TraceReader, probes []Probe, gold *GoldManifest, tasks []TaskSpec) (Journal, error) {
 	if traces == nil {
 		return Journal{}, fmt.Errorf("re-scoring needs a trace store")
 	}
@@ -83,5 +101,78 @@ func Rescore(ctx context.Context, j Journal, traces TraceReader, probes []Probe,
 	// let a reader believe a v3 journal is comparable with v2 figures.
 	out.Manifest.ArmKey = out.Manifest.Arm.Key()
 	out.Manifest.ArmPartial = out.Manifest.Arm.Partial()
+	// Task scores: recomputed from the stored execution snapshots, never copied.
+	if len(j.TaskScores) > 0 {
+		scores, err := rescoreTaskScores(ctx, j, traces, tasks)
+		if err != nil {
+			return Journal{}, err
+		}
+		out.TaskScores = scores
+	}
+
 	return out, nil
+}
+
+// rescoreTaskScores recomputes every journalled task score from the execution
+// snapshot it was originally scored from, using the same selection rule the
+// runner applies: the newest execution that reached the verifier wins, and
+// failing that the root supplies the fail-closed verdict.
+//
+// Split out of RescoreWithTasks for the complexity ratchet, and it reads better
+// here: the probe half and the task-score half share only the journal.
+func rescoreTaskScores(ctx context.Context, j Journal, traces TraceReader, tasks []TaskSpec) ([]TaskScore, error) {
+	specs := make(map[string]TaskSpec, len(tasks))
+	for _, t := range tasks {
+		specs[t.ID] = t
+	}
+	stateStore, ok := traces.(ExecutionStateStore)
+	if !ok {
+		return nil, fmt.Errorf("journal %q carries %d task score(s) but the trace store "+
+			"cannot read execution state snapshots, so they cannot be recomputed",
+			j.Manifest.RunID, len(j.TaskScores))
+	}
+	out := make([]TaskScore, 0, len(j.TaskScores))
+	for _, ts := range j.TaskScores {
+		spec, known := specs[ts.TaskID]
+		if !known || spec.Scoring == nil {
+			return nil, fmt.Errorf("task %q has a journalled score but no scoring policy in "+
+				"the supplied task set: its score defines the release metric and cannot be "+
+				"carried forward unverified", ts.TaskID)
+		}
+		snapshot, err := rescoreSnapshotFor(ctx, stateStore, ts, spec)
+		if err != nil {
+			return nil, err
+		}
+		next, err := ScoreTask(ts.TaskID, ts.Repeat, spec.Scoring, ts.ExecutionIDs, snapshot)
+		if err != nil {
+			return nil, fmt.Errorf("re-score task %s repeat %d: %w", ts.TaskID, ts.Repeat, err)
+		}
+		out = append(out, next)
+	}
+	return out, nil
+}
+
+// rescoreSnapshotFor picks the execution snapshot a task score is computed
+// from, mirroring Runner.scoreTaskRepeat.
+func rescoreSnapshotFor(ctx context.Context, store ExecutionStateStore, ts TaskScore, spec TaskSpec) ([]byte, error) {
+	var snapshot []byte
+	for i, id := range ts.ExecutionIDs {
+		candidate, err := store.StateSnapshot(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("re-score task %s repeat %d from execution %s: %w",
+				ts.TaskID, ts.Repeat, id, err)
+		}
+		if i == 0 {
+			snapshot = candidate
+		}
+		hasVerifier, err := snapshotHasStepResult(candidate, spec.Scoring.VerifierStep)
+		if err != nil {
+			return nil, fmt.Errorf("re-score task %s repeat %d from execution %s: "+
+				"decode state snapshot: %w", ts.TaskID, ts.Repeat, id, err)
+		}
+		if hasVerifier {
+			snapshot = candidate
+		}
+	}
+	return snapshot, nil
 }

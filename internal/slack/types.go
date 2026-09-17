@@ -45,6 +45,8 @@ import (
 	"sync"
 	"time"
 
+	"vornik.io/vornik/internal/chatauth"
+
 	"github.com/rs/zerolog"
 )
 
@@ -294,6 +296,24 @@ type Channel struct {
 	httpClient         *http.Client
 	logger             zerolog.Logger
 	clock              func() time.Time
+
+	// identityShim applies the Phase-4 OR-matrix (§5.3). Nil = sender
+	// allowlists only, which is the pre-Phase-4 behaviour.
+	identityShim *chatauth.Shim
+	// accountLinker redeems §5.2 link codes on `/vornik link <code>` —
+	// see link_account.go.
+	accountLinker AccountLinker
+	// configAssistant serves the configuration assistant's chat entrypoint
+	// (`<slash_command> config <request>`). Nil leaves "config …" an ordinary
+	// prompt — the pre-feature behaviour, and the behaviour in every
+	// deployment that has not opened the entrypoint.
+	configAssistant ConfigAssistant
+	// configRuns holds the senders with an assistant run in flight — one each
+	// (review-20260915-8717 F5).
+	configRunsMu sync.Mutex
+	configRuns   map[string]struct{}
+	// redemptionLimiter bounds pre-gate link attempts per speaker.
+	redemptionLimiter *chatauth.RedemptionLimiter
 
 	postMessageRPS   int
 	postMessageBurst int

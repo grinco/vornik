@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/chatauth"
 	"vornik.io/vornik/internal/conversation"
 )
 
@@ -86,18 +87,88 @@ func (c *Channel) ResolveSpeaker(_ context.Context, channelSpeakerID string) (co
 // meant an unconfigured installation silently let any member of the workspace
 // drive the dispatcher. Set AllowUnlistedSenders to opt back in deliberately.
 func (c *Channel) anyInstallationAllowsSpeaker(userID string) bool {
+	return c.authorizeSpeaker(userID).Allowed
+}
+
+// SetIdentityShim wires the Phase-4 compatibility shim
+// (oidc-identity-permissions-design §5.1/§5.3). Nil — the default — leaves
+// the sender allowlists as the only authority, which is the pre-Phase-4
+// behaviour exactly.
+func (c *Channel) SetIdentityShim(s *chatauth.Shim) { c.identityShim = s }
+
+// slackAllowlistConfigKey names the config the legacy gate reads. It is the
+// label the shim's legacy-grant metric carries, so both gates must report the
+// same one — they used to spell it twice.
+const slackAllowlistConfigKey = "slack.sender_allowlist"
+
+// legacySenderAccess reads what the hand-maintained installation allowlists
+// say, in the shape the shim consumes. It keeps the 2026-08-05 rule — an
+// empty list DENIES unless allowUnlisted — in one place rather than
+// re-derived per call site.
+func (c *Channel) legacySenderAccess(userID string) chatauth.Legacy {
+	l := chatauth.Legacy{ConfigKey: slackAllowlistConfigKey}
 	for _, inst := range c.installations {
-		if len(inst.senders) == 0 {
-			if inst.allowUnlisted {
-				return true
-			}
-			continue
-		}
-		if _, ok := inst.senders[userID]; ok {
-			return true
+		if legacyAllowsSender(inst, userID) {
+			l.Allowed = true
+			return l
 		}
 	}
-	return false
+	return l
+}
+
+// legacyForInstallation is legacySenderAccess narrowed to ONE installation,
+// for the per-installation gate. Both build the same struct through the same
+// rule so the two gates cannot disagree about what the allowlist said.
+//
+// Slack sets no Legacy.Projects today — neither gate ever did, which is why
+// F2 found them agreeing by coincidence rather than by construction. This is
+// the construction: if Slack gains per-sender project scope (Telegram has it),
+// it is added HERE and reaches both gates. That is a property of the shape,
+// not a feature that exists.
+func (c *Channel) legacyForInstallation(inst *installation, userID string) chatauth.Legacy {
+	return chatauth.Legacy{
+		ConfigKey: slackAllowlistConfigKey,
+		Allowed:   legacyAllowsSender(inst, userID),
+	}
+}
+
+// legacyAllowsSender is the 2026-08-05 rule itself, for one installation: an
+// empty allowlist DENIES unless the installation opted back in.
+func legacyAllowsSender(inst *installation, userID string) bool {
+	if len(inst.senders) == 0 {
+		return inst.allowUnlisted
+	}
+	_, ok := inst.senders[userID]
+	return ok
+}
+
+// authorize is the ONE OR-matrix call site for this channel. Both gates go
+// through it. The per-installation gate used to re-inline the matrix with a
+// locally built Legacy (review-20260914-3c36 F2): the two agreed only because
+// both happened to omit the same field.
+func (c *Channel) authorize(userID string, legacy chatauth.Legacy) chatauth.Decision {
+	return c.authorizeCtx(context.Background(), userID, legacy)
+}
+
+// authorizeCtx is authorize with a caller-supplied deadline.
+//
+// It exists for the configuration assistant's chat entrypoint, which must
+// answer Slack inside three seconds (§6.3.3). The unavailable-resolver refusal
+// handles a resolver that FAILS; it does nothing for one that HANGS, and a
+// partitioned database hangs where a stopped one fails fast — so the outage
+// net had its hole exactly where outages actually live
+// (review-20260915-8717 F3). With a deadline, a hang becomes the same prompt
+// refusal an error already produced.
+func (c *Channel) authorizeCtx(ctx context.Context, userID string, legacy chatauth.Legacy) chatauth.Decision {
+	if c.identityShim == nil {
+		return chatauth.Decision{Allowed: legacy.Allowed, Projects: legacy.Projects}
+	}
+	return c.identityShim.Authorize(ctx, "slack", userID, legacy)
+}
+
+// authorizeSpeaker runs the OR-matrix for one Slack user id, channel-wide.
+func (c *Channel) authorizeSpeaker(userID string) chatauth.Decision {
+	return c.authorize(userID, c.legacySenderAccess(userID))
 }
 
 // resolveSpeakerForInstallation enforces the per-installation
@@ -107,13 +178,11 @@ func (c *Channel) resolveSpeakerForInstallation(inst *installation, userID strin
 	if strings.TrimSpace(userID) == "" {
 		return conversation.Speaker{}, conversation.ErrSpeakerUnknown
 	}
-	// Empty allowlist denies unless explicitly opened — see
-	// anyInstallationAllowsSpeaker for the 2026-08-05 default flip.
-	if len(inst.senders) == 0 {
-		if !inst.allowUnlisted {
-			return conversation.Speaker{}, conversation.ErrSpeakerUnknown
-		}
-	} else if _, ok := inst.senders[userID]; !ok {
+	// The SAME rule function and the SAME OR-matrix call as the channel-wide
+	// path, narrowed to this installation. Two gates for one question is how
+	// they drift, and this one is a security boundary: a linked identity
+	// refused here would be authorized channel-wide and rejected at dispatch.
+	if !c.authorize(userID, c.legacyForInstallation(inst, userID)).Allowed {
 		return conversation.Speaker{}, conversation.ErrSpeakerUnknown
 	}
 	return conversation.Speaker{
@@ -536,11 +605,28 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 	}
 	channelID := strings.TrimSpace(form.Get("channel_id"))
 	userID := strings.TrimSpace(form.Get("user_id"))
+	text := strings.TrimSpace(form.Get("text"))
+	// §5.1's exception, BEFORE the allowlist gate below: a speaker who has
+	// not linked yet is by definition not yet authorized, so gating
+	// redemption on authorization makes it unreachable for exactly the
+	// population it exists for. It answers synchronously and ephemerally,
+	// and never reaches a model or the dispatcher.
+	if c.tryAccountLinkCode(r.Context(), w, userID, text) {
+		return
+	}
 	if !c.slashCommandActorAllowed(inst, channelID, userID) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	text := strings.TrimSpace(form.Get("text"))
+	// The configuration assistant's chat entrypoint (§6.3.3). AFTER the
+	// allowlist gate, because unlike redemption this surface is not §5.1's
+	// exception — and it then applies a STRICTER rule than that gate did,
+	// refusing a sender the legacy allowlist admitted but the resolver did
+	// not. It answers within Slack's three seconds and runs the engine
+	// detached.
+	if c.tryConfigAssistant(w, inst, userID, text) {
+		return
+	}
 	if text == "" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

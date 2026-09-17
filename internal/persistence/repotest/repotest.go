@@ -1136,6 +1136,56 @@ func RunAPIKeyRepositorySuite(t *testing.T, repo persistence.APIKeyRepository) {
 		}
 	})
 
+	// GetByID exists for the §5.4 key-claim flow of
+	// oidc-identity-permissions-design: a claim declares a key id and proves
+	// possession of its secret, so the claim path needs a by-id read.
+	//
+	// It deliberately does NOT share LookupActiveByHash's "revoked reads as
+	// absent" rule. §5.4 requires a revoked or expired key to stay claimable,
+	// because its recorded history — every task, token and dollar — is exactly
+	// what the mapping exists to attribute, and refusing would strand it.
+	t.Run("GetByID_returns_revoked_keys_too", func(t *testing.T) {
+		k := &persistence.APIKey{
+			ID:        uniqueID("akey"),
+			ProjectID: uniqueID("proj"),
+			Name:      "claimable-after-revoke",
+			KeyHash:   uniqueID("hash"),
+			KeyPrefix: "sk-test",
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := repo.Create(ctx, k); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := repo.Revoke(ctx, k.ID); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		// The active-hash lookup must still hide it — that rule is unchanged.
+		if _, err := repo.LookupActiveByHash(ctx, k.KeyHash); !errors.Is(err, persistence.ErrAPIKeyNotFound) {
+			t.Fatalf("LookupActiveByHash(revoked) = %v, want ErrAPIKeyNotFound", err)
+		}
+		got, err := repo.GetByID(ctx, k.ID)
+		if err != nil {
+			t.Fatalf("GetByID(revoked) = %v, want the row: a revoked key stays claimable (§5.4)", err)
+		}
+		if got.ID != k.ID || got.KeyHash != k.KeyHash {
+			t.Errorf("GetByID returned %+v, want id=%s hash=%s", got, k.ID, k.KeyHash)
+		}
+		if got.RevokedAt == nil {
+			t.Error("GetByID must report the revocation, so a caller can refuse to re-enable it")
+		}
+	})
+
+	t.Run("GetByID_miss_is_ErrAPIKeyNotFound", func(t *testing.T) {
+		// Asserted directly rather than through the miss contract: this
+		// repository answers with its own ErrAPIKeyNotFound sentinel, which
+		// is NOT persistence.ErrNotFound, so the contract's two-value
+		// vocabulary cannot express it. GetByID matches its sibling
+		// LookupActiveByHash rather than inventing a third convention.
+		if _, err := repo.GetByID(ctx, uniqueID("absent")); !errors.Is(err, persistence.ErrAPIKeyNotFound) {
+			t.Fatalf("GetByID(absent) = %v, want ErrAPIKeyNotFound", err)
+		}
+	})
+
 	t.Run("Skill_capabilities_round_trip", func(t *testing.T) {
 		hash := uniqueID("hash")
 		k := &persistence.APIKey{
@@ -4075,15 +4125,19 @@ func RunIdentityRepositorySuite(t *testing.T, repo persistence.IdentityRepositor
 	}
 	bind := func(t *testing.T, userID, channel, externalID string) {
 		t.Helper()
-		if err := repo.BindIdentity(ctx, &persistence.UserIdentity{
+		bound, err := repo.BindIdentity(ctx, &persistence.UserIdentity{
 			ID:         uniqueID("uident"),
 			UserID:     userID,
 			Channel:    channel,
 			ExternalID: externalID,
 			Display:    "bound",
 			CreatedAt:  time.Now().UTC(),
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("BindIdentity: %v", err)
+		}
+		if !bound {
+			t.Fatalf("BindIdentity(%s, %s) did not bind: already held by another user", channel, externalID)
 		}
 	}
 	// projectSet collects the non-nil ProjectIDs from a resolver row set.

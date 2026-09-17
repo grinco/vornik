@@ -14,8 +14,16 @@
             </div>
 
             <p class="text-xs text-gray-500">
-                Describe a change to a project's autonomy settings, swarm or workflows in plain language. The assistant edits a private, secret-sanitized copy of the configuration, validates the result with the daemon's own loaders, classifies its blast radius, has a separate judge model check it, and files a <strong>proposal</strong> for you to approve. Nothing is written to the live configuration here. Classes C, D and E never auto-apply; class E needs your explicit approval and shows the effective permission diff.
+                Describe a change to a project's autonomy settings, swarm or workflows in plain language. The assistant edits a private, secret-sanitized copy of the configuration, validates the result with the daemon's own loaders, classifies its blast radius, has a separate judge model check it, and files a <strong>proposal</strong> for you to approve. Classes C, D and E never auto-apply; class E needs your explicit approval and shows the effective permission diff.
             </p>
+            {{if .AutoApplyClasses}}
+            <div class="glass rounded-xl border border-amber-700/50 bg-amber-900/20 px-4 py-2.5 text-xs text-amber-200">
+                <strong>This project auto-applies class {{range $i, $c := .AutoApplyClasses}}{{if $i}}, {{end}}{{$c}}{{end}}.</strong>
+                A proposal in {{if eq (len .AutoApplyClasses) 1}}that class{{else}}those classes{{end}} that passes the judge is written to the live configuration immediately, without a further approval step from you.
+            </div>
+            {{else}}
+            <p class="text-xs text-gray-500">This project has no auto-apply opt-in, so nothing here is written to the live configuration: every proposal waits for your approval.</p>
+            {{end}}
 
             {{if not .Available}}
             <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
@@ -26,7 +34,7 @@
                 <div class="flex flex-wrap items-end gap-3">
                     <div class="flex flex-col gap-1">
                         <label for="assist-project" class="text-xs text-gray-500 uppercase tracking-wider">Project</label>
-                        <select id="assist-project" name="project" required class="bg-dark-800 border border-dark-600 rounded-md px-2 py-1 text-sm text-gray-100">
+                        <select id="assist-project" name="project" required data-assist-project class="bg-dark-800 border border-dark-600 rounded-md px-2 py-1 text-sm text-gray-100">
                             {{range .Projects}}<option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>{{end}}
                         </select>
                     </div>
@@ -35,8 +43,42 @@
                     <label for="assist-intent" class="text-xs text-gray-500 uppercase tracking-wider">What should change?</label>
                     <textarea id="assist-intent" name="intent" rows="3" required placeholder="e.g. the czech-news feed feels stale — look at its measured lag and propose a cadence" class="bg-dark-800 border border-dark-600 rounded-md px-2 py-1 text-sm text-gray-100">{{.Intent}}</textarea>
                 </div>
-                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Ask the assistant</button>
+                <input type="hidden" name="requestToken" value="{{.RequestToken}}">
+                <button data-assist-submit class="bg-brand-500 hover:bg-brand-400 disabled:opacity-60 disabled:cursor-wait text-white text-xs font-medium px-3 py-1.5 rounded-md">Ask the assistant</button>
+                <p data-assist-pending hidden class="text-xs text-gray-400">Working — this runs a model and can take a few minutes. Leaving or resubmitting is safe: this request carries an idempotency key, so a resubmit returns the same proposal rather than filing a second one.</p>
             </form>
+            <script>
+            // Changing the project re-asks the SERVER what that project's
+            // auto-apply opt-in is. The warning above is rendered server-side
+            // from the selection, so leaving the dropdown to change without a
+            // reload would show one project's warning beside another's name
+            // (re-audit 2026-09-15, CA-13).
+            (function () {
+                var sel = document.querySelector('[data-assist-project]');
+                if (!sel) { return; }
+                sel.addEventListener('change', function () {
+                    var url = new URL(window.location.href);
+                    url.searchParams.set('project', sel.value);
+                    window.location.assign(url.toString());
+                });
+            })();
+            </script>
+            <script>
+            // Disable-on-submit with a visible pending state. Without it the
+            // form invited a second expensive run on every impatient click,
+            // and the hidden token above is what makes the resubmit harmless
+            // rather than merely discouraged (audit 2026-09-15 CA-13).
+            (function () {
+                var form = document.currentScript.previousElementSibling;
+                if (!form || form.tagName !== 'FORM') { return; }
+                form.addEventListener('submit', function () {
+                    var btn = form.querySelector('[data-assist-submit]');
+                    var pending = form.querySelector('[data-assist-pending]');
+                    if (btn) { btn.disabled = true; btn.textContent = 'Asking…'; }
+                    if (pending) { pending.hidden = false; }
+                });
+            })();
+            </script>
             {{end}}
 
             {{if .Error}}
@@ -64,7 +106,7 @@
                     {{range .Refusal.Findings}}<div class="text-xs font-mono text-gray-400">· {{.}}</div>{{end}}
                     {{else}}
                     {{if .Proposal}}
-                    <div>Proposal <a href="/ui/admin/control-plane?section=proposals" class="font-mono text-brand-400 hover:text-brand-300">{{.Proposal.ID}}</a> · {{.Proposal.Status}} · <span class="text-gray-400">{{.Proposal.Title}}</span></div>
+                    <div>Proposal <a href="/ui/admin/control-plane?section=proposals&amp;proposal={{.Proposal.ID}}" class="font-mono text-brand-400 hover:text-brand-300">{{.Proposal.ID}}</a> · {{.Proposal.Status}} · <span class="text-gray-400">{{.Proposal.Title}}</span></div>
                     {{end}}
                     {{if .Summary}}<div class="text-gray-300">{{.Summary}}</div>{{end}}
                     {{if .Verdict}}{{if .Verdict.Judged}}<div class="text-xs text-gray-400">Judge ({{.Verdict.Model}}): {{.Verdict.Summary}}</div>{{else}}<div class="text-xs text-amber-300">Not judged: {{.Verdict.Reason}}</div>{{end}}{{end}}

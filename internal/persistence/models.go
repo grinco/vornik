@@ -1351,8 +1351,19 @@ type APIKey struct {
 	// or missing owner denies the key outright. It never promotes a key.
 	// Executor-minted per-task and warm-pool keys are always unowned, and
 	// internal/executor's TestUnownedTaskKey_E2E_RealMinterRealStore pins
-	// that. Set only by an audited account-management action, never from
-	// caller headers.
+	// that.
+	//
+	// NOT A STORED COLUMN. Ownership lives in `user_identities` (channel
+	// "api_key"), where an audited claim or admin assignment writes it;
+	// this field is RESOLVED onto the row at authentication time by
+	// auth.DBKeysBackend from that mapping, and is never read from caller
+	// headers. A row obtained any other way — a direct repository read, a
+	// list endpoint — carries "" here regardless of who owns the key.
+	//
+	// The distinction is written down because it was previously implied and
+	// wrong in the other direction: the field was documented as the owner,
+	// consumers read it for attribution, and nothing populated it at all, so
+	// every reader silently concluded "unowned" (audit 2026-09-15 CA-11).
 	OwnerUserID string `json:"owner_user_id,omitempty"`
 
 	// SkillRead / SkillWrite / SkillAdmin gate the knowledge-skill MCP
@@ -2958,6 +2969,25 @@ type UserIdentity struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+// LinkCode is one self-service channel-link code (oidc-identity-permissions
+// design §5.2). CodeHash is the sha256 of the 8-character code; the raw code
+// is shown to the issuing user once and never stored, the same hygiene
+// api_keys.key_hash uses — so the table cannot leak a redeemable code even
+// to someone who can read it.
+//
+// UsedAt, UsedByChannel and UsedByExternalID record the redemption: a code is
+// single-use, and what consumed it is kept because the binding it created is
+// an access grant someone may later need to account for.
+type LinkCode struct {
+	CodeHash         string     `json:"code_hash"`
+	UserID           string     `json:"user_id"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	UsedAt           *time.Time `json:"used_at,omitempty"`
+	UsedByChannel    string     `json:"used_by_channel,omitempty"`
+	UsedByExternalID string     `json:"used_by_external_id,omitempty"`
 }
 
 // UISession is one browser login session (design §4.3). TokenHash

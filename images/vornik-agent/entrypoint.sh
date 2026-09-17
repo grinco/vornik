@@ -502,6 +502,46 @@ in_recovery_hop() {
     [ -n "$rec" ]
 }
 
+# The literal /app/workspace below is deliberate and must stay a literal: it
+# mirrors the hardcoded containerPath in internal/executor/plan.go, which is
+# what builds the doubled path this recognises. $WORKSPACE would be wrong here
+# — the message is about a path the DAEMON constructed, not about this
+# container's mount. (If the container workspace ever moves, both literals move
+# together or the message stops recognising the shape. review-20260916-2c6c,
+# minor 6.)
+#
+# path_repeats_container_prefix reports whether a path carries the container
+# workspace prefix more than once — the signature of a prompt path that was
+# rewritten twice (/app/workspace/app/workspace/..., or with the double slash
+# the rewrite actually produces). Pure string work: the path does not exist,
+# which is the whole point.
+path_repeats_container_prefix() {
+    local p="${1:-}" rest
+    rest="${p#*/app/workspace}"
+    [ "$rest" != "$p" ] || return 1
+    [ "${rest#*/app/workspace}" != "$rest" ]
+}
+
+# missing_prerequisite_message renders the file_read repeat-miss failure.
+#
+# Two different defects reach this point and they live in different
+# subsystems, so they must not share one sentence. A well-formed path that
+# is simply absent IS an upstream-producer problem. A path that repeats the
+# container prefix was never producible by anyone: the daemon's prompt
+# rewrite built it (rewriteInputPathsInPrompt, executor/plan.go — not
+# idempotent until 2026-09-16, incident
+# exec_20260916164618_4c53e9deafd4e8e6). Reporting the second as the first
+# costs the reader an investigation of a step that did nothing wrong.
+missing_prerequisite_message() {
+    local p="${1:-}"
+    if path_repeats_container_prefix "$p"; then
+        printf 'Missing prerequisite: file_read of "%s" returned not-found twice. That path is MALFORMED — it repeats the container prefix /app/workspace, so no such file could ever exist. This is a prompt path-rewrite defect on the daemon side, NOT a missing artifact: do not investigate the producing step. The intended path is "%s".' \
+            "$p" "/app/workspace${p##*/app/workspace}"
+        return 0
+    fi
+    printf 'Missing prerequisite: file_read of "%s" returned not-found twice. This usually means an upstream role (researcher, planner) did not produce the expected artifact — check that step'"'"'s outcome.' "$p"
+}
+
 write_result() {
     local status="$1" message="$2" response="$3" duration="$4" error="${5:-}"
 
@@ -1578,7 +1618,30 @@ if os.path.isabs(raw):
     else:
         candidate = os.path.join(workspace, raw.lstrip(os.sep))
 else:
-    candidate = os.path.join(workspace, raw)
+    # A relative path that RESTATES the workspace root
+    # ("app/workspace/artifacts/in/x" against /app/workspace) is an
+    # absolute container path whose leading slash the model dropped.
+    # Joining it builds /app/workspace/app/workspace/... which never
+    # exists. Must stay byte-identical to deSlashedWorkspacePath in
+    # internal/agentloop/paths.go — this resolver keys the file_read
+    # cache and the repeat-miss guard while the Go port does the read,
+    # so a divergence here means the guard tracks a path the reader
+    # never opened. Incident 2026-09-16,
+    # exec_20260916164618_4c53e9deafd4e8e6.
+    # normpath BEFORE stripping, mirroring Go's filepath.Clean in
+    # deSlashedWorkspacePath. Without it the two resolvers agree only while
+    # WORKSPACE happens to be canonical: a trailing slash makes Go's Clean
+    # drop it while lstrip alone would not, and the guard would then track a
+    # path the reader never opened — the exact split this parity exists to
+    # prevent (review-20260916-2c6c).
+    deslashed = os.path.normpath(workspace).lstrip(os.sep)
+    rel = raw
+    if deslashed not in ("", "."):
+        if raw == deslashed:
+            rel = ""
+        elif raw.startswith(deslashed + os.sep):
+            rel = raw[len(deslashed):]
+    candidate = os.path.join(workspace, rel.lstrip(os.sep))
 
 resolved = os.path.realpath(os.path.normpath(candidate))
 if resolved != workspace and not resolved.startswith(workspace + os.sep):
@@ -3294,7 +3357,7 @@ ${previous_result}
                 log "ERROR: missing_prerequisite — file_read of $FILE_READ_REPEAT_MISS failed twice, aborting turn"
                 local last_content
                 last_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // "Agent hit missing prerequisite"' "$msgs_file")
-                write_result "FAILED" "Missing prerequisite: file_read of \"$FILE_READ_REPEAT_MISS\" returned not-found twice. This usually means an upstream role (researcher, planner) did not produce the expected artifact — check that step's outcome." "$last_content" "$(get_duration)" "missing_prerequisite"
+                write_result "FAILED" "$(missing_prerequisite_message "$FILE_READ_REPEAT_MISS")" "$last_content" "$(get_duration)" "missing_prerequisite"
                 return 1
             fi
 

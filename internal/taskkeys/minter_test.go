@@ -195,6 +195,15 @@ type inMemAPIKeyRepo struct {
 	rows []*persistence.APIKey
 }
 
+func (r *inMemAPIKeyRepo) GetByID(_ context.Context, keyID string) (*persistence.APIKey, error) {
+	for _, k := range r.rows {
+		if k.ID == keyID {
+			return k, nil
+		}
+	}
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (r *inMemAPIKeyRepo) Create(_ context.Context, k *persistence.APIKey) error {
 	cp := *k
 	r.rows = append(r.rows, &cp)
@@ -234,4 +243,11 @@ func TestInMemAPIKeyRepo_MissContract(t *testing.T) {
 	repotest.AssertMiss(t, "APIKeyRepository.LookupActiveByHash", func() (*persistence.APIKey, error) {
 		return repo.LookupActiveByHash(context.Background(), "missing")
 	})
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*inMemAPIKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

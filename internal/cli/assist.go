@@ -1,7 +1,7 @@
 package cli
 
 // `vornikctl assist <project> "<intent>"` — the configuration assistant's
-// operator CLI door (2026-09-13 design §6.3 door 1). One call = one intent
+// operator CLI entrypoint (2026-09-13 design §6.3 entrypoint 1). One call = one intent
 // = one reviewable proposal (or a named refusal). It never applies
 // anything itself: review with `vornikctl control-plane show <id>` and
 // decide with `control-plane approve` / `apply`.

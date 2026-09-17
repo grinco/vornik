@@ -21,7 +21,6 @@ import (
 
 	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/persistence"
-	"vornik.io/vornik/internal/workflowhealing"
 )
 
 // blackboxTriggerDetailURL composes the detail page URL with an
@@ -297,7 +296,7 @@ func (s *Server) AdminBlackBoxTriggerDetail(w http.ResponseWriter, r *http.Reque
 			IsAdmin:     true,
 		},
 		Available:    s.healingTriggerRepo != nil,
-		HasArchitect: s.blackboxArchitect != nil,
+		HasArchitect: s.healingGenerator != nil,
 	}
 	if !data.Available {
 		s.render(w, "admin_blackbox_trigger.html", data)
@@ -490,108 +489,72 @@ func uniqueNonEmpty(in []string) []string {
 	return out
 }
 
-// AdminBlackBoxTriggerGenerateCandidate handles
-// POST /ui/admin/blackbox/triggers/{id}/generate-candidate. Calls
-// the memetic architect synchronously (matches the user-confirmed
-// scope), stamps the resulting proposal_id on the trigger, and
-// redirects to the proposal detail page on success.
+// HealingCandidateGeneratorUI is the narrow seam over the ONE healing
+// candidate producer (api.Server.GenerateHealingCandidateForTrigger). The UI
+// used to carry its own copy of that orchestration, which is why the
+// 2026-09-16 cutover repointed the API at the config assistant and left this
+// page wired to an architect that no longer existed.
 //
-// The architect runs telemetry-first — it doesn't take the trigger's
-// evidence IDs as input; those are operator-facing breadcrumbs. The
-// architect fetches its own evidence from the workflow_telemetry
-// roll-ups for the same workflow ID.
+// Generate takes a trigger id and NOTHING ELSE. Everything the producer needs
+// — project, workflow, evidence set, and the intent rendered from the metric
+// and its thresholds — comes off the trigger row. This is the operator's
+// requirement stated as a type: a candidate is one button, and there is no
+// prompt field to type into.
+type HealingCandidateGeneratorUI interface {
+	// Generate returns the filed proposal's id, and whether a deterministic
+	// recipe produced it rather than the assistant.
+	Generate(ctx context.Context, triggerID string) (proposalID string, byRecipe bool, err error)
+}
+
+// Sentinels the service adapter maps the producer's errors onto, so this
+// package renders outcomes without importing api.
+var (
+	// ErrUITriggerNotFound — no such trigger.
+	ErrUITriggerNotFound = errors.New("no such healing trigger")
+	// ErrUITriggerNotOpen — already dismissed or already generated.
+	ErrUITriggerNotOpen = errors.New("only open triggers can generate candidates")
+	// ErrUIProducerUnavailable — nothing wired to produce a candidate.
+	ErrUIProducerUnavailable = errors.New("no healing candidate producer is wired on this deployment")
+)
+
+// TriggerStampError carries the proposal id through the one partial failure
+// worth distinguishing: the proposal exists, the trigger stamp did not land.
+type TriggerStampError struct {
+	ProposalID string
+	Err        error
+}
+
+func (e *TriggerStampError) Error() string { return e.Err.Error() }
+func (e *TriggerStampError) Unwrap() error { return e.Err }
+
+// AdminBlackBoxTriggerGenerateCandidate handles
+// POST /ui/admin/blackbox/triggers/{id}/generate-candidate.
+//
+// A PRESENTATION of the shared producer: it decides how to render an outcome
+// and nothing about what the outcome is. The trigger load, the open-status
+// check, the recipe-then-assistant order, the trigger stamp and the candidate
+// row all live in the producer, so this surface and the admin API cannot drift
+// again.
 func (s *Server) AdminBlackBoxTriggerGenerateCandidate(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.healingTriggerRepo == nil {
-		http.Error(w, "healing-trigger repo not wired", http.StatusServiceUnavailable)
+	if s.healingGenerator == nil {
+		http.Error(w, "no healing candidate producer wired", http.StatusServiceUnavailable)
 		return
 	}
-	if s.blackboxArchitect == nil {
-		http.Error(w, "workflow architect not wired", http.StatusServiceUnavailable)
-		return
-	}
-	// Generous timeout — the architect makes one LLM call which
-	// can take ~10-30s on a remote provider, plus filesystem +
-	// telemetry reads.
+	// Generous timeout — the assistant makes one synchronous model call.
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	principal := adminPrincipal(r)
-	t, err := s.healingTriggerRepo.Get(ctx, id)
+
+	proposalID, byRecipe, err := s.healingGenerator.Generate(ctx, id)
 	if err != nil {
-		if errors.Is(err, persistence.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		http.Redirect(w, r, blackboxTriggerDetailURL(id, err.Error()), http.StatusSeeOther)
+		s.renderGenerateCandidateError(w, r, id, err)
 		return
 	}
-	if t.Status != persistence.HealingTriggerStatusOpen {
-		http.Redirect(w, r,
-			blackboxTriggerDetailURL(id, "trigger already resolved; only open triggers can generate candidates"),
-			http.StatusSeeOther)
-		return
-	}
-	proposal, err := proposeBlackBoxCandidate(ctx, s.blackboxArchitect, t.WorkflowID, t.EvidenceExecutionIDs)
-	if err != nil {
-		s.logger.Warn().Err(err).
-			Str("trigger_id", id).
-			Str("workflow_id", t.WorkflowID).
-			Msg("trigger generate-candidate: architect failed")
-		http.Redirect(w, r,
-			blackboxTriggerDetailURL(id, "architect: "+err.Error()),
-			http.StatusSeeOther)
-		return
-	}
-	if proposal == nil || proposal.ID == "" {
-		// Not a failure: the architect evaluated the evidence and
-		// declined to propose (low-confidence PASS — the adapter maps
-		// memetic.ErrLowConfidence to (nil, nil)). Surface it as an
-		// informational notice, not an error. See lowConfidenceIsNoProposal.
-		http.Redirect(w, r,
-			blackboxTriggerDetailURL(id, "architect evaluated the evidence — no structural change warranted (normal; nothing to fix)"),
-			http.StatusSeeOther)
-		return
-	}
-	if err := s.healingTriggerRepo.MarkGenerated(ctx, id, proposal.ID); err != nil {
-		s.logger.Warn().Err(err).
-			Str("trigger_id", id).
-			Str("proposal_id", proposal.ID).
-			Msg("trigger mark-generated failed AFTER successful architect call")
-		// Proposal exists in the proposals tree — point the
-		// operator at it so they don't lose the architect's work.
-		q := url.Values{}
-		q.Set("decide_error", "trigger stamp failed: "+err.Error())
-		http.Redirect(w, r,
-			"/ui/admin/workflow-proposals/"+url.PathEscape(proposal.ID)+"?"+q.Encode(),
-			http.StatusSeeOther)
-		return
-	}
-	// Self-Healing Workflow Genome v1: persist the candidate row that
-	// LINKS this trigger to the architect's proposal — the same row the
-	// API generate-candidate path writes, via the shared constructor so
-	// the two surfaces cannot drift. Best-effort: the proposal + trigger
-	// stamp are already durable, so an insert failure logs and the flow
-	// continues; nil repo (pre-genome deployment) skips silently.
-	// Regression context 2026-06-06: this persist was missing, so every
-	// UI-generated candidate was invisible in /ui/admin/blackbox/candidates.
-	if s.healingCandidateRepo != nil {
-		cand := workflowhealing.CandidateFromArchitectProposal(t, proposal)
-		if err := s.healingCandidateRepo.Insert(ctx, cand); err != nil {
-			s.logger.Warn().Err(err).
-				Str("trigger_id", id).
-				Str("proposal_id", proposal.ID).
-				Msg("healing candidate persist failed; proposal + trigger stamp are durable")
-		} else {
-			s.logger.Info().
-				Str("candidate_id", cand.ID).
-				Str("trigger_id", id).
-				Str("proposal_id", proposal.ID).
-				Msg("healing candidate persisted")
-		}
-	}
+
 	if s.adminAuditRepo != nil {
 		_ = s.adminAuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
 			Timestamp: time.Now().UTC(),
@@ -599,11 +562,14 @@ func (s *Server) AdminBlackBoxTriggerGenerateCandidate(w http.ResponseWriter, r 
 			Source:    "ui",
 			Action:    "blackbox-trigger.generated_candidate",
 			Target:    id,
-			After:     proposal.ID,
+			After:     proposalID,
 			IP:        clientIP(r),
 			UserAgent: r.UserAgent(),
 		})
 	}
+	s.logger.Info().Str("trigger_id", id).Str("proposal_id", proposalID).
+		Bool("by_recipe", byRecipe).Msg("healing candidate generated from the UI")
+
 	if cpHubReturnRequested(r) {
 		// Folded-hub flow: the generated proposal is now visible in the hub
 		// Proposals inbox, so keep the operator there rather than bouncing
@@ -611,16 +577,33 @@ func (s *Server) AdminBlackBoxTriggerGenerateCandidate(w http.ResponseWriter, r 
 		http.Redirect(w, r, cpHubProposalsURL("candidate-generated", ""), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+url.PathEscape(proposal.ID), http.StatusSeeOther)
+	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+url.PathEscape(proposalID), http.StatusSeeOther)
 }
 
-type memeticArchitectWithEvidenceUI interface {
-	ProposeWithEvidence(ctx context.Context, workflowID string, evidenceRunIDs []string) (*persistence.WorkflowProposal, error)
-}
-
-func proposeBlackBoxCandidate(ctx context.Context, arch MemeticArchitectUI, workflowID string, evidenceRunIDs []string) (*persistence.WorkflowProposal, error) {
-	if withEvidence, ok := arch.(memeticArchitectWithEvidenceUI); ok {
-		return withEvidence.ProposeWithEvidence(ctx, workflowID, evidenceRunIDs)
+// renderGenerateCandidateError puts the operator where their next action is.
+// The distinctions matter: "nothing is wired", "this trigger is already
+// resolved" and "the producer ran and declined" need different responses, and
+// a stamp failure must still point at the proposal that DOES exist.
+func (s *Server) renderGenerateCandidateError(w http.ResponseWriter, r *http.Request, id string, err error) {
+	var stamp *TriggerStampError
+	switch {
+	case errors.Is(err, ErrUITriggerNotFound):
+		http.NotFound(w, r)
+	case errors.Is(err, ErrUITriggerNotOpen):
+		http.Redirect(w, r, blackboxTriggerDetailURL(id,
+			"trigger already resolved; only open triggers can generate candidates"), http.StatusSeeOther)
+	case errors.As(err, &stamp):
+		// The proposal exists — send the operator to it rather than losing
+		// the producer's work to a bookkeeping failure.
+		q := url.Values{}
+		q.Set("decide_error", "trigger stamp failed: "+stamp.Error())
+		http.Redirect(w, r, "/ui/admin/workflow-proposals/"+url.PathEscape(stamp.ProposalID)+"?"+q.Encode(),
+			http.StatusSeeOther)
+	case errors.Is(err, ErrUIProducerUnavailable):
+		http.Redirect(w, r, blackboxTriggerDetailURL(id,
+			"no healing candidate producer is wired on this deployment"), http.StatusSeeOther)
+	default:
+		s.logger.Warn().Err(err).Str("trigger_id", id).Msg("trigger generate-candidate failed")
+		http.Redirect(w, r, blackboxTriggerDetailURL(id, err.Error()), http.StatusSeeOther)
 	}
-	return arch.Propose(ctx, workflowID)
 }

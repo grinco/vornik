@@ -70,10 +70,20 @@ type AssistantConfig struct {
 	// Consult is the opt-in architect consultation over A2A (plan §8).
 	Consult AssistantConsult `yaml:"consult" doc:"Opt-in architect consultation over A2A. Use requires a subscription; enabling creates an auditable record."`
 
-	// ChatDoor opens the chat-channel door (classes A and B2 only). Requires
+	// ChatEntrypoint opens the chat-channel entrypoint (classes A and B2 only). Requires
 	// identity.enabled — the door refuses to serve while account
 	// resolution is unavailable (test 23).
-	ChatDoor bool `yaml:"chat_door" doc:"Open the chat-channel door (classes A and B2 only). Requires identity.enabled."`
+	ChatEntrypoint bool `yaml:"chat_entrypoint" doc:"Open the chat-channel entrypoint (classes A and B2 only). Requires identity.enabled."`
+	// AgentEntrypoint opens the agent entrypoint: an agent may PROPOSE a
+	// configuration change through mcp__vornik__propose_config (classes A and
+	// B2 only, never auto-applied, always human-reviewed).
+	//
+	// This is the surface design §6.3.2 calls the most dangerous of the four:
+	// an agent's prompt carries third-party text, so it is a path from
+	// untrusted input to a proposed change to the deployment. The mitigations
+	// CONFINE that; they do not detect it. Off by default, and an operator who
+	// turns it on has taken an act rather than drifted into one.
+	AgentEntrypoint bool `yaml:"agent_entrypoint" doc:"Let agents PROPOSE config changes (classes A and B2 only, never auto-applied, always human-reviewed). The most exposed entrypoint: an agent prompt carries third-party text. Off by default."`
 }
 
 // AssistantAutoApply is one project's auto-apply opt-in.

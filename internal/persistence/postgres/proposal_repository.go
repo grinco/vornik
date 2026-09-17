@@ -25,7 +25,7 @@ const pgProposalColumns = `id, project_id, kind, blast_radius, title, diff, rati
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
 	apply_target, apply_content, apply_ops, applied_by, live_apply,
 	created_at, decided_at, applied_at,
-	request_id, idempotency_key, door, actor_kind, actor_account_id, actor_credential_id`
+	request_id, idempotency_key, entrypoint, actor_kind, actor_account_id, actor_credential_id`
 
 // Create inserts a new proposal, rejecting an oversized text field.
 func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlPlaneProposal) error {
@@ -46,7 +46,7 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
 		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		p.CreatedAt, p.DecidedAt, p.AppliedAt,
-		pgNullStr(p.RequestID), pgNullStr(p.IdempotencyKey), pgNullStr(p.Door),
+		pgNullStr(p.RequestID), pgNullStr(p.IdempotencyKey), pgNullStr(p.Entrypoint),
 		pgNullStr(p.ActorKind), pgNullStr(p.ActorAccountID), pgNullStr(p.ActorCredentialID),
 	)
 	// mapDBError turns 23505 (uq_cp_proposals_idempotency_key, or the id PK)
@@ -117,6 +117,18 @@ func (r *ProposalRepository) List(ctx context.Context, f persistence.ProposalLis
 			parts = append(parts, next(s))
 		}
 		b.WriteString(` AND status IN (` + strings.Join(parts, ",") + `)`)
+	}
+	if f.ProposedBy != "" {
+		b.WriteString(` AND proposed_by = ` + next(f.ProposedBy))
+	}
+	if f.ActorCredentialID != "" {
+		b.WriteString(` AND actor_credential_id = ` + next(f.ActorCredentialID))
+	}
+	if !f.CreatedFrom.IsZero() {
+		b.WriteString(` AND created_at >= ` + next(f.CreatedFrom.UTC()))
+	}
+	if !f.CreatedTo.IsZero() {
+		b.WriteString(` AND created_at < ` + next(f.CreatedTo.UTC()))
 	}
 	b.WriteString(` ORDER BY created_at DESC`)
 	if f.Limit > 0 {
@@ -297,7 +309,7 @@ func scanPGProposal(sc pgSkillScanner) (*persistence.ControlPlaneProposal, error
 		return nil, err
 	}
 	p.ProjectID = projectID.String
-	p.RequestID, p.IdempotencyKey, p.Door = ids[0].String, ids[1].String, ids[2].String
+	p.RequestID, p.IdempotencyKey, p.Entrypoint = ids[0].String, ids[1].String, ids[2].String
 	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = ids[3].String, ids[4].String, ids[5].String
 	if decidedAt.Valid {
 		t := decidedAt.Time

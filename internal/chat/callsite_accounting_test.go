@@ -97,19 +97,6 @@ var callSiteRegistry = map[string]callSiteAccounting{
 			"Previously assigned only in distiller_test.go — the seam existed and " +
 			"production never used it.",
 	},
-	"memetic.architect": {
-		accounted: false,
-		note: "DELIBERATE, NOT FORGOTTEN (assessed 2026-07-31). Blocked on an attribution " +
-			"decision, not on wiring: task_llm_usage.project_id is NOT NULL, and the " +
-			"architect has no project in scope — it is constructed over a daemon-level " +
-			"fsWorkflowSource (configDir/workflows/<id>.md) with no project anywhere in " +
-			"its dependencies. Options are (a) a sentinel project id, which puts a " +
-			"non-project row into every per-project rollup, (b) resolving a project from " +
-			"workflow frontmatter, if one is ever declared there, or (c) recording " +
-			"daemon-level spend somewhere other than task_llm_usage. Frequency is low " +
-			"(architect turns are operator- or schedule-triggered, not per-request), so " +
-			"this is the smaller half of the 2026-07-30 discrepancy.",
-	},
 	"config-assistant": {
 		accounted: true,
 		note: "configassist.Engine records assistant loop usage through its Usage recorder " +

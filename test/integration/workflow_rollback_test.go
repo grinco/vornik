@@ -23,9 +23,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
+	"vornik.io/vornik/internal/workflowapply"
 )
 
 // itGitReverter mirrors the service-package gitReverter inline.
@@ -95,8 +95,8 @@ func TestRollbacker_E2E_AppliesThenReverts(t *testing.T) {
 		persistence.WorkflowProposalStatusApproved, "operator-x", "ok"))
 
 	// Apply first so we have a real commit to revert.
-	applier := memetic.NewApplier(repo, writer, git, reloader,
-		memetic.ApplierConfig{AuthorName: "vornik-architect", AuthorEmail: "architect@vornik.test"})
+	applier := workflowapply.NewApplier(repo, writer, git, reloader,
+		workflowapply.ApplierConfig{AuthorName: "vornik-architect", AuthorEmail: "architect@vornik.test"})
 	applied, err := applier.Apply(ctx, proposalID, "operator-x")
 	require.NoError(t, err)
 	require.NotEmpty(t, applied.AppliedCommit)
@@ -110,8 +110,8 @@ func TestRollbacker_E2E_AppliesThenReverts(t *testing.T) {
 
 	// Roll back. Use a real git reverter against the same source
 	// tree.
-	rollbacker := memetic.NewRollbacker(repo, &itGitReverter{repoDir: sourceDir}, reloader,
-		memetic.RollbackerConfig{AuthorName: "vornik-it", AuthorEmail: "it@vornik.test"})
+	rollbacker := workflowapply.NewRollbacker(repo, &itGitReverter{repoDir: sourceDir}, reloader,
+		workflowapply.RollbackerConfig{AuthorName: "vornik-it", AuthorEmail: "it@vornik.test"})
 	got, err := rollbacker.Rollback(ctx, proposalID, "operator-y")
 	require.NoError(t, err)
 	require.Equal(t, persistence.WorkflowProposalStatusRolledBack, got.Status)
@@ -149,9 +149,9 @@ func TestRollbacker_E2E_NotApplied(t *testing.T) {
 	}))
 
 	sourceDir, _ := setupSourceRepoForWorkflow(t, workflowID)
-	rollbacker := memetic.NewRollbacker(repo, &itGitReverter{repoDir: sourceDir}, &stubReloader{},
-		memetic.RollbackerConfig{})
+	rollbacker := workflowapply.NewRollbacker(repo, &itGitReverter{repoDir: sourceDir}, &stubReloader{},
+		workflowapply.RollbackerConfig{})
 	_, err := rollbacker.Rollback(ctx, proposalID, "operator-x")
 	require.Error(t, err)
-	require.ErrorIs(t, err, memetic.ErrProposalNotApplied)
+	require.ErrorIs(t, err, workflowapply.ErrProposalNotApplied)
 }

@@ -31,10 +31,44 @@ type APIKeyRepository interface {
 	// for an auth layer.
 	LookupActiveByHash(ctx context.Context, keyHash string) (*APIKey, error)
 
+	// GetByID returns one key row by its id, INCLUDING revoked and
+	// expired rows, or ErrAPIKeyNotFound.
+	//
+	// It deliberately does not share LookupActiveByHash's "revoked reads
+	// as absent" rule, because its caller is different. That rule is right
+	// for an auth layer, where a revoked key must be indistinguishable
+	// from one that never existed. This method serves the §5.4 key-claim
+	// flow of oidc-identity-permissions-design, where a revoked key must
+	// stay claimable: its recorded history — every task, token and dollar
+	// already attributed to it — is exactly what the claim exists to roll
+	// up to a person, and hiding the row would strand that history with
+	// no way to attribute it.
+	GetByID(ctx context.Context, keyID string) (*APIKey, error)
+
 	// ListByProject returns every key row (including revoked ones)
 	// scoped to a project, newest first. The UI / CLI consume this
 	// to render the per-project keys table.
 	ListByProject(ctx context.Context, projectID string) ([]*APIKey, error)
+	// ListAttributable returns the keys a PERSON could be attributed with,
+	// across every project, newest first.
+	//
+	// It excludes machine-minted per-task keys (TaskKeyNamePrefix), which are
+	// bound to one task, revoked at teardown, and meaningless to attribute:
+	// the task's own actor is already recorded in tasks.created_by_actor, and
+	// §5.4's whole read-time-resolution argument rests on that. They also
+	// dominate the table — 574 of 585 rows on the reference host — so a
+	// surface that offered them would be unusable, which is how this filter
+	// was found.
+	//
+	// Not ListAll: naming it for the question it answers is what stops the
+	// next caller forgetting the filter.
+	//
+	// Enumerating the project registry instead would work on a healthy
+	// deployment and silently omit keys whose project has been deleted —
+	// precisely the "attribute the key of someone who has left" case. Revoked
+	// keys ARE included: §5.4 requires a revoked key to stay claimable, so it
+	// must stay visible to attribute.
+	ListAttributable(ctx context.Context) ([]*APIKey, error)
 
 	// ListCompanionByProject returns only the companion-scoped keys
 	// (client_kind IS NOT NULL) scoped to a project, newest first.

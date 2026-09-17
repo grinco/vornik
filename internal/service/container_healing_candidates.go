@@ -101,11 +101,18 @@ func newHealingTrialRunnerUIAdapter(r *workflowhealing.TrialRunner) ui.HealingTr
 	return &healingTrialRunnerUIAdapter{runner: r}
 }
 
-func (a *healingTrialRunnerUIAdapter) RunTrial(ctx context.Context, candidateID, mode string, evidenceIDs []string) error {
-	if _, err := a.runner.RunTrial(ctx, candidateID, persistence.HealingTrialMode(mode), evidenceIDs); err != nil {
-		return mapHealingErrorUI(err)
+// RunTrial forwards the runner's VERDICT to the UI. A nil result with no
+// error cannot happen through the runner, but returning "" rather than
+// dereferencing keeps the adapter total.
+func (a *healingTrialRunnerUIAdapter) RunTrial(ctx context.Context, candidateID, mode string, evidenceIDs []string) (string, error) {
+	res, err := a.runner.RunTrial(ctx, candidateID, persistence.HealingTrialMode(mode), evidenceIDs)
+	if err != nil {
+		return "", mapHealingErrorUI(err)
 	}
-	return nil
+	if res == nil {
+		return "", nil
+	}
+	return string(res.Verdict), nil
 }
 
 func (a *healingTrialRunnerUIAdapter) RunTrialAsync(ctx context.Context, candidateID, mode string, evidenceIDs []string) error {
@@ -154,6 +161,10 @@ func mapHealingErrorUI(err error) error {
 		return wrapHealingSentinel(err, ui.ErrUICandidateNotFound)
 	case errors.Is(err, workflowhealing.ErrCandidateTerminal):
 		return wrapHealingSentinel(err, ui.ErrUICandidateTerminal)
+	case errors.Is(err, workflowhealing.ErrGenomeDrift),
+		errors.Is(err, workflowhealing.ErrBaselineUnknown),
+		errors.Is(err, workflowhealing.ErrDriftCheckUnavailable):
+		return wrapHealingSentinel(err, ui.ErrUICandidateStale)
 	case errors.Is(err, workflowhealing.ErrCandidateNotPromotable):
 		return wrapHealingSentinel(err, ui.ErrUICandidateNotPromotable)
 	case errors.Is(err, workflowhealing.ErrUnsupportedMode):
@@ -177,6 +188,10 @@ func mapHealingError(err error) error {
 		return wrapHealingSentinel(err, api.ErrHealingCandidateNotFound)
 	case errors.Is(err, workflowhealing.ErrCandidateTerminal):
 		return wrapHealingSentinel(err, api.ErrHealingCandidateTerminal)
+	case errors.Is(err, workflowhealing.ErrGenomeDrift),
+		errors.Is(err, workflowhealing.ErrBaselineUnknown),
+		errors.Is(err, workflowhealing.ErrDriftCheckUnavailable):
+		return wrapHealingSentinel(err, api.ErrHealingCandidateStale)
 	case errors.Is(err, workflowhealing.ErrCandidateNotPromotable):
 		return wrapHealingSentinel(err, api.ErrHealingCandidateNotPromotable)
 	case errors.Is(err, workflowhealing.ErrUnsupportedMode):
@@ -204,3 +219,51 @@ func (e *healingWrappedError) Is(target error) bool {
 	return target == e.sentinel
 }
 func (e *healingWrappedError) Unwrap() error { return e.sentinel }
+
+// --- the shared healing candidate producer, UI side ---------------------
+
+// healingGeneratorUIAdapter bridges api.Server's ONE producer to the ui seam,
+// translating its errors into ui sentinels so the ui package renders outcomes
+// without importing api.
+//
+// There is deliberately no second producer here. The UI carried its own copy
+// of this orchestration until 2026-09-16, which is exactly why the cutover to
+// the config assistant repointed the API and left the UI wired to a deleted
+// architect (operator report, same day).
+type healingGeneratorUIAdapter struct{ srv *api.Server }
+
+func newHealingGeneratorUIAdapter(srv *api.Server) ui.HealingCandidateGeneratorUI {
+	if srv == nil {
+		return nil
+	}
+	return &healingGeneratorUIAdapter{srv: srv}
+}
+
+func (a *healingGeneratorUIAdapter) Generate(ctx context.Context, triggerID string) (string, bool, error) {
+	out, err := a.srv.GenerateHealingCandidateForTrigger(ctx, triggerID)
+	if err != nil {
+		return "", false, mapHealingGenerateErrorUI(err)
+	}
+	return out.Proposal.ID, out.ByRecipe, nil
+}
+
+// mapHealingGenerateErrorUI translates producer failures into ui sentinels.
+// The stamp failure keeps its proposal id: the proposal EXISTS, and the
+// operator must be sent to it rather than told the run failed.
+func mapHealingGenerateErrorUI(err error) error {
+	var stamp *api.TriggerStampError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, api.ErrHealingTriggerNotFound):
+		return wrapHealingSentinel(err, ui.ErrUITriggerNotFound)
+	case errors.Is(err, api.ErrHealingTriggerNotOpen):
+		return wrapHealingSentinel(err, ui.ErrUITriggerNotOpen)
+	case errors.Is(err, api.ErrHealingTriggerRepoUnavailable):
+		return wrapHealingSentinel(err, ui.ErrUIProducerUnavailable)
+	case errors.As(err, &stamp):
+		return &ui.TriggerStampError{ProposalID: stamp.ProposalID, Err: err}
+	default:
+		return err
+	}
+}

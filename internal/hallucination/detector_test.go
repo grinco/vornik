@@ -434,7 +434,9 @@ func TestHallucinatedToolFormat_FlagsXMLFragmentInName(t *testing.T) {
 	require.Len(t, sigs, 1)
 	s := sigs[0]
 	assert.Equal(t, "hallucinated_tool_format", s.Detector)
-	assert.Equal(t, SeverityHigh, s.Severity)
+	// Warn since 2026-09-17 (design §4b) — the rule still FIRES on this
+	// shape, which is what this test is for; it no longer blocks the step.
+	assert.Equal(t, SeverityWarn, s.Severity)
 	assert.Contains(t, s.ClaimValue, "</arg_value>")
 }
 
@@ -458,7 +460,9 @@ func TestHallucinatedToolFormat_FlagsRunShellArgVariant(t *testing.T) {
 	require.Len(t, sigs, 1, "rule must fire exactly once for this name")
 	s := sigs[0]
 	assert.Equal(t, "hallucinated_tool_format", s.Detector)
-	assert.Equal(t, SeverityHigh, s.Severity)
+	// Warn since 2026-09-17 (design §4b) — the rule still FIRES on this
+	// shape, which is what this test is for; it no longer blocks the step.
+	assert.Equal(t, SeverityWarn, s.Severity)
 }
 
 // TestHallucinatedToolFormat_FlagsShellCommandAsName covers
@@ -498,6 +502,8 @@ func TestHallucinatedToolFormat_FlagsXMLWrapperInToolInput(t *testing.T) {
 	require.Len(t, sigs, 1)
 	s := sigs[0]
 	assert.Equal(t, "hallucinated_tool_format", s.Detector)
+	// Still HIGH: only the tool-NAME half was demoted in 2026-09-17's §4b.
+	// A malformed argument dispatches, so the output contract cannot see it.
 	assert.Equal(t, SeverityHigh, s.Severity)
 	assert.Equal(t, "tool_args_format", s.ClaimType)
 	assert.Equal(t, "</arg_value>", s.ClaimValue)

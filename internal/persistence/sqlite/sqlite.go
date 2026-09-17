@@ -200,14 +200,32 @@ var sqliteAdditiveColumns = []additiveColumn{
 	{"users", "access_revoked_at", `TEXT`},
 	// Postgres migration 185 — proposal identifier + actor columns
 	// (config-assistant plan §7g). Nullable, no backfill: a legacy row has no
-	// request, door or resolved actor. schemaSQL indexes idempotency_key, so
+	// request, entrypoint or resolved actor. schemaSQL indexes idempotency_key, so
 	// these MUST land before schemaSQL runs (Migrate orders it so).
 	{"control_plane_proposals", "request_id", `TEXT`},
 	{"control_plane_proposals", "idempotency_key", `TEXT`},
-	{"control_plane_proposals", "door", `TEXT`},
+	{"control_plane_proposals", "entrypoint", `TEXT`},
 	{"control_plane_proposals", "actor_kind", `TEXT`},
 	{"control_plane_proposals", "actor_account_id", `TEXT`},
 	{"control_plane_proposals", "actor_credential_id", `TEXT`},
+	// Postgres migration 190 — recurring-series membership on memory chunks
+	// (2026-09-16-retrieval-recency-design.md §6). Nullable, no backfill: NULL
+	// means "not part of a series", which every existing row is. schemaSQL
+	// creates idx_memory_chunks_series over this column, so on a database that
+	// predates it the column MUST land here first — otherwise the CREATE INDEX
+	// errors and Migrate fails the daemon's startup rather than one query.
+	{"project_memory_chunks", "series_key", `TEXT`},
+	// Member identity and TTL for the same re-rank (design §5.3/§5.1). These
+	// are NOT new Postgres migrations — artifact_id, source_name and
+	// expires_at have been on the production table for a long time; the slim
+	// sqlite schema simply never carried them because nothing on this lane
+	// read them. The recency predicate does, on both lanes, so they land here
+	// too. Nullable with no backfill: NULL artifact_id is the case the
+	// predicate's COALESCE exists for, and NULL expires_at is "no TTL", which
+	// the curve reads as "never decays".
+	{"project_memory_chunks", "source_name", `TEXT`},
+	{"project_memory_chunks", "artifact_id", `TEXT`},
+	{"project_memory_chunks", "expires_at", `TEXT`},
 }
 
 // applyAdditiveColumns adds any registered column missing from an existing

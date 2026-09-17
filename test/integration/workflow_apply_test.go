@@ -26,9 +26,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
+	"vornik.io/vornik/internal/workflowapply"
 )
 
 // itWorkflowWriter is a minimal copy of the service-package
@@ -161,8 +161,8 @@ func TestApplier_E2E_HappyPath(t *testing.T) {
 	require.NoError(t, repo.Decide(ctx, proposalID,
 		persistence.WorkflowProposalStatusApproved, "operator-x", "looks good"))
 
-	applier := memetic.NewApplier(repo, writer, git, reloader,
-		memetic.ApplierConfig{AuthorName: "vornik-architect", AuthorEmail: "architect@vornik.test"})
+	applier := workflowapply.NewApplier(repo, writer, git, reloader,
+		workflowapply.ApplierConfig{AuthorName: "vornik-architect", AuthorEmail: "architect@vornik.test"})
 
 	got, err := applier.Apply(ctx, proposalID, "operator-x")
 	require.NoError(t, err)
@@ -226,12 +226,12 @@ func TestApplier_E2E_NotApproved(t *testing.T) {
 
 	sourceDir, deployedDir := setupSourceRepoForWorkflow(t, workflowID)
 	writer := &itWorkflowWriter{sourceDir: sourceDir, deployedDir: deployedDir}
-	applier := memetic.NewApplier(repo, writer, &itGitCommitter{repoDir: sourceDir}, &stubReloader{},
-		memetic.ApplierConfig{})
+	applier := workflowapply.NewApplier(repo, writer, &itGitCommitter{repoDir: sourceDir}, &stubReloader{},
+		workflowapply.ApplierConfig{})
 
 	_, err := applier.Apply(ctx, proposalID, "operator-x")
 	require.Error(t, err)
-	require.ErrorIs(t, err, memetic.ErrProposalNotApproved)
+	require.ErrorIs(t, err, workflowapply.ErrProposalNotApproved)
 
 	// File must NOT have been written.
 	if _, err := os.Stat(filepath.Join(deployedDir, "workflows", workflowID+".md")); err == nil {

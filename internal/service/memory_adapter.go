@@ -104,26 +104,46 @@ func (a *memoryCompanionAdapter) Recall(ctx context.Context, projectID, query st
 	}
 	out := make([]api.MemorySearchResult, len(results))
 	for i, r := range results {
-		out[i] = api.MemorySearchResult{
-			ChunkID:      r.ChunkID,
-			ProjectID:    r.ProjectID,
-			TaskID:       r.TaskID,
-			SourceName:   r.SourceName,
-			Content:      r.Content,
-			Score:        r.Score,
-			RepoScope:    r.RepoScope,
-			ContentClass: r.ContentClass,
-		}
-		if r.IsAlive != nil {
-			b := *r.IsAlive
-			out[i].IsAlive = &b
-		}
-		if r.LastCheckedAt != nil {
-			s := r.LastCheckedAt.UTC().Format(time.RFC3339)
-			out[i].LastCheckedAt = &s
-		}
+		out[i] = memorySearchResultToAPI(r)
 	}
 	return out, nil
+}
+
+// memorySearchResultToAPI is the ONE conversion from a memory result to the
+// wire shape. Routing adds trust fields on top of it (see
+// memorySearchResultToAPIRouting) and everything else is shared.
+//
+// It is one function because it used to be two: the routing path and the
+// default path each built the struct literal by hand, so a field added to one
+// was simply missing from the other. That is how EventTime — carried by
+// memory.SearchResult since migration 157 — reached no caller at all, and a
+// recall hit arrived with no age on it (2026-09-16 stale-news incident).
+func memorySearchResultToAPI(r memory.SearchResult) api.MemorySearchResult {
+	out := api.MemorySearchResult{
+		ChunkID:      r.ChunkID,
+		ProjectID:    r.ProjectID,
+		TaskID:       r.TaskID,
+		SourceName:   r.SourceName,
+		Content:      r.Content,
+		Score:        r.Score,
+		RepoScope:    r.RepoScope,
+		ContentClass: r.ContentClass,
+	}
+	if !r.EventTime.IsZero() {
+		out.EventTime = r.EventTime.UTC().Format(time.RFC3339)
+	}
+	if !r.CreatedAt.IsZero() {
+		out.CreatedAt = r.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if r.IsAlive != nil {
+		b := *r.IsAlive
+		out.IsAlive = &b
+	}
+	if r.LastCheckedAt != nil {
+		s := r.LastCheckedAt.UTC().Format(time.RFC3339)
+		out.LastCheckedAt = &s
+	}
+	return out
 }
 
 // RecallRouting is the confidence-based retrieval routing (P3) variant of
@@ -626,26 +646,9 @@ func (a *memorySearchAdapter) SearchRouting(ctx context.Context, projectID, quer
 // memorySearchResultToAPIRouting converts a memory.SearchResult to the api
 // wire shape INCLUDING the P3 trust fields (Routing-on projection).
 func memorySearchResultToAPIRouting(r memory.SearchResult) api.MemorySearchResult {
-	out := api.MemorySearchResult{
-		ChunkID:          r.ChunkID,
-		ProjectID:        r.ProjectID,
-		TaskID:           r.TaskID,
-		SourceName:       r.SourceName,
-		Content:          r.Content,
-		Score:            r.Score,
-		RepoScope:        r.RepoScope,
-		ContentClass:     r.ContentClass,
-		Confidence:       r.Confidence,
-		ValidationStatus: r.ValidationStatus,
-	}
-	if r.IsAlive != nil {
-		b := *r.IsAlive
-		out.IsAlive = &b
-	}
-	if r.LastCheckedAt != nil {
-		s := r.LastCheckedAt.UTC().Format(time.RFC3339)
-		out.LastCheckedAt = &s
-	}
+	out := memorySearchResultToAPI(r)
+	out.Confidence = r.Confidence
+	out.ValidationStatus = r.ValidationStatus
 	if r.ExpiresAt != nil {
 		s := r.ExpiresAt.UTC().Format(time.RFC3339)
 		out.ExpiresAt = &s

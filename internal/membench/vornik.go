@@ -340,11 +340,16 @@ type memoryStatsReply struct {
 	} `json:"projects"`
 	// Embedder is the daemon's RESOLVED embedder. Absent on a daemon that cannot
 	// report one, which the caller must treat as unverified rather than as none.
-	Embedder *struct {
-		Provider   string `json:"provider"`
-		Model      string `json:"model"`
-		Dimensions int    `json:"dimensions"`
-	} `json:"embedder"`
+	Embedder *embedderReply `json:"embedder"`
+}
+
+// embedderReply is the resolved-embedder block. Named rather than inlined
+// because whoami now carries the same shape — the companion door the harness can
+// actually reach — and two copies of a wire shape drift.
+type embedderReply struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
 }
 
 // ObservedEmbedder reports the embedder the DAEMON says it is using, satisfying
@@ -358,6 +363,19 @@ type memoryStatsReply struct {
 // Returns empty with no error when the daemon does not report one — an older daemon
 // is unverified, not misconfigured, and the comparability key marks it partial.
 func (v *VornikSystem) ObservedEmbedder(ctx context.Context) (string, error) {
+	// whoami FIRST: it is the only route a companion key may call, and the
+	// harness authenticates with one. The stats route below is admin-only and
+	// returned 403 on every run ever made, which left this field empty and the
+	// comparability key unable to separate two embedding models — the precise
+	// hazard the field exists to prevent (fixed 2026-09-17).
+	var who whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &who); err == nil && who.Embedder != nil {
+		if id := formatEmbedderID(who.Embedder); id != "" {
+			return id, nil
+		}
+	}
+	// Fall back to the admin route for a daemon too old to report it on whoami,
+	// or for a caller holding an admin key.
 	out, err := v.fetchStats(ctx)
 	if err != nil {
 		return "", err
@@ -365,18 +383,29 @@ func (v *VornikSystem) ObservedEmbedder(ctx context.Context) (string, error) {
 	if out.Embedder == nil || strings.TrimSpace(out.Embedder.Model) == "" {
 		return "", nil
 	}
-	e := out.Embedder
+	return formatEmbedderID(out.Embedder), nil
+}
+
+// formatEmbedderID renders the embedder identity that goes into the
+// comparability key: provider-qualified, and carrying the DIMENSION because two
+// different models can share a width — so the width alone cannot tell them
+// apart, while a width that CHANGED is a different vector space and must break
+// comparability.
+func formatEmbedderID(e *embedderReply) string {
+	if e == nil {
+		return ""
+	}
 	id := strings.TrimSpace(e.Model)
+	if id == "" {
+		return ""
+	}
 	if p := strings.TrimSpace(e.Provider); p != "" {
 		id = p + "/" + id
 	}
-	// The dimension travels with the id because two different models can share a
-	// width, so the width alone cannot tell them apart — but a width that CHANGED
-	// is a different vector space and must break comparability.
 	if e.Dimensions > 0 {
 		id = fmt.Sprintf("%s@%dd", id, e.Dimensions)
 	}
-	return id, nil
+	return id
 }
 
 // fetchStats performs GET /api/v1/memory/stats once.
@@ -473,11 +502,18 @@ type whoamiReply struct {
 	// value about the target it is measuring. Empty when the daemon is too old
 	// to report it, which marks the comparability key partial rather than
 	// attributing the run to a build nobody verified.
-	DaemonRevision     string   `json:"daemon_revision"`
-	EmbeddingReadiness *float64 `json:"embedding_readiness"`
-	ChunksTotal        int64    `json:"memory_chunks_total"`
-	ChunksEmbedded     int64    `json:"memory_chunks_embedded"`
-	QueueDepth         int64    `json:"memory_embed_queue_depth"`
+	DaemonRevision string `json:"daemon_revision"`
+	// Embedder is the resolved embedding model, reported through the COMPANION
+	// door. It used to be read from GET /api/v1/memory/stats, which is
+	// admin-only — a companion key gets 403 there, so the field was empty on
+	// every run ever made and the comparability key could not tell two
+	// embedding models apart. Same fix, and the same door, as
+	// embedding_readiness. Verified against a live whoami payload 2026-09-17.
+	Embedder           *embedderReply `json:"embedder"`
+	EmbeddingReadiness *float64       `json:"embedding_readiness"`
+	ChunksTotal        int64          `json:"memory_chunks_total"`
+	ChunksEmbedded     int64          `json:"memory_chunks_embedded"`
+	QueueDepth         int64          `json:"memory_embed_queue_depth"`
 }
 
 // DaemonRevision reports the build of the daemon under test, or "" when it

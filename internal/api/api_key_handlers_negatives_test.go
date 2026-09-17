@@ -36,6 +36,10 @@ type failingAPIKeyRepo struct {
 	listErr error
 }
 
+func (f *failingAPIKeyRepo) GetByID(context.Context, string) (*persistence.APIKey, error) {
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (f *failingAPIKeyRepo) Create(context.Context, *persistence.APIKey) error {
 	return errors.New("create failed: secret detail")
 }
@@ -357,4 +361,11 @@ func (*allowPushUpdateFailRepo) UpdateCapabilities(context.Context, string, pers
 
 func (*failingAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*failingAPIKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

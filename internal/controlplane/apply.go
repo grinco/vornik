@@ -192,6 +192,11 @@ type ApplyEngine struct {
 	mu sync.Mutex // global apply lock (serialises all applies + rollbacks)
 }
 
+// configWriteMu serialises every config mutation in this PROCESS, across all
+// ApplyEngine instances. See Apply for why the per-engine mutex is not
+// sufficient (re-audit 2026-09-15, CA-06).
+var configWriteMu sync.Mutex
+
 // resolveTarget joins + cleans apply_target under ConfigDir and rejects any
 // path that escapes it.
 func (e *ApplyEngine) resolveTarget(rel string) (string, error) {
@@ -214,6 +219,23 @@ func (e *ApplyEngine) resolveTarget(rel string) (string, error) {
 // Apply applies an APPROVED proposal. Returns nil only after the new config
 // reloaded cleanly and the ledger recorded APPLIED.
 func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon bool) error {
+	// PROCESS-WIDE first, then per-engine. ApplyEngine.mu only ever
+	// serialised ONE engine, and the daemon builds several — the API surface
+	// and the UI surface each construct their own (container_http.go). The
+	// config-writer lease does not close the gap either: it fences OTHER
+	// daemons and is held by this one for all of them at once. So two
+	// concurrent applies inside one process interleaved read-check-write on
+	// the same path, and both reached APPLIED (re-audit 2026-09-15, CA-06).
+	//
+	// "One writer" has to mean one writer per PROCESS as well as per
+	// deployment, so the lock lives on the package rather than the struct.
+	// TryLock keeps the existing contract: a concurrent apply is refused
+	// with ErrApplyInProgress rather than queued behind an operation that
+	// may take minutes.
+	if !configWriteMu.TryLock() {
+		return ErrApplyInProgress
+	}
+	defer configWriteMu.Unlock()
 	if !e.mu.TryLock() {
 		return ErrApplyInProgress
 	}
@@ -657,6 +679,12 @@ func (e *ApplyEngine) rollbackUnsafe(ctx context.Context, p *persistence.Control
 
 // Rollback restores an APPLIED proposal's pre-apply snapshot.
 func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
+	// A rollback is a config mutation, so it takes the same process-wide
+	// writer lock Apply does (CA-06).
+	if !configWriteMu.TryLock() {
+		return ErrApplyInProgress
+	}
+	defer configWriteMu.Unlock()
 	if !e.mu.TryLock() {
 		return ErrApplyInProgress
 	}

@@ -526,10 +526,13 @@ func TestAdminBlackBoxCandidateActions_ReturnToHub(t *testing.T) {
 		t.Errorf("reject success redirect = %q", loc)
 	}
 
-	// Run-trial success (static → sync path).
+	// Run-trial success (static → sync path). The token names the VERDICT,
+	// not the action: static finishes before the redirect, so "started" was
+	// a statement about the replay path (report 2026-09-16).
+	runner.verdict = string(persistence.HealingTrialPassed)
 	rec = httptest.NewRecorder()
 	s.AdminBlackBoxCandidateRunTrial(rec, postCPForm(t, url.Values{"return_to": {"control-plane"}}), "whc-1")
-	if loc := rec.Header().Get("Location"); loc != "/ui/admin/control-plane?section=proposals&done=trial-started" {
+	if loc := rec.Header().Get("Location"); loc != "/ui/admin/control-plane?section=proposals&done=trial-static-passed" {
 		t.Errorf("run-trial success redirect = %q", loc)
 	}
 	// Run-trial refusal carries the reason.

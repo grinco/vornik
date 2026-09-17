@@ -42,6 +42,36 @@ type Indexer struct {
 	// SetAutoStampPolicies(true). Lazy-backfill at retrieval
 	// still produces correct firewall decisions either way.
 	autoStampPolicies bool
+
+	// seriesResolver (optional) answers "which recurring series does this
+	// task's output belong to" so ingest can stamp `series_key` on the
+	// chunks it writes (2026-09-16-retrieval-recency-design.md §5.1.1).
+	// Wired in from the service container, which is the only place that can
+	// reach the task store and the project registry the answer needs.
+	//
+	// Nil means the feature is OFF and every chunk lands with series_key
+	// NULL — deliberately indistinguishable from the pre-migration-190
+	// store, because §5.3 resolves supersession from the column alone and a
+	// NULL column is exactly "not part of a series". It is NOT the same as a
+	// resolver that always answers "": that would be a live feature that
+	// finds nothing, and the two must not be confusable when diagnosing why
+	// a digest was never demoted.
+	seriesResolver SeriesResolver
+}
+
+// SetSeriesResolver wires the recurring-series resolver. Optional, and off by
+// default for the same reason SetAutoStampPolicies is: the Indexer is
+// constructed in internal/memory, which cannot see the task store or the
+// project registry that the derivation reads, so the dependency can only
+// arrive afterwards from the service container.
+//
+// Nil-safe on the receiver, because the container calls this on a memory
+// manager whose initialisation may have failed.
+func (idx *Indexer) SetSeriesResolver(r SeriesResolver) {
+	if idx == nil {
+		return
+	}
+	idx.seriesResolver = r
 }
 
 // SetAutoStampPolicies enables/disables the IngestText post-
@@ -165,6 +195,13 @@ func (idx *Indexer) IngestTextAt(ctx context.Context, projectID, taskID, artifac
 		return nil
 	}
 
+	// Recurring-series membership, resolved ONCE for the whole call
+	// (2026-09-16-retrieval-recency-design.md §5.1.1). The answer is a
+	// property of the producing TASK, so every chunk of this artifact has the
+	// same one by construction; asking per chunk would issue one task-store
+	// lookup per chunk of a 40-chunk digest to learn the same string 40 times.
+	seriesKey := idx.resolveSeriesKey(ctx, projectID, taskID)
+
 	chunks := make([]MemoryChunk, 0, len(rawChunks))
 	for _, rc := range rawChunks {
 		id := chunkID(projectID, artifactID, sourceName, rc.Index)
@@ -179,6 +216,7 @@ func (idx *Indexer) IngestTextAt(ctx context.Context, projectID, taskID, artifac
 			ContentHash: rc.Hash,
 			CreatedAt:   time.Now(),
 			EventTime:   eventTime,
+			SeriesKey:   seriesKey,
 		})
 	}
 
@@ -226,6 +264,30 @@ func (idx *Indexer) IngestTextAt(ctx context.Context, projectID, taskID, artifac
 		Msg("memory: ingested text")
 
 	return nil
+}
+
+// resolveSeriesKey asks the wired SeriesResolver which recurring series this
+// task's output belongs to, or returns "" when no resolver is wired.
+//
+// The warning leg is the resolver's own: §5.1.1's one signal-bearing case (a
+// feed-declaring project whose prompt carries an UNDECLARED slug) is logged
+// where the project and prompt are in hand, because ingest knows neither. It is
+// dropped here rather than propagated because it is a signal, not a gate — an
+// unkeyed chunk ranks exactly as it did before this feature existed, so failing
+// the ingest over it would trade a ranking nicety for lost content.
+//
+// Not applied on the IngestExtractedSections path. That path's chunks are
+// sections of one uploaded document, and §5.3's "a newer member of this series
+// exists" was measured against task-output markdown only; keying document
+// sections would put rows into the partial index that no supersession rule has
+// been measured against. If extracted documents ever need series identity, that
+// is a design amendment, not a second call to this method.
+func (idx *Indexer) resolveSeriesKey(ctx context.Context, projectID, taskID string) string {
+	if idx == nil || idx.seriesResolver == nil {
+		return ""
+	}
+	key, _ := idx.seriesResolver.SeriesKeyFor(ctx, projectID, taskID)
+	return key
 }
 
 // stampDefaultPolicies derives the Provenance source from the

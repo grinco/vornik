@@ -66,6 +66,7 @@ import (
 	"syscall"
 	"time"
 	"vornik.io/vornik/internal/authz"
+	"vornik.io/vornik/internal/chatauth"
 
 	editionpkg "vornik.io/vornik/internal/version"
 
@@ -205,7 +206,20 @@ type Container struct {
 	// by the API and UI operator shells. Nil when identity storage is
 	// not wired.
 	accounts *authz.Accounts
-	Registry *registry.Registry
+	// chatShim is the §5.3 chat-auth compatibility shim, built once and
+	// shared by every chat channel so they cannot drift on the OR-matrix.
+	// Nil until a channel asks for it, and nil forever when no identity
+	// repository is wired.
+	chatShim     *chatauth.Shim
+	chatShimOnce sync.Once
+	// chatAuthMetrics is the shim's legacy-grant counter holder. Created
+	// detached with the shim and attached to the served registry in
+	// initHTTPServer's pass-2 metrics block — see chatAuthShim.
+	chatAuthMetrics *chatauth.Metrics
+	// accounts is built once by accountsService(); never read directly —
+	// the init order makes a direct read order-dependent.
+	accountsOnce sync.Once
+	Registry     *registry.Registry
 	// ProjectFirstSeen gates project_created telemetry on FIRST observation
 	// rather than on every registry load. Nil disables the file-drop emit
 	// entirely — an adoption counter must never be able to stop a boot.
@@ -301,6 +315,10 @@ type Container struct {
 	// chat is disabled.
 	Dispatcher  *dispatcher.Agent
 	TelegramBot *telegram.Bot
+	// composedMCP is the built-in tool executor served to agents, retained so
+	// the configuration assistant's agent entrypoint can attach to it after
+	// the assistant engine exists. See container_http.go.
+	composedMCP *api.ComposedMCPExecutor
 
 	// AIDisclosure enforces EU AI Act Art 50(1) — the human must be told
 	// they are interacting with an AI system. Handed to every
@@ -565,6 +583,13 @@ type Container struct {
 	retentionElector    *leaderelection.Elector
 	externalWaitElector *leaderelection.Elector
 	cpcTimeoutElector   *leaderelection.Elector
+	// configWriterElector fences the single config writer the apply journal
+	// requires (LLD 2026-09-13-config-apply-journal §1.2). Constructed once
+	// via Container.configWriter and shared by every apply engine, because
+	// two electors under one worker id would fence each other.
+	configWriterElector *leaderelection.Elector
+	configWriterOnce    sync.Once
+	configWriterRunOnce sync.Once
 	remindersElector    *leaderelection.Elector
 	// Slice 2 — periodic janitor for ratelimit_counters when the
 	// postgres backend is selected. Idempotent sweeper; leader-
@@ -1923,6 +1948,25 @@ func (c *Container) Run(ctx context.Context) error {
 	// Trading boot reconciliation + equity sampler now owned by
 	// TradingSubsystem (see subsystem_trading.go); their goroutines
 	// launch during c.startSubsystems(ctx).
+
+	// The config-writer lease comes FIRST — before recovery, because recovery
+	// writes files, and before any apply. Without it every write is refused
+	// as "superseded by a newer leader epoch" (re-audit 2026-09-15, CA-19).
+	if err := c.StartConfigWriterLease(ctx); err != nil {
+		c.Logger.Error().Err(err).Msg("config-writer lease could not be started; config applies will refuse until it is")
+	}
+
+	// Config apply-journal recovery (LLD 2026-09-13-config-apply-journal §5).
+	// An open journal row means a previous process died mid-apply: finish a
+	// provably complete generation, or restore every pre-image. This runs
+	// BEFORE the scheduler dispatches anything, so no task executes against
+	// a half-applied config bundle. Ambiguous drift is reported and leaves
+	// the row open rather than guessing; boot continues either way, because
+	// refusing to start would take the operator's diagnostic surface down
+	// with it.
+	if err := c.ReconcileConfigApplyJournal(ctx); err != nil {
+		c.Logger.Error().Err(err).Msg("config apply journal reconciliation reported unresolved rows; affected config may be mid-apply — inspect before approving further changes")
+	}
 
 	if c.capabilities().RunWorkers {
 		// Chat-provider readiness gate. Before the scheduler starts

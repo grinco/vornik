@@ -93,7 +93,12 @@ func TestNavModelContract(t *testing.T) {
 			t.Errorf("orchestration dest %q missing Href/Label", d.Key)
 		}
 	}
-	// Steer is the new live-control area: Live + Needs-you, leading the rail.
+	// Steer is the live-control area: Live + Needs-you, leading the rail —
+	// plus My account, added 2026-09-14. It sits here because it is the third
+	// PERSONAL surface ("what is mine"), beside My requests, rather than an
+	// operator one: it shows every identity that resolves to the signed-in
+	// user and lets them unlink one. See oidc-identity-permissions-design
+	// §5.5.
 	var steer navAreaDef
 	for _, a := range m {
 		if a.Key == "steer" {

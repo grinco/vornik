@@ -384,3 +384,115 @@ func TestBuildAttachedFilesBlock_NoDocumentGuidanceWithoutADocument(t *testing.T
 			"document-paging guidance leaked onto a step with no extracted document")
 	}
 }
+
+// TestRewriteInputPathsInPrompt_IsIdempotent pins the invariant the function
+// silently lacked: rewriting an already-rewritten prompt must change nothing.
+//
+// INCIDENT 2026-09-16 — task_20260916163809_c16163e002783786 (round 5 of the
+// retrieval-recency design review), exec_20260916164618_4c53e9deafd4e8e6, dead
+// in 8s on:
+//
+//	Missing prerequisite: file_read of
+//	"/app/workspace/app/workspace/artifacts/in/2026-09-16-retrieval-recency-design.md"
+//	returned not-found twice.
+//
+// Branch (a) replaced every occurrence of `src` with the canonical container
+// path. When `src` is RELATIVE and happens to be a suffix of that canonical
+// path — `artifacts/in/<base>` is — the prompt's already-correct absolute path
+// CONTAINS src, so the replace fires and prepends the prefix a second time. It
+// corrupts on the first call and grows by one prefix on every call after.
+//
+// Property, not example: for every input shape, rewrite(rewrite(x)) ==
+// rewrite(x). The two absolute shapes always satisfied it, which is why this
+// survived — the common paths are correct.
+func TestRewriteInputPathsInPrompt_IsIdempotent(t *testing.T) {
+	const base = "2026-09-16-retrieval-recency-design.md"
+	cases := map[string]struct {
+		src    string
+		prompt string
+	}{
+		"relative staged path": {
+			src:    "artifacts/in/" + base,
+			prompt: "Review /app/workspace/artifacts/in/" + base + " please.",
+		},
+		"canonical container path": {
+			src:    "/app/workspace/artifacts/in/" + base,
+			prompt: "Review /app/workspace/artifacts/in/" + base + " please.",
+		},
+		"host upload path": {
+			src:    "/tmp/upload/" + base,
+			prompt: "Review /tmp/upload/" + base + " please.",
+		},
+		"bare basename": {
+			src:    base,
+			prompt: "Review /app/workspace/artifacts/in/" + base + " please.",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			once := rewriteInputPathsInPrompt(tc.prompt, []string{tc.src})
+			twice := rewriteInputPathsInPrompt(once, []string{tc.src})
+			assert.Equal(t, once, twice,
+				"rewrite is not idempotent — a second pass keeps prepending the container prefix")
+			assert.NotContains(t, once, "/app/workspace//app/workspace",
+				"first pass already doubled the container prefix")
+			assert.NotContains(t, once, "/app/workspace/app/workspace",
+				"first pass already doubled the container prefix")
+		})
+	}
+}
+
+// TestRewriteInputPathsInPrompt_RelativeStagedPathIsAlreadyCanonical — the
+// production shape from the incident above, stated on its own because it is
+// the one that fails: an inputFiles entry recorded RELATIVE to the workspace
+// is already the canonical location, so branch (a) has nothing to do and must
+// not fire. Rewriting it is what built the doubled path.
+func TestRewriteInputPathsInPrompt_RelativeStagedPathIsAlreadyCanonical(t *testing.T) {
+	const prompt = "Review /app/workspace/artifacts/in/design.md against the code."
+	got := rewriteInputPathsInPrompt(prompt, []string{"artifacts/in/design.md"})
+	assert.Equal(t, prompt, got,
+		"a staged path that is already a suffix of the container path must be left alone")
+}
+
+// TestRewriteInputPathsInPrompt_StillRewritesGenuineHostPaths — the guard above
+// must not buy idempotency by disabling the rewrite. A real host path is not a
+// substring of the container path, so it keeps being rewritten.
+func TestRewriteInputPathsInPrompt_StillRewritesGenuineHostPaths(t *testing.T) {
+	got := rewriteInputPathsInPrompt(
+		"Read /var/lib/vornik/uploads/cv.pdf now",
+		[]string{"/var/lib/vornik/uploads/cv.pdf"},
+	)
+	assert.Equal(t, "Read /app/workspace/artifacts/in/cv.pdf now", got)
+}
+
+// The property above is asserted "for every input shape" but exercised one
+// entry at a time. A task can carry several inputFiles, and entry A's rewrite
+// can produce text that entry B's guard then has to reason about — so the
+// property is asserted over the SET, not just each member
+// (review-20260916-2c6c).
+func TestRewriteInputPathsInPrompt_IsIdempotentAcrossMultipleInputs(t *testing.T) {
+	inputs := []string{
+		"artifacts/in/a.md",                // relative, already canonical
+		"/app/workspace/artifacts/in/b.md", // canonical
+		"/tmp/upload/c.md",                 // host path
+		"d.md",                             // bare basename
+		"/var/lib/vornik/uploads/a.md",     // host path sharing a basename
+	}
+	prompt := "Compare /app/workspace/artifacts/in/a.md, /app/workspace/artifacts/in/b.md, " +
+		"/tmp/upload/c.md and ./d.md, then check /var/lib/vornik/uploads/a.md."
+
+	once := rewriteInputPathsInPrompt(prompt, inputs)
+	twice := rewriteInputPathsInPrompt(once, inputs)
+	assert.Equal(t, once, twice, "not idempotent over a multi-entry inputFiles set")
+	assert.NotContains(t, once, "/app/workspace//app/workspace")
+	assert.NotContains(t, once, "/app/workspace/app/workspace")
+
+	// Order must not matter either: the same set in reverse produces the same
+	// text, or one entry's rewrite is feeding another's match.
+	reversed := make([]string, len(inputs))
+	for i, v := range inputs {
+		reversed[len(inputs)-1-i] = v
+	}
+	assert.Equal(t, once, rewriteInputPathsInPrompt(prompt, reversed),
+		"rewrite depends on inputFiles ordering")
+}

@@ -143,7 +143,7 @@ func (s *Server) OperatorAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		u, err := s.accounts.Create(ctx, authz.CreateRequest{DisplayName: req.DisplayName, Role: req.Role, Projects: req.Projects}, operatorActor(r))
 		if u == nil && err != nil {
-			respondAccountError(w, err)
+			s.respondAccountError(w, err)
 			return
 		}
 		v, gerr := s.accounts.Get(ctx, u.ID)
@@ -189,7 +189,7 @@ func (s *Server) OperatorAccountItem(w http.ResponseWriter, r *http.Request) {
 		}
 		v, err := s.accounts.Get(ctx, id)
 		if err != nil {
-			respondAccountError(w, err)
+			s.respondAccountError(w, err)
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]any{"account": toAccountJSON(*v)})
@@ -204,6 +204,8 @@ func (s *Server) OperatorAccountItem(w http.ResponseWriter, r *http.Request) {
 		Projects   []string `json:"projects"`
 		Channel    string   `json:"channel"`
 		ExternalID string   `json:"externalId"`
+		KeyID      string   `json:"keyId"`
+		KeySecret  string   `json:"keySecret"`
 	}
 	limitJSONBody(w, r)
 	if r.Body != nil {
@@ -215,18 +217,28 @@ func (s *Server) OperatorAccountItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	actor := operatorActor(r)
-	known, err := s.applyOperatorAccountAction(ctx, id, action, req.Role, req.Projects, req.Channel, req.ExternalID, actor)
+
+	// The claim path is rate limited BEFORE the outcome is known, so a 429
+	// fires identically on a wrong secret, a nonexistent key id and an
+	// already-claimed key (§5.4, round-3 finding F4). A limiter consulted
+	// only on resolved keys would leak "that secret matched" through the
+	// rate-limit channel after the refusals themselves were equalised.
+	if s.handleAccountKeyPreamble(ctx, w, id, action, actor) {
+		return
+	}
+
+	known, err := s.applyOperatorAccountAction(ctx, id, action, req.Role, req.Projects, req.Channel, req.ExternalID, req.KeyID, req.KeySecret, actor)
 	if !known {
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "unknown account action "+action)
 		return
 	}
 	if err != nil && !strings.Contains(err.Error(), "AUDIT WRITE FAILED") {
-		respondAccountError(w, err)
+		s.respondAccountError(w, err)
 		return
 	}
 	v, gerr := s.accounts.Get(ctx, id)
 	if gerr != nil {
-		respondAccountError(w, gerr)
+		s.respondAccountError(w, gerr)
 		return
 	}
 	body := map[string]any{"account": toAccountJSON(*v)}
@@ -236,7 +248,14 @@ func (s *Server) OperatorAccountItem(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, body)
 }
 
-func (s *Server) applyOperatorAccountAction(ctx context.Context, id, action, role string, projects []string, channel, externalID string, actor authz.Actor) (bool, error) {
+// claimRefusalMessage is the single text every non-admin claim failure
+// carries — wrong secret, unknown key id, already claimed — and the text a
+// 429 carries too. §5.4 forbids a caller holding a valid secret from learning
+// whether the key exists or is already claimed, and the probe input here is a
+// real credential, so the refusals must be byte-identical.
+const claimRefusalMessage = "key claim refused"
+
+func (s *Server) applyOperatorAccountAction(ctx context.Context, id, action, role string, projects []string, channel, externalID, keyID, keySecret string, actor authz.Actor) (bool, error) {
 	switch action {
 	case "grant":
 		return true, s.accounts.Grant(ctx, id, role, projects, actor)
@@ -248,12 +267,33 @@ func (s *Server) applyOperatorAccountAction(ctx context.Context, id, action, rol
 		return true, s.accounts.SetDisabled(ctx, id, false, actor)
 	case "unlink":
 		return true, s.accounts.Unlink(ctx, id, channel, externalID, actor)
+	case "claim-key":
+		return true, s.accounts.ClaimKey(ctx, id, keyID, keySecret, actor)
+	case "assign-key":
+		return true, s.accounts.AssignKey(ctx, id, keyID, actor)
+	case "unassign-key":
+		return true, s.accounts.UnassignKey(ctx, keyID, actor)
 	default:
 		return false, nil
 	}
 }
 
-func respondAccountError(w http.ResponseWriter, err error) {
+// respondAccountError maps a service error to a curated response.
+//
+// The curated message is for the CALLER, and it is deliberately not the
+// cause. The cause must not vanish with it, though: every branch below
+// replaces err.Error() with fixed text, so without this the only record of
+// WHY an identity store refused was the response nobody keeps. It logs here
+// rather than at the eight call sites, because a rule enforced at one place
+// is the one a ninth caller cannot forget (round-2 code review, minor).
+func (s *Server) respondAccountError(w http.ResponseWriter, err error) {
+	s.logger.Warn().Err(err).Msg("accounts: request refused")
+	respondAccountErrorStatus(w, err)
+}
+
+// respondAccountErrorStatus is the mapping itself, split out so it stays
+// testable without a Server.
+func respondAccountErrorStatus(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, persistence.ErrUserNotFound):
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "account not found")
@@ -261,9 +301,73 @@ func respondAccountError(w http.ResponseWriter, err error) {
 		respondError(w, http.StatusConflict, "LAST_ADMIN", err.Error())
 	case errors.Is(err, persistence.ErrNoProjects), errors.Is(err, authz.ErrInvalidRole), errors.Is(err, authz.ErrIdentityNotOwned):
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
-	case errors.Is(err, authz.ErrUnauditable), errors.Is(err, authz.ErrResolverUnavailable):
-		respondError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", err.Error())
+	case errors.Is(err, authz.ErrKeyClaimRateLimited):
+		// The §5.4 attempt bound, now enforced inside the account service so
+		// every door shares one bucket (audit 2026-09-15 CA-09). Same body
+		// as the refusal: the bound must not become an oracle the refusals
+		// are not.
+		respondError(w, http.StatusTooManyRequests, "RATE_LIMITED", claimRefusalMessage)
+	case errors.Is(err, authz.ErrKeyClaimRefused):
+		// One status, one message, for all three causes (§5.4).
+		respondError(w, http.StatusForbidden, "CLAIM_REFUSED", claimRefusalMessage)
+	case errors.Is(err, authz.ErrLinkCodeInvalid):
+		respondError(w, http.StatusForbidden, "LINK_CODE_INVALID", "link code not valid")
+	case errors.Is(err, authz.ErrIdentityAlreadyLinked):
+		// Its own code: this refusal is about the caller's binding, not the
+		// link code, and a client that cannot tell them apart cannot show
+		// the remedy.
+		respondError(w, http.StatusConflict, "IDENTITY_ALREADY_LINKED",
+			"that chat identity is already linked to another account")
+	case errors.Is(err, authz.ErrKeysUnavailable), errors.Is(err, authz.ErrLinkCodesUnavailable),
+		errors.Is(err, authz.ErrUnauditable), errors.Is(err, authz.ErrResolverUnavailable):
+		// Curated, like every other branch. err.Error() here rendered the
+		// package prefix ("authz: key claims not available") into the body
+		// (review-20260914-3c36 F14) — an internal detail in an error the
+		// operator can do nothing with beyond "not configured here".
+		respondError(w, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"account management is not available on this daemon")
 	default:
-		respondError(w, http.StatusBadRequest, "ACCOUNT_ERROR", err.Error())
+		// Everything above is a KNOWN, curated refusal. What reaches here is
+		// by definition unrecognised, so its text is whatever some layer
+		// wrapped — since redemption stopped flattening transport faults
+		// into ErrLinkCodeInvalid (F5), that can now include a driver
+		// message. An unknown error is also not the caller's fault, so it
+		// stops being a 400.
+		respondError(w, http.StatusInternalServerError, "ACCOUNT_ERROR", "account operation failed")
 	}
 }
+
+// handleAccountKeyPreamble serves the two account actions that cannot go
+// through the generic mutation switch, and reports whether it wrote a
+// response.
+//
+//   - link-code RETURNS a value — the raw code, shown once — while the switch
+//     is for mutations whose only output is the refreshed account.
+//
+// claim-key USED to be handled here too, for its rate limit. That bound now
+// lives in authz.Accounts.ClaimKey, which every door calls: this handler's
+// bucket sat in front of the REST routes only, and the browser form went
+// around it entirely (audit 2026-09-15 CA-09). A second implementation in
+// front of one door is how the two diverged, so there is only one now, and
+// its refusal reaches the client as ErrKeyClaimRateLimited → 429.
+func (s *Server) handleAccountKeyPreamble(ctx context.Context, w http.ResponseWriter, id, action string, actor authz.Actor) bool {
+	if action != "link-code" {
+		return false
+	}
+	code, err := s.accounts.IssueLinkCode(ctx, id, actor)
+	if err != nil {
+		s.respondAccountError(w, err)
+		return true
+	}
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"code":      code,
+		"expiresIn": linkCodeTTLSeconds,
+	})
+	return true
+}
+
+// linkCodeTTLSeconds is the service's code lifetime in seconds, for the
+// client that has to tell a human how long they have. DERIVED, not mirrored:
+// it was a second literal, and a second literal is a number that can drift
+// from the one the service enforces.
+const linkCodeTTLSeconds = int(authz.LinkCodeTTL / time.Second)

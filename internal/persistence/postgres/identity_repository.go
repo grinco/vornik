@@ -230,13 +230,37 @@ func (r *IdentityRepository) RemoveGroupMember(ctx context.Context, groupID, use
 // An ACTIVE conflicting binding is never repointed: concurrent
 // first-contact provisioners must converge on the winner's user rather
 // than minting sessions for orphan duplicate users.
-func (r *IdentityRepository) BindIdentity(ctx context.Context, id *persistence.UserIdentity) error {
-	_, err := r.db.ExecContext(ctx,
+// BindIdentity — see the sqlite twin and the interface contract. The
+// DO UPDATE fires for a revoked row and for a row already held by the SAME
+// user; an active row held by someone else affects zero rows, and bound is
+// false rather than a silent success.
+func (r *IdentityRepository) BindIdentity(ctx context.Context, id *persistence.UserIdentity) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO user_identities (id, user_id, channel, external_id, display, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (channel, external_id)
 DO UPDATE SET user_id = EXCLUDED.user_id, display = EXCLUDED.display, revoked_at = NULL
-WHERE user_identities.revoked_at IS NOT NULL`,
+WHERE user_identities.revoked_at IS NOT NULL
+   OR user_identities.user_id = EXCLUDED.user_id`,
+		id.ID, id.UserID, id.Channel, id.ExternalID, id.Display, id.CreatedAt)
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	return n > 0, nil
+}
+
+// RebindIdentity is BindIdentity without the guard: admin authority repoints
+// an active binding held by another user.
+func (r *IdentityRepository) RebindIdentity(ctx context.Context, id *persistence.UserIdentity) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO user_identities (id, user_id, channel, external_id, display, created_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (channel, external_id)
+DO UPDATE SET user_id = EXCLUDED.user_id, display = EXCLUDED.display, revoked_at = NULL`,
 		id.ID, id.UserID, id.Channel, id.ExternalID, id.Display, id.CreatedAt)
 	return mapDBError(err)
 }
@@ -310,12 +334,49 @@ func (r *IdentityRepository) RevokeIdentity(ctx context.Context, channel, extern
 }
 
 func (r *IdentityRepository) revokeIdentityWithExec(ctx context.Context, exec DBTX, channel, externalID string) error {
+	return r.revokeIdentityOwnedByWithExec(ctx, exec, channel, externalID, "")
+}
+
+// RevokeIdentityOwnedBy is RevokeIdentity with the expected owner in the
+// UPDATE's WHERE clause, making the ownership test and the write atomic
+// (audit 2026-09-15 CA-10).
+func (r *IdentityRepository) RevokeIdentityOwnedBy(ctx context.Context, channel, externalID, expectedUserID string) error {
+	tx, ok, err := persistence.BeginTx(ctx, r.db, nil)
+	if err != nil {
+		return mapDBError(err)
+	}
+	if !ok {
+		return r.revokeIdentityOwnedByWithExec(ctx, r.db, channel, externalID, expectedUserID)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := r.revokeIdentityOwnedByWithExec(ctx, tx, channel, externalID, expectedUserID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return mapDBError(err)
+	}
+	return nil
+}
+
+// revokeIdentityOwnedByWithExec runs the revoke. An EMPTY expectedUserID
+// means "any owner" — the unqualified RevokeIdentity behaviour, which the
+// admin paths still want; a non-empty one adds the owner predicate.
+func (r *IdentityRepository) revokeIdentityOwnedByWithExec(ctx context.Context, exec DBTX, channel, externalID, expectedUserID string) error {
 	var userID string
-	err := exec.QueryRowContext(ctx,
-		`UPDATE user_identities SET revoked_at = NOW()
-		 WHERE channel = $1 AND external_id = $2 AND revoked_at IS NULL
-		 RETURNING user_id`,
-		channel, externalID).Scan(&userID)
+	var err error
+	if expectedUserID == "" {
+		err = exec.QueryRowContext(ctx,
+			`UPDATE user_identities SET revoked_at = NOW()
+			 WHERE channel = $1 AND external_id = $2 AND revoked_at IS NULL
+			 RETURNING user_id`,
+			channel, externalID).Scan(&userID)
+	} else {
+		err = exec.QueryRowContext(ctx,
+			`UPDATE user_identities SET revoked_at = NOW()
+			 WHERE channel = $1 AND external_id = $2 AND revoked_at IS NULL AND user_id = $3
+			 RETURNING user_id`,
+			channel, externalID, expectedUserID).Scan(&userID)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return persistence.ErrIdentityNotFound
 	}

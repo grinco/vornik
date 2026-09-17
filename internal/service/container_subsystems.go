@@ -21,6 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/authz"
+	"vornik.io/vornik/internal/chatauth"
+
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/config"
@@ -759,6 +762,26 @@ func (c *Container) initTelegram() error {
 
 	c.TelegramBot = bot
 
+	// Phase 4 (oidc-identity-permissions-design §5.1/§5.3): route the bot's
+	// authorization questions through the compat shim, so a LINKED identity
+	// is authorized by the resolver while an unlinked one keeps working off
+	// the legacy allowlist for the migration window.
+	//
+	// Attached only when an identity resolver exists. Without one the bot
+	// keeps its pre-Phase-4 behaviour exactly, which matters because that is
+	// every Community deployment until the identity core is wired.
+	if shim := c.chatAuthShim(); shim != nil {
+		bot.SetIdentityShim(shim)
+	}
+	// The §5.2 redemption half of `/link`. Wired independently of the shim:
+	// the shim answers "may this speaker act", this answers "which account is
+	// this speaker", and a deployment can reach the second before the first
+	// has anything to resolve — which is in fact the ONLY order that works,
+	// since nobody can be resolved until somebody has linked.
+	if acc := c.accountsService(); acc != nil {
+		bot.SetAccountLinker(acc)
+	}
+
 	// Wire the scraper-block → Telegram notify hook (design 2026-07-19). Inert
 	// unless enabled with at least one curated portal. Runs on a daemon-lifetime
 	// context; a portal/cooldown change needs a restart (MVP). Requires the MCP
@@ -1048,4 +1071,39 @@ func (c *Container) roleToolCeiling(ctx context.Context, taskID string) (string,
 		}
 	}
 	return "", nil
+}
+
+// chatAuthShim builds the §5.3 compatibility shim once per process, shared by
+// every chat channel so they cannot drift on the OR-matrix.
+//
+// Returns nil when no identity resolver is wired: the channels then answer
+// from their legacy allowlists alone, which is the pre-Phase-4 behaviour and
+// the correct one for a deployment that has no identity core.
+// chatAuthShim builds the §5.3 compatibility shim once and hands the same
+// instance to every channel, so the WARN dedup and the legacy-grant counter
+// are shared rather than per-dispatcher.
+//
+// Built under a sync.Once: initTelegram and the Slack loop in initHTTPServer
+// both call this, and a bare nil-check-then-assign is a latent race the day
+// either moves into a goroutine (review-20260914-3c36, minor).
+//
+// The metrics holder is deliberately created DETACHED. The served registry
+// does not exist during subsystem init, and passing nil to a metrics
+// constructor that falls back to DefaultRegisterer is the 2026-06-06
+// invisible-metric trap. initHTTPServer's pass-2 block attaches it to the
+// registry /metrics actually serves; grants counted before then are drained
+// into the counter, not lost.
+func (c *Container) chatAuthShim() *chatauth.Shim {
+	if c.repos == nil || c.repos.Identity == nil {
+		return nil
+	}
+	c.chatShimOnce.Do(func() {
+		c.chatAuthMetrics = chatauth.NewMetrics(nil)
+		c.chatShim = chatauth.New(
+			authz.NewService(c.repos.Identity),
+			c.chatAuthMetrics,
+			c.Logger.With().Str("component", "chat-auth").Logger(),
+		)
+	})
+	return c.chatShim
 }

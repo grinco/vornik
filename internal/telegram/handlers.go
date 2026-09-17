@@ -275,8 +275,31 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
+	// §5.1's single exception, and it has to come BEFORE the authorization
+	// gate: "`/link <code>` is processed from unknown senders — that is how a
+	// new binding is created." A speaker who has not linked yet is by
+	// definition not yet authorized, so gating redemption on authorization
+	// makes the whole feature unreachable for exactly the population it
+	// exists for — every issue surface working and no way to redeem.
+	//
+	// Only the WITH-CODE form. Bare `/link` MINTS an OTP, and an unknown
+	// sender who can mint is a spam surface that creates no binding to
+	// anything; that form stays behind the gate with the rest.
+	if parts := strings.Fields(msg.Text); len(parts) == 2 && isLinkCommand(parts[0]) {
+		return b.handleLinkCommand(ctx, msg.ChatID, msg.UserID, parts)
+	}
+
 	if !b.IsAllowed(msg.UserID) {
-		return b.sendErrorMessage(ctx, msg.ChatID, "You are not authorized to use this bot.")
+		// §5.7: the refusal names the remedy. A dead-end "not authorized" is
+		// the control that stops the next person looking — and during the
+		// §5.3 migration window the population most likely to hit this is
+		// someone who HAS an account and has simply never linked this chat,
+		// for whom the remedy is one command.
+		//
+		// The remedy is only mentioned when a link code could actually be
+		// redeemed here; on a deployment with no identity core it would name
+		// a command that answers "not configured".
+		return b.sendErrorMessage(ctx, msg.ChatID, b.unauthorizedMessage())
 	}
 	// Remember the chat→user mapping so the auto-resume path
 	// (NotifyTaskCompleted → triggerFollowup) can rebuild the
@@ -405,7 +428,11 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 	// Handle bot commands.
 	if strings.HasPrefix(msg.Text, "/") {
 		parts := strings.Fields(msg.Text)
-		cmd := parts[0]
+		// Normalised, not raw: Telegram appends @botname in a group chat
+		// shared with other bots, and the raw comparison sent every command
+		// below to the dispatcher to be answered by a model. parts[1:] is
+		// deliberately untouched — only the command WORD is normalised.
+		cmd := normalizeCommandWord(parts[0])
 
 		// /project <id> — switch project and pin to lead agent.
 		if cmd == "/project" && len(parts) > 1 {
@@ -622,8 +649,17 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 		// into the issuer's canonical and both speakers henceforth
 		// resolve to the same row. See
 		// https://docs.vornik.io
-		if cmd == "/link" {
-			return b.handleLinkCommand(ctx, msg.ChatID, parts)
+		if isLinkCommand(cmd) {
+			// isLinkCommand, not a literal compare: in a group — the case
+			// where @botname is appended AND where the chat id differs from
+			// the user id, so the case linking matters most — an authorized
+			// user typing bare `/link@botname` otherwise fell through to the
+			// dispatcher and minted nothing, while `/link@botname <code>`
+			// worked via the pre-gate path. Redeem working and mint not
+			// working is a user-visible asymmetry, not a cosmetic one
+			// (review-20260915-8284). The general @botname gap across every
+			// other command stays filed as a P2.
+			return b.handleLinkCommand(ctx, msg.ChatID, msg.UserID, parts)
 		}
 
 		// Task-control cluster — deterministic, zero-LLM-spend ops commands.
@@ -639,6 +675,16 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 		}
 		if cmd == "/retry" {
 			return b.sendMessage(ctx, msg.ChatID, b.handleRetryCmd(ctx, msg.UserID, parts))
+		}
+
+		// The configuration assistant's chat entrypoint (config-assistant
+		// §6.3.3). A real command rather than a keyword prefix, which is the
+		// whole advantage Telegram's dispatch model has over Slack's here: no
+		// prompt can be mistaken for it. isConfigCommand, not a literal
+		// compare, so /config@botname works in a group — the same gap that
+		// cost /link a round of review.
+		if isConfigCommand(cmd) {
+			return b.sendMessage(ctx, msg.ChatID, b.handleConfigCommand(ctx, msg.ChatID, msg.UserID, parts))
 		}
 
 		if handler, ok := commands[cmd]; ok {

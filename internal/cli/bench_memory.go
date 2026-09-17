@@ -533,9 +533,15 @@ func printResult(cmd *cobra.Command, res membench.Result, runDir string) error {
 			"semantic baseline.\n", *res.EmbeddingReadiness*100)
 	}
 	if res.Fields.Partial() {
-		_, _ = fmt.Fprintf(out, "\nNOTE: comparability key is PARTIAL — the external system's "+
-			"configuration could not be read, so this run cannot be proven comparable "+
-			"to another.\n")
+		// Name the fields that are actually missing. The previous note asserted
+		// ONE of Partial()'s five causes — an unreadable external config — which
+		// is unreachable on a single-system run, so a partial vornik-side run was
+		// always told the one thing that could not have happened.
+		_, _ = fmt.Fprintf(out, "\nNOTE: comparability key is PARTIAL, so this run cannot be "+
+			"proven comparable to another. Missing:\n")
+		for _, r := range res.Fields.PartialReasons() {
+			_, _ = fmt.Fprintf(out, "  - %s\n", r)
+		}
 	}
 	_, _ = fmt.Fprintf(out, "\nartifacts: %s\n", runDir)
 	return nil

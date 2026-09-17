@@ -1,0 +1,941 @@
+{
+  "manifest": {
+    "runId": "2026.9.4-rc-c0-tb0-1789662008",
+    "arm": {
+      "harnessVersion": "6",
+      "name": "2026.9.4-rc",
+      "binarySha256": "3cd04deb9571f279961f003ead12daed4cb2476f14be5938edc205c68a4051a2",
+      "configSha256": "1549f6558e73b80f91cb1c77061b9c37a04049ef86c9186e1d5b310592fed0cf",
+      "models": {
+        "coder": "vllm/qwen3.8:27b",
+        "lead": "vllm/qwen3.8:27b",
+        "reviewer": "vllm/qwen3.8:27b",
+        "task_narrator": "vllm/qwen3.8:27b"
+      },
+      "agentImages": {
+        "coder": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241",
+        "lead": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241",
+        "reviewer": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241"
+      },
+      "contextPolicy": "tool_budget=enabled(0.25/0.5/1.0/2.0,max2.0);guidance=failure_playbooks+architect_priors+memory_hygiene+tool_budget+application_feedback+lift_eval",
+      "taskSetSha256": "9b6fffe10fe0fdb6ead82e94bea62a48a9511a38ef2ef7cefe24a97797c98df9",
+      "goldSha256": "fca33a53c26b8c2b904eb62ca597515c9018fcf676bd2c89db7748a0d8ac48a3",
+      "scoringPolicySha256": "ed6071c42ceabda351f049d11e976dbf1e9cf54061a305b3dc49b4335a3af29a",
+      "tierPolicySha256": "d4d6cd7df48387d64631bd9ddd4d9a3297f754e12a1ecc1d1a3b1f8c1353b80d",
+      "probes": [
+        "schema-following",
+        "tool-use",
+        "tool-grant"
+      ]
+    },
+    "armKey": "85a5a735052c3be6022bf105274c30eca2612d283be5fb4a5fe97f22cb582e7e",
+    "armPartial": false,
+    "harnessBuild": "cf39b5d37053",
+    "daemonBuild": "61634a06305d",
+    "taskTiers": {
+      "sw-01-flag": "tripwire",
+      "sw-02-offbyone": "exploratory",
+      "sw-03-refusal": "exploratory"
+    },
+    "preRegistrationHash": "4d4dc5b14ffaeb187695d94b3750b02c531a6db251ef672d718363967749897f",
+    "preRegistration": {
+      "arms": [
+        "2026.9.4-rc",
+        "2026.9.4-baseline-successor"
+      ],
+      "metric": "pinned_case_validation_score",
+      "targetDelta": 0.05,
+      "sigmaD": 0.0604,
+      "sigmaN": 10,
+      "computedPairs": 12,
+      "rationale": "Full 30-task scored arm on 2026.9.4-207-g61634a063 — the binary installed in production 2026-09-17 — to produce performance data for the release. LIMITS, registered BEFORE the run rather than explained after. FIRST AND LARGEST: this pass yields ABSOLUTE figures and NO DELTA. No scored arm journal has ever existed on this host; agentbench-runs/ holds gold passes only, and the 2026.9.0 arm that v6 pre-registered never ran because the model endpoint was believed down from 2026-09-04 (it was not down — the hostname resolved to loopback, corrected 2026-09-17). Nothing from this pass may be reported as a comparison, a regression, or a release verdict. The second arm named here is the successor this becomes the baseline FOR, named now because that is the comparison these figures are being collected for. SECOND: sigmaD 0.0604 is INHERITED, not measured on this task set — it comes from the 2026-08-14 n=10 noise floor over a 3-task subset of simple-workflow + dev-swarm, while this set is 30 tasks. It is carried so computedPairs derives from a real measurement rather than a guess, and it is wrong in an unknown direction for this set. THIRD, and new to this release: the arm reaches the model through LiteLLM over a local tunnel rather than the direct vLLM endpoint. /model/info confirms the backend is hosted_vllm/Qwen/Qwen3.8-27B-FP8, the same model the direct arm used, so this is intended to be a transport change only — but it is an UNMEASURED change on the serving path, and it is named here so a later difference cannot be attributed to code without first excluding it. FOURTH: the agent image was rebuilt for this pass (2e615f728fc5); prior gold under agentbench-runs/ ran ff3985ac4dbc and is not comparable, which is why this pass recorded fresh gold. FIFTH: gold for this arm was produced by the same harness run that will score against it. The script states that gold is operator-reviewed before it gates anything; the operator directed the scored arm to start as soon as gold landed, so at journal time that review has NOT occurred. The figures are therefore uncertified ground truth unless and until the operator reviews the gold manifest. Context policy under test: tool_budget enabled (factors trivial 0.25 / standard 0.5 / complex 1.0 / open_ended 2.0, max_factor 2.0) with the dev-swarm injected-guidance set (failure_playbooks, architect_priors, memory_hygiene, tool_budget, application_feedback, lift_eval) all on.",
+      "independentAxes": [
+        "binary_sha256",
+        "agent_images"
+      ]
+    },
+    "power": {
+      "sigmaD": 0.0604,
+      "sigmaN": 10,
+      "targetDelta": 0.05,
+      "requiredPairs": 12,
+      "availablePairs": 3,
+      "resolvableDelta": 0.09769688330750373,
+      "adequate": false
+    }
+  },
+  "records": [
+    {
+      "taskId": "sw-01-flag",
+      "executionId": "exec_20260917182009_c4700328b379a94e",
+      "succeeded": true,
+      "costUsd": 0.3598344,
+      "promptTokens": 320559,
+      "completionTokens": 4311,
+      "durationMs": 146173,
+      "toolCalls": 39,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "lead": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "calls": 10,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.5,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 5,
+            "byRole": {
+              "": {
+                "calls": 10,
+                "attributable": 10,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "calls": 9,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.036,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 5,
+            "byRole": {
+              "": {
+                "calls": 9,
+                "attributable": 9,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182009_c4700328b379a94e",
+          "taskId": "sw-01-flag",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182009_c4700328b379a94e",
+            "taskId": "sw-01-flag",
+            "calls": 20,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.5,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 14,
+            "byRole": {
+              "": {
+                "calls": 20,
+                "attributable": 20,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "taskId": "sw-02-offbyone",
+      "executionId": "exec_20260917182239_7782d48efd22f291",
+      "succeeded": true,
+      "costUsd": 0.2587462,
+      "promptTokens": 228628,
+      "completionTokens": 4081,
+      "durationMs": 127060,
+      "toolCalls": 35,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "lead": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 0,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 0,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 1,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 0,
+                "conformance": 0,
+                "parseErrors": 0,
+                "schemaViolations": 1
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "calls": 11,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.55,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 8,
+            "byRole": {
+              "": {
+                "calls": 11,
+                "attributable": 11,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "calls": 4,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.06349206349206349,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 1,
+            "byRole": {
+              "": {
+                "calls": 4,
+                "attributable": 4,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "calls": 11,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 1.1,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 8,
+            "byRole": {
+              "": {
+                "calls": 11,
+                "attributable": 11,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182239_7782d48efd22f291",
+          "taskId": "sw-02-offbyone",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182239_7782d48efd22f291",
+            "taskId": "sw-02-offbyone",
+            "calls": 9,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.9,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 3,
+            "byRole": {
+              "": {
+                "calls": 9,
+                "attributable": 9,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "taskId": "sw-03-refusal",
+      "executionId": "exec_20260917182454_c325c64e91580f66",
+      "succeeded": true,
+      "costUsd": 0.2035114,
+      "promptTokens": 177938,
+      "completionTokens": 3925,
+      "durationMs": 89938,
+      "toolCalls": 24,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "lead": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "calls": 12,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.3,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 6,
+            "byRole": {
+              "": {
+                "calls": 12,
+                "attributable": 12,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "calls": 6,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.3,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 3,
+            "byRole": {
+              "": {
+                "calls": 6,
+                "attributable": 6,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917182454_c325c64e91580f66",
+          "taskId": "sw-03-refusal",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917182454_c325c64e91580f66",
+            "taskId": "sw-03-refusal",
+            "calls": 6,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.024,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 3,
+            "byRole": {
+              "": {
+                "calls": 6,
+                "attributable": 6,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "taskRuns": [
+    {
+      "taskId": "sw-01-flag",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917182009_c4700328b379a94e"
+      ]
+    },
+    {
+      "taskId": "sw-02-offbyone",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917182239_7782d48efd22f291"
+      ]
+    },
+    {
+      "taskId": "sw-03-refusal",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917182454_c325c64e91580f66"
+      ]
+    }
+  ]
+}

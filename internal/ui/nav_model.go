@@ -134,6 +134,26 @@ func navModel() []navAreaDef {
 		}},
 		{Key: "admin", Label: "Admin", Icon: "navIconAdmin", Href: "/ui/admin/", AdminOnly: true, Dests: []navDest{
 			{Key: "admin", Label: "Admin console", Href: "/ui/admin/", Icon: "navIconAdmin"},
+			// My account sits with the other identity surfaces (Accounts,
+			// Keys & access) rather than under Steer, which is live control
+			// of running work — it was never about that (operator, 2026-09-16).
+			//
+			// The dest is NOT AdminOnly: it is the page for the people who
+			// are not admins, the one screen where someone sees every
+			// identity that resolves to them and can unlink one. The AREA
+			// gate is what decides visibility, and it admits every caller on
+			// Community and on any auth-off deployment (allUICallersAdmin),
+			// which is where the Admin area's own CE features — Keys &
+			// access, Control plane — are reached from. The case it does
+			// hide is an Enterprise box with browser sessions and a
+			// non-admin signed in; /ui/account stays reachable by URL there,
+			// and CA-12's Community personal login is the change that will
+			// make this worth revisiting.
+			{Key: "my-account", Label: "My account", Href: "/ui/account", Icon: "navIconUser"},
+			// The canonical account surface. /ui/admin/users 302s here since
+			// the 2026-09-15 nav dedupe — it rendered the same accounts with
+			// fewer actions and only in Enterprise.
+			{Key: "operator", Label: "Accounts", Href: "/ui/operator/accounts", Icon: "navIconUsers", AdminOnly: true},
 			{Key: "admin-skills", Label: "Skills", Href: "/ui/admin/skills", Icon: "navIconSkill"},
 			{Key: "admin-control-plane", Label: "Control plane", Href: "/ui/admin/control-plane", Icon: "navIconControlPlane"},
 			{Key: "admin-keys", Label: "Keys & access", Href: "/ui/admin/keys", Icon: "navIconKey"},

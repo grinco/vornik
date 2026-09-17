@@ -59,7 +59,9 @@ func TestScoreExecution_OtherInvalidContractsStillFailClosed(t *testing.T) {
 		cases    []PinnedCaseEvidence
 		wantDiag string
 	}{
-		"unknown id":      {[]string{"a"}, 1, []PinnedCaseEvidence{{ID: "other", Status: "passed"}}, DiagnosticUnknownCaseID},
+		// "unknown id" removed 2026-09-17 — no longer fail-closed. An extra id
+		// is ignored for the score and counted; see
+		// TestScoreExecution_ExtraCasesDoNotVoidTheReport.
 		"duplicate id":    {[]string{"a", "a"}, 2, []PinnedCaseEvidence{{ID: "a", Status: "passed"}}, DiagnosticDuplicateAnalystCaseID},
 		"no pinned cases": {[]string{}, 0, nil, DiagnosticNoPinnedCases},
 		"unknown status":  {[]string{"a"}, 1, []PinnedCaseEvidence{{ID: "a", Status: "skipped"}}, DiagnosticUnknownCaseStatus},

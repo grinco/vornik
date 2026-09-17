@@ -11,7 +11,7 @@ import (
 func TestAssistantConfig_Defaults(t *testing.T) {
 	cfg := DefaultConfig()
 	ca := cfg.ConfigAssistant
-	if ca.Enabled || ca.Paused || ca.Consult.Enabled || ca.ChatDoor {
+	if ca.Enabled || ca.Paused || ca.Consult.Enabled || ca.ChatEntrypoint {
 		t.Fatalf("assistant, consult and chat door must default OFF: %+v", ca)
 	}
 	if ca.MaxOutputBytes != ConfigAssistantDefaultMaxOutputBytes || ca.MaxToolTurns != ConfigAssistantDefaultMaxToolTurns {

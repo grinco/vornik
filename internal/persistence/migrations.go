@@ -7915,4 +7915,213 @@ ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS idempotency_key;
 ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS request_id;
 `,
 	},
+	{
+		Version: 186,
+		Name:    "control_plane_proposals_kind_workspace_context",
+		// workspace_context is the config-assistant bridge to the canonical
+		// per-project workspace .autonomy/PROJECT_CONTEXT.md file. It is a
+		// KindApplier-managed proposal so the file apply engine remains
+		// confined to the deployed config directory.
+		Up: `
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold','instinct_retire','workspace_context','observation'));
+`,
+		Down: `
+UPDATE control_plane_proposals SET kind = 'config' WHERE kind = 'workspace_context';
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold','instinct_retire','observation'));
+`,
+	},
+	{
+		Version: 187,
+		Name:    "control_plane_proposals_door_to_entrypoint",
+		// Vocabulary rename, operator's decision 2026-09-15: the config
+		// assistant's four surfaces are ENTRYPOINTS, not "doors". The column
+		// is renamed rather than shadowed — a second column carrying the same
+		// fact is the divergence this codebase keeps paying for, and the
+		// window where both exist is the window where a writer picks one.
+		//
+		// RENAME, not add-and-backfill: the values are unchanged (rest | cli |
+		// console | chat | agent), so there is nothing to translate and no row
+		// to lose. A legacy row's NULL stays NULL and still means "filed
+		// before the column existed", which is what migration 185 established.
+		//
+		// The proposal's evidence JSON also carried a "door" key. It is NOT
+		// rewritten here: nothing in production unmarshals EvidenceRecord (it
+		// is written at propose time and read back only by tests), and
+		// text-editing stored JSON to chase a key nothing reads would risk
+		// the rows to no purpose. New rows carry "entrypoint"; the handful of
+		// existing ones keep a key with the old name that no reader consults.
+		Up: `
+ALTER TABLE control_plane_proposals RENAME COLUMN door TO entrypoint;
+COMMENT ON COLUMN control_plane_proposals.entrypoint IS 'Entrypoint the proposal came through: rest | cli | console | chat | agent. NULL on rows filed before migration 185.';
+`,
+		Down: `
+ALTER TABLE control_plane_proposals RENAME COLUMN entrypoint TO door;
+COMMENT ON COLUMN control_plane_proposals.door IS 'Surface the proposal came through: operator | console | chat | agent. NULL on legacy rows.';
+`,
+	},
+	{
+		Version: 188,
+		Name:    "create_healing_comparison_observations",
+		// The healing comparison window's durable record — config-assistant
+		// design §6.3.4a.
+		//
+		// §6.3.4 step 2 fixed the criterion for retiring the memetic
+		// architect (five consecutive triggers on which the assistant's and
+		// the architect's genome hashes agree, every disagreement recorded
+		// and readable) and it shipped as a log line. Nothing counted, so the
+		// window could not close on its own stated criterion.
+		//
+		// A TABLE OF ITS OWN, not a column on workflow_healing_candidates: a
+		// comparison happens even when NO candidate is produced — the
+		// assistant refused, or the bridge rejected its proposal — and those
+		// are exactly the rows an operator needs. Hanging the record off the
+		// candidate would record only the cases that went well.
+		//
+		// trigger_id is a SOFT reference, matching workflow_healing_candidates
+		// .proposal_id: the observation is evidence about a decision and
+		// outlives the trigger it describes. A purge that cascaded these away
+		// would delete the disagreements that justify keeping the window open.
+		//
+		// No streak column. The streak is derived from these rows (§6.3.4a):
+		// a stored counter can drift from the records it summarises, and an
+		// operator then has two numbers with no way to tell which is lying.
+		Up: `
+CREATE TABLE IF NOT EXISTS healing_comparison_observations (
+    id                     TEXT PRIMARY KEY,
+    trigger_id             TEXT NOT NULL,
+    project_id             TEXT NOT NULL,
+    workflow_id            TEXT NOT NULL,
+    assistant_proposal_id  TEXT NOT NULL DEFAULT '',
+    assistant_genome_hash  TEXT NOT NULL DEFAULT '',
+    architect_proposal_id  TEXT NOT NULL DEFAULT '',
+    architect_genome_hash  TEXT NOT NULL DEFAULT '',
+    outcome                TEXT NOT NULL
+        CHECK (outcome IN ('agreed','disagreed','assistant_refused','bridge_refused','comparison_failed')),
+    detail                 TEXT NOT NULL DEFAULT '',
+    created_at             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_healing_comparison_time
+    ON healing_comparison_observations (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_healing_comparison_trigger
+    ON healing_comparison_observations (trigger_id);
+
+COMMENT ON TABLE healing_comparison_observations IS 'Config-assistant design 6.3.4a: one row per healing trigger that reached the read-only comparison window. outcome agreed|disagreed|assistant_refused|bridge_refused|comparison_failed; the five-consecutive-agreement streak is DERIVED from these rows, never stored.';
+`,
+		Down: `
+DROP TABLE IF EXISTS healing_comparison_observations;
+`,
+	},
+	{
+		Version: 189,
+		Name:    "drop_healing_comparison_observations",
+		// The comparison window is gone (WP9 step 3, 2026-09-16), so its
+		// ledger is too.
+		//
+		// Migration 188 created this table the same day. It is DROPPED by a
+		// new migration rather than by deleting 188, because 188 already ran
+		// on a deployed database: removing it from the list would leave an
+		// existing install with a table no migration explains and a fresh
+		// install without one, which is how two databases claiming the same
+		// schema version stop being the same schema.
+		//
+		// Nothing is lost. The window compared the config assistant against
+		// the memetic architect, and the architect produced no candidate to
+		// compare against in the month before it was removed — the table
+		// held zero rows at drop time. See the config-assistant design
+		// §6.3.4b for why the five-agreement criterion was skipped rather
+		// than met.
+		Up: `
+DROP TABLE IF EXISTS healing_comparison_observations;
+`,
+		Down: `
+CREATE TABLE IF NOT EXISTS healing_comparison_observations (
+    id                     TEXT PRIMARY KEY,
+    trigger_id             TEXT NOT NULL,
+    project_id             TEXT NOT NULL,
+    workflow_id            TEXT NOT NULL,
+    assistant_proposal_id  TEXT NOT NULL DEFAULT '',
+    assistant_genome_hash  TEXT NOT NULL DEFAULT '',
+    architect_proposal_id  TEXT NOT NULL DEFAULT '',
+    architect_genome_hash  TEXT NOT NULL DEFAULT '',
+    outcome                TEXT NOT NULL,
+    detail                 TEXT NOT NULL DEFAULT '',
+    created_at             TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+`,
+	},
+	{
+		Version: 190,
+		Name:    "project_memory_chunks_series_key",
+		// Recurring-series demotion — retrieval-recency design
+		// (2026-09-16-retrieval-recency-design.md) §6.
+		//
+		// An eleven-day-old czech-news digest outranked the current one and was
+		// read back to the operator as today's headlines. Ranking had no reason
+		// to prefer the fresh member: the two are the same class, the same
+		// project and near-identical text, so relevance alone cannot separate
+		// "the news" from "the news, but stale". series_key is the fact that
+		// separates them — it names the recurring series a chunk is a member of
+		// (a feed slug like czech-news), so "a newer one of these exists" becomes
+		// answerable.
+		//
+		// ONE COLUMN, NOT TWO. An earlier revision of the design also stored a
+		// series_superseded BOOLEAN written at ingest. It is not here, and the
+		// reason is a race rather than a preference: under READ COMMITTED two
+		// members of one series ingesting concurrently each see a store without
+		// the other, neither marks the other, and the resulting state is
+		// PERMANENT — the UPDATE that would have repaired it has already run.
+		// Supersession is therefore DERIVED per query from committed state, which
+		// is self-healing by construction and needs no column.
+		//
+		// NULLABLE, no backfill, and that is the correct answer rather than a
+		// deferred one: absent means "not part of a series", which is true of all
+		// ~34,000 existing rows. About 1% of the store will ever carry one, which
+		// is why the index below is partial.
+		//
+		// WHY id IS IN THE INDEX. The query-time EXISTS asks whether a newer
+		// member exists using a row-value tuple comparison:
+		//
+		//     (n.created_at, n.id) > (c.created_at, c.id)
+		//
+		// The tuple, not a plain created_at >, because two members ingested in
+		// the same second would otherwise demote NEITHER — each fails to be
+		// strictly newer than the other and the stale one keeps its rank. id
+		// breaks that tie deterministically, consistent with the existing
+		// ordering contract. The index carries id as its last key so it SERVES
+		// that comparison rather than merely filtering by prefix and re-checking
+		// the tuple on heap rows. Verified by EXPLAIN on both drivers: Postgres
+		// pushes the whole ROW(...) > ROW(...) into the index condition, and
+		// SQLite decomposes it into an indexed created_at range with the id
+		// tiebreak resolved above it. A review round proposed rewriting the tuple
+		// as an OR; it was declined on measurement, because the OR form loses
+		// SQLite's created_at push-down. Do not "simplify" this index shape
+		// without re-running that measurement — the design records the numbers.
+		//
+		// PARTIAL, on series_key IS NOT NULL: the ~99% of rows with no series
+		// never enter it, and both planners prove the predicate from the
+		// correlated `n.series_key = <param>` (an equality implies IS NOT NULL),
+		// so the partial index is still selected.
+		//
+		// Plain CREATE INDEX rather than the CONCURRENTLY the rolling-deploy
+		// discipline prefers: applyMigration wraps every migration in a
+		// transaction and CONCURRENTLY cannot run inside one. That is true of all
+		// 189 migrations before this; the table is small enough that the build
+		// lock is measured in milliseconds, and the column is additive and
+		// nullable, so an old binary mid-rollout neither reads nor writes it.
+		Up: `
+ALTER TABLE project_memory_chunks ADD COLUMN IF NOT EXISTS series_key TEXT;
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_series
+    ON project_memory_chunks (project_id, series_key, created_at DESC, id DESC)
+    WHERE series_key IS NOT NULL;
+COMMENT ON COLUMN project_memory_chunks.series_key IS 'Recurring-series membership (e.g. an autonomy feed slug). NULL = not part of a series, which is every row written before the retrieval-recency design. Supersession within a series is DERIVED per query, never stored.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_memory_chunks_series;
+ALTER TABLE project_memory_chunks DROP COLUMN IF EXISTS series_key;
+`,
+	},
 }

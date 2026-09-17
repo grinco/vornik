@@ -71,15 +71,19 @@ func TestIdentityRepository_BindIdentity_UpsertShape(t *testing.T) {
 VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (channel, external_id)
 DO UPDATE SET user_id = EXCLUDED.user_id, display = EXCLUDED.display, revoked_at = NULL
-WHERE user_identities.revoked_at IS NOT NULL`)).
+WHERE user_identities.revoked_at IS NOT NULL
+   OR user_identities.user_id = EXCLUDED.user_id`)).
 		WithArgs("uident_1", "user_1", "google", "vadim@vornik.io", "Vadim", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	err := repo.BindIdentity(context.Background(), &persistence.UserIdentity{
+	bound, err := repo.BindIdentity(context.Background(), &persistence.UserIdentity{
 		ID: "uident_1", UserID: "user_1", Channel: "google",
 		ExternalID: "vadim@vornik.io", Display: "Vadim", CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("BindIdentity: %v", err)
+	}
+	if !bound {
+		t.Error("one affected row must report bound")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)

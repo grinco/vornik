@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -153,4 +154,33 @@ func resolveSlackConfig(p registry.ProjectSlack, projectID string) (slack.Config
 		cfg.Installations[0].BotToken = botToken
 	}
 	return cfg, nil
+}
+
+// slackSlashCommands returns EVERY distinct slash command this daemon's Slack
+// channels answer, sorted, for the UI panel that has to tell a person what to
+// type.
+//
+// Every one, not the first. The first cut returned a single command and an
+// operator running two Slack apps — /t800 and /holly — was told to use
+// whichever project happened to load first. A review had flagged the
+// single-command assumption as "likely fine (one workspace, one command) but
+// unasserted"; it was neither fine nor, as it turned out, true.
+//
+// Read from the CHANNEL rather than re-derived from config, because
+// NormaliseSlashCommand has already been applied there — re-normalising here
+// would be a second implementation of the same rule, and the one that drifts
+// is the one nobody exercises.
+func (c *Container) slackSlashCommands() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, ch := range c.SlackChannels {
+		cmd := ch.SlashCommand()
+		if cmd == "" || seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		out = append(out, cmd)
+	}
+	sort.Strings(out)
+	return out
 }

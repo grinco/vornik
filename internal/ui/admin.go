@@ -952,7 +952,20 @@ func (s *Server) adminRouter(w http.ResponseWriter, r *http.Request) {
 	case "/keys", "/keys/":
 		s.AdminKeys(w, r)
 	case "/users", "/users/":
-		s.AdminUsers(w, r)
+		// Deprecated (2026-09-15 nav dedupe): /ui/operator/accounts is the
+		// canonical account surface. It renders the same accounts and is a
+		// strict SUPERSET of this page — it adds create, assign-key,
+		// unassign-key and issue-link-code — and it works in Community,
+		// where /ui/admin/* answers 501 EDITION_UNSUPPORTED. This page was
+		// the Enterprise-only subset, and an operator reported the two as
+		// indistinguishable, which they were.
+		//
+		// 302 rather than delete, so a bookmark lands on the canonical
+		// surface — same posture as the /ui/mcp and /integrations/mcp
+		// dedupes above. The /users/{id}/... POST surfaces below are
+		// untouched: the login-approval actions still post here, and the
+		// session viewer has its own route.
+		http.Redirect(w, r, "/ui/operator/accounts", http.StatusFound)
 	case "/workflow-proposals", "/workflow-proposals/":
 		s.AdminWorkflowProposals(w, r)
 	default:

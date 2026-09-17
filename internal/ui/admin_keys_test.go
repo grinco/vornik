@@ -23,6 +23,17 @@ type adminKeysRepoStub struct {
 	capsUpdated bool
 }
 
+func (s *adminKeysRepoStub) GetByID(_ context.Context, keyID string) (*persistence.APIKey, error) {
+	for _, rows := range s.byProject {
+		for _, k := range rows {
+			if k.ID == keyID {
+				return k, nil
+			}
+		}
+	}
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (s *adminKeysRepoStub) Create(context.Context, *persistence.APIKey) error {
 	panic("unused")
 }
@@ -259,4 +270,11 @@ func TestAdminKeyToRow_StatusTransitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*adminKeysRepoStub) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 )
 
 var (
@@ -50,7 +51,41 @@ var (
 	// ErrApplierNotWired is returned when the Promoter was constructed
 	// without a memetic applier — promotion is impossible.
 	ErrApplierNotWired = errors.New("workflowhealing: memetic applier not wired")
+
+	// --- currency gate (operator validation 2026-09-16) -----------------
+	//
+	// A healing genome is a WHOLE-FILE replacement of WORKFLOW.md. Until
+	// these three errors existed, nothing compared it against the file it
+	// would overwrite: the static trial checks SHAPE, the replay trial
+	// checks BEHAVIOUR, and neither checks CURRENCY. A candidate generated
+	// against a file that has been edited since would silently revert every
+	// edit made in between — found on a live candidate that would have cut
+	// a timeout to a third of its current value and deleted a prompt
+	// paragraph added a month after it was generated.
+
+	// ErrGenomeDrift is returned when the workflow has changed since the
+	// candidate was generated. The remedy is to regenerate the candidate
+	// against the current file, not to force the stale one.
+	ErrGenomeDrift = errors.New("workflowhealing: the workflow has changed since this candidate was generated")
+	// ErrBaselineUnknown is returned when the candidate records no baseline
+	// genome hash, so its currency cannot be established either way.
+	// Distinct from ErrGenomeDrift on purpose: "we checked and it moved" and
+	// "we cannot check" are different facts and have the same remedy only by
+	// coincidence.
+	ErrBaselineUnknown = errors.New("workflowhealing: candidate records no baseline genome hash, so it cannot be shown to be current")
+	// ErrDriftCheckUnavailable is returned when no workflow lookup is wired.
+	// Promotion FAILS CLOSED here: an unavailable check is the same
+	// epistemic position as an unknown baseline, and the one thing it must
+	// not do is read as a pass.
+	ErrDriftCheckUnavailable = errors.New("workflowhealing: no workflow lookup wired, so genome currency cannot be verified")
 )
+
+// WorkflowLookup answers "what is live right now" for one workflow id.
+// *registry.Registry satisfies it. Narrow on purpose: the promoter needs the
+// current genome's hash and nothing else about the registry.
+type WorkflowLookup interface {
+	GetWorkflow(id string) *registry.Workflow
+}
 
 // ProposalApplier is the narrow seam over the memetic apply path the
 // Promoter reuses. Production wires this to *memetic.Applier.Apply; the
@@ -81,7 +116,46 @@ type Promoter struct {
 	proposals  persistence.WorkflowProposalRepository
 	applier    ProposalApplier
 	metrics    Metrics
+	lookup     WorkflowLookup
 	log        zerolog.Logger
+}
+
+// WithWorkflowLookup wires the currency gate. Kept off the constructor so
+// existing call sites do not churn — but note that Promote FAILS CLOSED
+// without it (ErrDriftCheckUnavailable); this is not an optional hardening
+// that degrades to the old behaviour when absent.
+func (p *Promoter) WithWorkflowLookup(l WorkflowLookup) *Promoter {
+	if p != nil {
+		p.lookup = l
+	}
+	return p
+}
+
+// checkGenomeCurrency refuses a candidate whose genome was generated against a
+// version of the workflow that is no longer live.
+//
+// A hash comparison, deliberately: it is deterministic, costs nothing, and
+// cannot make the judgement error that produced the stale candidate. No model
+// is involved and none should be.
+func (p *Promoter) checkGenomeCurrency(cand *persistence.HealingCandidate) error {
+	if p.lookup == nil {
+		return fmt.Errorf("%w: candidate %s", ErrDriftCheckUnavailable, cand.ID)
+	}
+	if cand.BaselineGenomeHash == "" {
+		return fmt.Errorf("%w: candidate %s (generated before the currency gate existed — regenerate it)",
+			ErrBaselineUnknown, cand.ID)
+	}
+	live := p.lookup.GetWorkflow(cand.WorkflowID)
+	if live == nil {
+		return fmt.Errorf("%w: workflow %s no longer exists, so there is nothing for candidate %s to patch",
+			ErrGenomeDrift, cand.WorkflowID, cand.ID)
+	}
+	if got := GenomeHash(live); got != cand.BaselineGenomeHash {
+		return fmt.Errorf("%w: %s was generated against genome %s but %s is now %s — regenerate the candidate "+
+			"against the current file rather than promoting one that would revert the edits made since",
+			ErrGenomeDrift, cand.ID, cand.BaselineGenomeHash, cand.WorkflowID, got)
+	}
+	return nil
 }
 
 // NewPromoter wires the promoter. candidates is mandatory; proposals +
@@ -151,6 +225,14 @@ func (p *Promoter) Promote(ctx context.Context, candidateID, promotedBy string) 
 	}
 	if p.applier == nil || p.proposals == nil {
 		return nil, ErrApplierNotWired
+	}
+	// The currency gate, BEFORE any mutation — including before the
+	// proposal is approved, so a refused promotion leaves the candidate
+	// exactly as it was and still promotable once regenerated.
+	if err := p.checkGenomeCurrency(cand); err != nil {
+		p.log.Warn().Err(err).Str("candidate_id", cand.ID).Str("workflow_id", cand.WorkflowID).
+			Msg("workflowhealing: promotion refused — genome currency check failed")
+		return nil, err
 	}
 
 	// 1. Ensure the linked proposal is approved. The architect leaves

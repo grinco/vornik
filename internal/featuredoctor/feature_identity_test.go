@@ -26,15 +26,23 @@ func (s *stubIdentityRepo) CreateGroup(context.Context, *persistence.Group) erro
 func (s *stubIdentityRepo) GetGroupByName(context.Context, string) (*persistence.Group, error) {
 	return nil, persistence.ErrGroupNotFound
 }
-func (s *stubIdentityRepo) SetGroupProjects(context.Context, string, []string) error      { return nil }
-func (s *stubIdentityRepo) SetGroupRole(context.Context, string, string) error            { return nil }
-func (s *stubIdentityRepo) AddGroupMember(context.Context, string, string) error          { return nil }
-func (s *stubIdentityRepo) RemoveGroupMember(context.Context, string, string) error       { return nil }
-func (s *stubIdentityRepo) BindIdentity(context.Context, *persistence.UserIdentity) error { return nil }
+func (s *stubIdentityRepo) SetGroupProjects(context.Context, string, []string) error { return nil }
+func (s *stubIdentityRepo) SetGroupRole(context.Context, string, string) error       { return nil }
+func (s *stubIdentityRepo) AddGroupMember(context.Context, string, string) error     { return nil }
+func (s *stubIdentityRepo) RemoveGroupMember(context.Context, string, string) error  { return nil }
+func (s *stubIdentityRepo) BindIdentity(context.Context, *persistence.UserIdentity) (bool, error) {
+	return true, nil
+}
+func (s *stubIdentityRepo) RebindIdentity(context.Context, *persistence.UserIdentity) error {
+	return nil
+}
 func (s *stubIdentityRepo) MigrateIdentityExternalID(context.Context, string, string, string) error {
 	return nil
 }
-func (s *stubIdentityRepo) RevokeIdentity(context.Context, string, string) error        { return nil }
+func (s *stubIdentityRepo) RevokeIdentity(context.Context, string, string) error { return nil }
+func (s *stubIdentityRepo) RevokeIdentityOwnedBy(context.Context, string, string, string) error {
+	return nil
+}
 func (s *stubIdentityRepo) TouchIdentityLastUsed(context.Context, string, string) error { return nil }
 func (s *stubIdentityRepo) ResolvePrincipalRows(context.Context, string, string) ([]persistence.PrincipalRow, error) {
 	return nil, nil

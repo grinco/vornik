@@ -115,8 +115,15 @@ func (e *Executor) maybeDistillSkill(ctx context.Context, task *persistence.Task
 	if len(cand.Body) > skillDistillBodyCap {
 		cand.Body = cand.Body[:skillDistillBodyCap]
 	}
-	// Dedup: skip if a same-named skill already exists in the project
-	// (any scope). Cheap List + name compare avoids near-duplicate drafts.
+	// Dedup, first pass: an exact same-named skill in this project (any
+	// scope). Cheap, and it catches the trivial case without an embedding.
+	//
+	// It catches ONLY that. This comment used to claim it "avoids
+	// near-duplicate drafts", which is precisely what a case-insensitive
+	// equality cannot do: `prague-restaurant-feed-refresh` and
+	// `prague-restaurants-feed-refresh` differ by one character, and the
+	// second was proposed, approved, and never fired once while the first
+	// accumulated 23 firings.
 	existing, _ := e.skillRepo.List(ctx, task.ProjectID, persistence.SkillListFilter{})
 	for _, s := range existing {
 		if strings.EqualFold(s.Name, cand.Name) {
@@ -138,6 +145,43 @@ func (e *Executor) maybeDistillSkill(ctx context.Context, task *persistence.Task
 		OriginClient: "vornik-distiller",
 		OriginTask:   task.ID,
 	}
+	// Dedup, second pass: the SEMANTIC gate (LLD §12.2). It has existed since
+	// the knowledge-skill store shipped and was wired into exactly one
+	// entrypoint — the companion `skill_propose` MCP tool — while this path
+	// produced 105 of the reference deployment's 128 skills, 69 of which never
+	// fired. A gate on one door out of several is the shape that let the
+	// config assistant's mayAutoApply through on a different surface.
+	//
+	// SILENT SKIP, not a block-and-ask: this path is unattended, so there is
+	// nobody to answer "supersedes or confirm_distinct?". Skipping matches what
+	// the exact-name check above already does; the log line and the metric are
+	// what make the skip rate visible, so "the gate is working" stays
+	// distinguishable from "the distiller stopped proposing".
+	if e.dupeChecker != nil {
+		matches, derr := e.dupeChecker.NearDuplicateSkills(ctx, skill)
+		switch {
+		case derr != nil:
+			// An embedder outage must not silence the distiller. §12.2 makes
+			// the same choice on the MCP path; inheriting it beats inventing a
+			// stricter rule here.
+			e.logger.Warn().Err(derr).Str("name", skill.Name).
+				Msg("skill distiller: near-duplicate check failed; proposing anyway")
+		case len(matches) > 0:
+			e.logger.Info().
+				Str("name", skill.Name).
+				Str("nearest", matches[0].Name).
+				Float64("score", matches[0].Score).
+				Str("reason", matches[0].Reason).
+				Int("matches", len(matches)).
+				Str("task_id", task.ID).
+				Msg("skill distiller: draft skipped as a near-duplicate of an existing skill")
+			if e.metrics != nil {
+				e.metrics.RecordSkillDistillSkipped(matches[0].Reason)
+			}
+			return
+		}
+	}
+
 	if err := e.skillRepo.Create(ctx, skill); err != nil {
 		return // conflict / error → propose nothing
 	}
@@ -183,4 +227,20 @@ func truncateForDistill(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// SkillDupeMatch is one near-duplicate the gate found. Declared here rather
+// than reused from internal/api because api imports this package — the
+// dependency only runs one way, so the container adapts across the seam.
+type SkillDupeMatch struct {
+	Name   string
+	Score  float64
+	Reason string
+}
+
+// SkillDupeChecker scores a proposed skill against the existing catalogue.
+// Optional: a nil checker leaves the exact-name dedup above as the only gate,
+// which is the pre-2026-09-16 behaviour.
+type SkillDupeChecker interface {
+	NearDuplicateSkills(ctx context.Context, candidate *persistence.Skill) ([]SkillDupeMatch, error)
 }

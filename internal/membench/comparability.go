@@ -230,6 +230,40 @@ func DiffComparabilityPairs(a, b [][2]string) []string {
 // Partial reports whether the key covers everything it should. A partial key
 // means the run's comparability is unverified, which is NOT the same as
 // verified-identical and must be surfaced as such on the manifest.
+// PartialReasons names every field whose absence makes this key partial, in the
+// same order Partial() tests them. Empty when the key is complete.
+//
+// It exists because Partial() has five causes and the CLI note had one sentence,
+// which blamed an unreadable EXTERNAL config — a cause that is unreachable on a
+// single-system run, since Partial() returns on SingleSystem before it tests
+// ExternalConfigSHA256. A partial vornik-side run was therefore always told the
+// one thing that could not have happened, and the reader went looking at the
+// wrong flags. Found 2026-09-17 on the release benchmark, whose key stayed
+// partial with both --our-extraction-model and --recall-method set because the
+// empty fields were observed_embedder and daemon_revision.
+//
+// Kept beside Partial() deliberately: two functions over one condition drift,
+// and the test asserts they agree.
+func (f ComparabilityFields) PartialReasons() []string {
+	var out []string
+	if f.ObservedEmbedder == "" {
+		out = append(out, "observed_embedder (the system did not report which embedding model it used)")
+	}
+	if f.ObservedRecallMethod == "" {
+		out = append(out, "observed_recall_method (the system did not report which retrieval path it took)")
+	}
+	if f.CorpusRegime == CorpusRegimeUnknown {
+		out = append(out, "corpus_regime (warm or cold could not be established)")
+	}
+	if f.DaemonRevision == "" {
+		out = append(out, "daemon_revision (the build under test did not identify itself)")
+	}
+	if !f.SingleSystem && f.ExternalConfigSHA256 == "" {
+		out = append(out, "external_config_sha256 (the comparison system's configuration could not be read)")
+	}
+	return out
+}
+
 func (f ComparabilityFields) Partial() bool {
 	// An unreported embedder leaves the key unverified even for a single system:
 	// two runs on different embedding models produce the same key, which is how a

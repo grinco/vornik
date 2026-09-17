@@ -36,6 +36,20 @@ type MemoryChunk struct {
 	// preserves the existing ingest pipeline untouched.
 	DerivedFromExtractedDocumentID string `json:"derived_from_extracted_document_id,omitempty"`
 	DerivedFromSectionID           string `json:"derived_from_section_id,omitempty"`
+
+	// SeriesKey names the recurring series this chunk is one member of —
+	// an autonomy feed slug such as `czech-news` (migration 190, LLD
+	// 2026-09-16-retrieval-recency-design.md §5.1.1). Empty = not part of a
+	// series, which is true of ~99% of the store and persists as SQL NULL.
+	//
+	// Empty MUST reach the database as NULL rather than as "": §5.3's
+	// supersession EXISTS is served by a partial index on
+	// `series_key IS NOT NULL`, so an empty-string key would enrol every
+	// ordinary chunk in the index and hand each one a one-member "series".
+	//
+	// Whether a chunk has one is decided ONCE per ingest call by the
+	// Indexer's SeriesResolver, not per chunk — see indexer.go.
+	SeriesKey string `json:"series_key,omitempty"`
 }
 
 // SearchResult holds a single result from a memory search query.
@@ -116,6 +130,15 @@ type SearchResult struct {
 	// for the verdict. json:"-" so adding it never changes any serialized
 	// response shape (the byte-identical-when-Routing-off contract).
 	CreatedAt time.Time `json:"-"`
+	// SeriesSuperseded reports that a NEWER member of this chunk's
+	// recurring series exists (2026-09-16-retrieval-recency-design.md
+	// §5.3). Derived per query by the search SQL, never stored: a stored
+	// flag raced under READ COMMITTED and could not self-heal, which is
+	// why the design moved it to query time.
+	//
+	// json:"-" for the same reason as CreatedAt — a ranking input, not a
+	// response field, and adding it must not change any serialized shape.
+	SeriesSuperseded bool `json:"-"`
 }
 
 // PolicyProofWire is the JSON-wire shape of the firewall's

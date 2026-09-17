@@ -379,6 +379,24 @@ type recallHit struct {
 	// byte-identical.
 	Confidence       float64 `json:"confidence,omitempty"`
 	ValidationStatus string  `json:"validation_status,omitempty"`
+	// EventTime is WHEN THIS CONTENT PERTAINS TO — the single field that
+	// lets a caller tell a current fact from an old one.
+	//
+	// It was absent, and `recent_memory` carried it all along, so a caller
+	// that used recall received content with no age at all. Ranking has no
+	// recency term either (score is RRF × utility; the designed
+	// freshness_weight is unbuilt), so an 11-day-old news digest can outrank
+	// today's AND arrive looking exactly like it — which is how one was
+	// summarised as "what's in the news today" (2026-09-16 stale-news
+	// incident). A model cannot caveat an age it was never told.
+	//
+	// Empty when the chunk predates migration 157 or was deposited without
+	// one; that is honestly "unknown", not "now" — which is why CreatedAt
+	// sits beside it rather than being folded into it. Event time is
+	// nullable with no backfill, so CreatedAt is what gives every hit an
+	// age; event time is the better answer when the depositor supplied one.
+	EventTime string `json:"event_time,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 type recallResult struct {
@@ -524,6 +542,8 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 			RepoScope:        r.RepoScope,
 			Confidence:       r.Confidence,
 			ValidationStatus: r.ValidationStatus,
+			EventTime:        r.EventTime,
+			CreatedAt:        r.CreatedAt,
 		})
 	}
 	out := recallResult{

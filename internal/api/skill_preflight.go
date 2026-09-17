@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -181,4 +182,28 @@ func (s *Server) runSkillDupePreflight(ctx context.Context, candidate *persisten
 		s.backfillSkillEmbeddings(ctx, candidate.EmbeddingModel, existing)
 	}
 	return findSkillDuplicates(candidate, existing), nil
+}
+
+// NearDuplicateSkills exposes the §12.2 preflight to callers outside this
+// package — specifically the post-task distiller in internal/executor, which
+// produced the bulk of the catalogue while facing only an exact-name check.
+//
+// The dependency runs api → executor, so the executor declares its own match
+// type and the container adapts across the seam; this returns the same scores
+// and reasons the MCP path blocks on, so the two entrypoints cannot diverge on
+// what "duplicate" means.
+func (s *Server) NearDuplicateSkills(ctx context.Context, candidate *persistence.Skill) ([]executor.SkillDupeMatch, error) {
+	matches, err := s.runSkillDupePreflight(ctx, candidate)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]executor.SkillDupeMatch, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, executor.SkillDupeMatch{
+			Name:   m.Name,
+			Score:  m.Score,
+			Reason: string(m.Reason),
+		})
+	}
+	return out, nil
 }

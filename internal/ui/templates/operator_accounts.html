@@ -17,7 +17,7 @@
             </div>
 
             <p class="text-xs text-gray-500">
-                Accounts are what every door resolves to: a web session, a linked Telegram or Slack sender, an owned API key. Create an account here, grant it <code class="font-mono">user</code> access scoped to projects or instance-wide <code class="font-mono">admin</code>, and link channels with <code class="font-mono">/account link &lt;code&gt;</code>. Revoking an account revokes every door at once. Every change is recorded in the admin audit log.
+                Accounts are what every door resolves to: a web session, a linked Telegram or Slack sender, an owned API key. Create an account here, grant it <code class="font-mono">user</code> access scoped to projects or instance-wide <code class="font-mono">admin</code>, and link channels by issuing a one-time code below, which the person redeems from chat — <code class="font-mono">/link &lt;code&gt;</code> on Telegram, and this deployment's configured slash command followed by <code class="font-mono">link &lt;code&gt;</code> on Slack. Revoking an account revokes every door at once. Every change is recorded in the admin audit log.
             </p>
 
             {{if .Notice}}
@@ -61,14 +61,112 @@
                         <div class="text-xs text-gray-500">
                             Linked identities:
                             {{range $row.Identities}}
+                                {{/*
+                                  An api_key row is named the way the operator
+                                  knows the key ("project / name"), with the
+                                  opaque id kept beside it in muted text for
+                                  support. It used to render the id ALONE,
+                                  which is the one identifier §5.4 guarantees
+                                  the operator does not have (report
+                                  2026-09-16).
+                                */}}
+                                {{if eq .Channel "api_key"}}
+                                    <span class="text-gray-300">api key: <span class="font-medium">{{if .Display}}{{.Display}}{{else}}{{.ExternalID}}{{end}}</span></span>
+                                    {{if .Display}}<span class="font-mono text-gray-600 text-[11px]">{{.ExternalID}}</span>{{end}}
+                                {{else}}
                                 <span class="font-mono text-gray-300">{{.Channel}}:{{if .Display}}{{.Display}}{{else}}{{.ExternalID}}{{end}}</span>
-                                <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/revoke-identity" class="inline">
-                                    <input type="hidden" name="channel" value="{{.Channel}}">
-                                    <input type="hidden" name="external_id" value="{{.ExternalID}}">
-                                    <button class="text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 text-xs" title="unlink this identity" onclick="return confirm('Unlink {{.Channel}}:{{.ExternalID}}? They will provision fresh on next login.')">unlink</button>
-                                </form>
+                                {{end}}
+                                {{if eq .Channel "api_key"}}
+                                    <!--
+                                      Unassign lives HERE, on the key's own
+                                      row, rather than in a second free-text
+                                      id box: this is the one place the
+                                      operator can see WHICH key they are
+                                      detaching.
+                                    -->
+                                    <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/unassign-key" class="inline">
+                                        <input type="hidden" name="key_id" value="{{.ExternalID}}">
+                                        <button class="text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 text-xs"
+                                                title="Return this key to unattributed. The key keeps working; only the attribution changes."
+                                                onclick="return confirm('Unassign this key from the account? The key keeps working — only whose spend it counts against changes.')">unassign</button>
+                                    </form>
+                                {{else}}
+                                    <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/revoke-identity" class="inline">
+                                        <input type="hidden" name="channel" value="{{.Channel}}">
+                                        <input type="hidden" name="external_id" value="{{.ExternalID}}">
+                                        <button class="text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 text-xs" title="unlink this identity" onclick="return confirm('Unlink {{.Channel}}:{{.ExternalID}}? They will provision fresh on next login.')">unlink</button>
+                                    </form>
+                                {{end}}
                             {{else}}<span class="text-gray-600">none</span>{{end}}
                         </div>
+
+                        <!--
+                          Keys & access (oidc-identity-permissions-design §5.5).
+                          Three operator actions the API and CLI already had and
+                          this page did not, which made "all three surfaces" true
+                          of the design and false of the build.
+                        -->
+                        <div class="flex flex-wrap items-center gap-3 border-t border-dark-700/40 pt-3">
+                            <span class="text-xs text-gray-500">Keys &amp; access:</span>
+                            <!--
+                              A PICKER, not a text box. An operator knows a key
+                              by its name ("slava/codex"); the id is opaque and
+                              §5.4 guarantees they do not hold the secret
+                              either, so the old free-text "key id" field asked
+                              for the one identifier nobody has.
+                            -->
+                            {{if $.AssignableKeys}}
+                            <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/assign-key" class="flex items-center gap-2">
+                                <select name="key_id" required
+                                        class="rounded bg-dark-800 border border-dark-600 px-2 py-1 text-xs text-gray-200 max-w-xs">
+                                    <option value="">choose a key…</option>
+                                    {{range $.AssignableKeys}}
+                                        {{/*
+                                          "unassigned" is stated, not implied
+                                          by an absent suffix: telling a
+                                          dangling key from an attributed one
+                                          was the operator's actual question,
+                                          and scanning a list for something
+                                          that ISN'T there is the hardest way
+                                          to answer it. Held keys stay in the
+                                          list so a key can be MOVED between
+                                          assignees.
+                                        */}}
+                                        <option value="{{.ID}}">{{.Project}} / {{if .Name}}{{.Name}}{{else}}(unnamed){{end}} · {{.Prefix}}…{{if .Revoked}} · revoked{{end}} — {{if .OwnedBy}}held by {{.OwnedBy}}{{else}}unassigned{{end}}</option>
+                                    {{end}}
+                                </select>
+                                <button class="text-brand-400 hover:text-brand-300 text-xs"
+                                        title="Attribute this key to this account. No secret: operator authority replaces proof of possession.">assign key</button>
+                            </form>
+                            {{else}}
+                            <span class="text-xs text-gray-600">no API keys to attribute</span>
+                            {{end}}
+                            <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/link-code" class="inline">
+                                <button class="text-brand-400 hover:text-brand-300 text-xs"
+                                        title="Issue a one-time code this person redeems from chat with /link &lt;code&gt;.">issue link code</button>
+                            </form>
+                        </div>
+                        {{if and $.IssuedCode (eq $.IssuedFor $row.UserID)}}
+                            <!--
+                              Rendered inline, never through a redirect: §5.5's
+                              "shown once" is a transport rule, and a one-time
+                              code in a URL reaches browser history, the Referer
+                              header and every access log in between.
+                            -->
+                            <div class="rounded border border-brand-500/40 bg-brand-500/5 px-3 py-2 text-xs text-gray-200">
+                                Link code for this account:
+                                <span class="font-mono text-base text-brand-300 select-all">{{$.IssuedCode}}</span>
+                                <div class="text-gray-400 mt-1">
+                                    Valid {{$.LinkCodeTTLMinutes}} minutes, single use. They redeem it from chat:
+                                    <span class="block mt-1">Telegram: /link {{$.IssuedCode}}</span>
+                                    {{range $.SlackLinkCommands}}<span class="block">Slack: {{.}} link {{$.IssuedCode}}</span>{{end}}
+                                    {{if $.SlackLinkCommands}}<span class="block mt-1">The Slack command is the one configured on this deployment
+                                    and is per-app — another Slack app answers a different one.</span>{{end}}
+                                    Only THIS instance can redeem it — a chat app pointed elsewhere answers "not valid".
+                                    Shown once, and not recoverable: only a hash is stored.
+                                </div>
+                            </div>
+                        {{end}}
 
                         <form method="post" action="/ui/operator/accounts/{{$row.UserID}}/grant" class="flex flex-wrap items-start gap-4 border-t border-dark-700/40 pt-3">
                             <fieldset class="flex items-center gap-3">

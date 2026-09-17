@@ -151,7 +151,15 @@
                 </div>
                 {{end}}
 
-                {{if not .Rows}}
+                {{if .FocusProposal}}
+                <div class="rounded-lg border border-brand-700/50 bg-brand-900/20 px-4 py-2.5 text-xs text-brand-200 mb-3">
+                    Showing one proposal · <span class="font-mono">{{.FocusProposal}}</span>
+                    <a href="/ui/admin/control-plane?section=proposals" class="text-brand-300 hover:text-brand-200 underline ml-2">view the whole inbox</a>
+                </div>
+                {{end}}
+                {{if .FocusMissing}}
+                    <div class="text-sm text-amber-300">Proposal <span class="font-mono">{{.FocusProposal}}</span> was not found. It may have been removed, or the link may be stale.</div>
+                {{else if not .Rows}}
                     <div class="text-sm text-gray-400">No proposals in this view.</div>
                 {{else}}
                 <div class="space-y-4">
@@ -233,9 +241,21 @@
                                 {{/* Healing rows drive the candidate lifecycle via
                                      the EXISTING blackbox endpoints; promote is
                                      server-side gated on trial_passed. */}}
+                                {{/* The mode is CHOSEN here, not defaulted. The button
+                                     used to post no mode, so the inbox could only ever
+                                     run a static trial — and a static pass deliberately
+                                     leaves the candidate at draft, so pressing it could
+                                     never change the status the same row displays
+                                     (report 2026-09-16). Static stays first because it
+                                     is the cheap check; replay re-runs real recorded
+                                     evidence and is the one that gates promotion. */}}
                                 {{if .CanRunTrial}}
-                                <form method="POST" action="/ui/admin/blackbox/candidates/{{.CandidateID}}/run-trial">
+                                <form method="POST" action="/ui/admin/blackbox/candidates/{{.CandidateID}}/run-trial" class="flex items-center gap-1.5">
                                     <input type="hidden" name="return_to" value="control-plane">
+                                    <select name="mode" aria-label="Trial mode" class="bg-dark-700 border border-dark-600 text-gray-300 text-[11px] rounded-md px-1.5 py-1 font-mono">
+                                        <option value="static">static — shape check</option>
+                                        <option value="replay">replay — gates promotion</option>
+                                    </select>
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-brand-600 hover:bg-brand-500 text-white">▶ Run trial</button>
                                 </form>
                                 {{end}}

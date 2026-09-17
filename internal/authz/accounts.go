@@ -27,6 +27,19 @@ type Accounts struct {
 	repo  persistence.IdentityRepository
 	audit persistence.AdminAuditRepository
 	now   func() time.Time
+	// keys is the API-key store the §5.4 claim path reads, attached by
+	// WithAPIKeys. Nil on a deployment that never maps keys to people.
+	keys persistence.APIKeyRepository
+	// linkCodes is the §5.2 channel-link store, attached by WithLinkCodes.
+	// Nil on a deployment that never links chat channels; the link methods
+	// answer ErrLinkCodesUnavailable rather than panicking.
+	linkCodes persistence.LinkCodeRepository
+	// profiles folds a redeemed speaker's operator profile onto the
+	// account (§5.2). Nil on a deployment with no profile store.
+	profiles ProfileLinker
+	// claims bounds key-claim attempts per target key across EVERY door
+	// (audit 2026-09-15 CA-09). See claim_limiter.go.
+	claims *claimLimiter
 }
 
 // Actor names who performed an account-management action, for the audit
@@ -54,7 +67,7 @@ var ErrIdentityNotOwned = errors.New("authz: that identity does not belong to th
 // NewAccounts constructs the service. audit may be nil, in which case every
 // mutation returns ErrUnauditable.
 func NewAccounts(repo persistence.IdentityRepository, audit persistence.AdminAuditRepository) *Accounts {
-	return &Accounts{repo: repo, audit: audit, now: func() time.Time { return time.Now().UTC() }}
+	return &Accounts{repo: repo, audit: audit, now: func() time.Time { return time.Now().UTC() }, claims: newClaimLimiter()}
 }
 
 // CreateRequest describes a new account.
@@ -147,25 +160,20 @@ func (a *Accounts) Unlink(ctx context.Context, userID, channel, externalID strin
 	if err := a.ready(); err != nil {
 		return err
 	}
-	views, err := a.repo.ListUsers(ctx)
-	if err != nil {
-		return fmt.Errorf("authz: unlink: %w", err)
-	}
-	owned := false
-	for _, v := range views {
-		if v.UserID != userID {
-			continue
+	// The ownership test is IN the revoke's predicate, not a separate read
+	// before it. Checking a ListUsers snapshot and then revoking by
+	// (channel, external_id) alone left a window in which an administrator's
+	// AssignKey could move the binding — after which this unlink revoked the
+	// NEW owner's binding, killed the new owner's sessions, and wrote an
+	// audit row naming the old owner (audit 2026-09-15 CA-10).
+	//
+	// A binding that is gone and a binding that is someone else's are the
+	// same refusal here, deliberately: the caller learns nothing about
+	// another account's holdings from their own unlink.
+	if err := a.repo.RevokeIdentityOwnedBy(ctx, channel, externalID, userID); err != nil {
+		if errors.Is(err, persistence.ErrIdentityNotFound) {
+			return ErrIdentityNotOwned
 		}
-		for _, idn := range v.Identities {
-			if idn.Channel == channel && idn.ExternalID == externalID {
-				owned = true
-			}
-		}
-	}
-	if !owned {
-		return ErrIdentityNotOwned
-	}
-	if err := a.repo.RevokeIdentity(ctx, channel, externalID); err != nil {
 		return fmt.Errorf("authz: unlink: %w", err)
 	}
 	return a.record(ctx, actor, "account.unlink", userID, map[string]any{"channel": channel, "external_id": externalID})

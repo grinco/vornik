@@ -44,6 +44,7 @@ var (
 	benchAgentPreRegPath         string
 	benchAgentTaskSetPath        string
 	benchAgentTaskSetFull        string
+	benchAgentTasks              string
 	benchAgentJournalPath        string
 	benchAgentRunID              string
 	benchAgentArm                string
@@ -270,6 +271,12 @@ func init() {
 		"gold manifest the grant probe scores against")
 	benchAgentRescoreCmd.Flags().StringVar(&benchAgentDatabase, "database", "",
 		"the benchmark database to READ traces from")
+	benchAgentRescoreCmd.Flags().StringVar(&benchAgentTasks, "tasks", "",
+		"the task set whose scoring policies the journal's TASK SCORES were computed "+
+			"under. Required when the journal carries task scores: a score's policy "+
+			"(producer step, verifier step, kind) lives in the task spec, not in the "+
+			"journal, so without it the release metric could only be copied forward "+
+			"unverified under a new harness stamp")
 	benchAgentGoldMergeCmd.Flags().StringVar(&benchAgentGoldPath, "out", "gold.json",
 		"where to write the merged manifest")
 	benchCmd.AddCommand(benchAgentCmd)
@@ -1460,7 +1467,14 @@ func runBenchAgentRescore(cmd *cobra.Command, args []string) error {
 	defer func() { _ = db.Close() }()
 	store := &agentbench.SQLTraceStore{DB: db, Dialect: agentbench.Postgres}
 
-	rescored, err := agentbench.Rescore(cmd.Context(), journal, store, probeSet(gold != nil), gold)
+	var tasks []agentbench.TaskSpec
+	if benchAgentTasks != "" {
+		tasks, err = loadTaskSet(benchAgentTasks)
+		if err != nil {
+			return err
+		}
+	}
+	rescored, err := agentbench.RescoreWithTasks(cmd.Context(), journal, store, probeSet(gold != nil), gold, tasks)
 	if err != nil {
 		return err
 	}
@@ -1473,8 +1487,8 @@ func runBenchAgentRescore(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write %s: %w", benchAgentJournalPath, err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-		"re-scored %d execution(s) from harness %s to %s -> %s\n",
-		len(rescored.Records), journal.Manifest.Arm.HarnessVersion,
+		"re-scored %d execution(s) and %d task score(s) from harness %s to %s -> %s\n",
+		len(rescored.Records), len(rescored.TaskScores), journal.Manifest.Arm.HarnessVersion,
 		agentbench.HarnessVersion, benchAgentJournalPath)
 	return nil
 }

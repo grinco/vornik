@@ -412,7 +412,18 @@ func hallucinatedToolFormatRule(text string, gc *GroundingContext) []Signal {
 		seen[name] = struct{}{}
 		out = append(out, NewSignal(
 			"hallucinated_tool_format",
-			SeverityHigh,
+			// Warn, not High (demoted 2026-09-17, design §4b). A
+			// malformed tool NAME is an observation about the model's
+			// tool-call syntax, not a grounded-by-construction claim
+			// about the world — the class Severity reserves High for.
+			// Blocking on it destroyed an 8m08s review that had
+			// produced its output (exec_20260916163809_287b70afe781a3b2)
+			// and no retry can teach a model to format a tool call, so
+			// the rung re-ran and returned the same name. The real
+			// failure in that run — the required output file was never
+			// written — is caught by the output contract, which can
+			// tell the two apart.
+			SeverityWarn,
 			"tool_format",
 			name,
 			"",
@@ -439,6 +450,18 @@ func hallucinatedToolFormatRule(text string, gc *GroundingContext) []Signal {
 		seen[key] = struct{}{}
 		out = append(out, NewSignal(
 			"hallucinated_tool_format",
+			// HIGH — deliberately NOT demoted with the name half above, and
+			// the same detection class is not the same blast-radius class
+			// (review-20260916-2c6c). A malformed NAME does not dispatch, so
+			// the step's output contract sees the consequence. A malformed
+			// ARGUMENT dispatches: the name parsed, the runtime ran the call,
+			// and a wrapper or tokenizer token went through as part of a
+			// value. The file IS written, the contract IS satisfied, and its
+			// content is corrupt — there is no downstream control that sees
+			// this unless the corruption happens to surface as a named
+			// artifact or a number. Blocking is blunt, but it is the only
+			// gate on that path, and the 2026-09-16 incident is evidence
+			// about names only.
 			SeverityHigh,
 			"tool_args_format",
 			token,

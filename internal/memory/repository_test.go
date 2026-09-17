@@ -140,6 +140,11 @@ func TestUpsertChunks_Happy(t *testing.T) {
 				// event_time (migration 157): these fixtures set no EventTime,
 				// so it must arrive as NULL — the fallback that keeps
 				// pre-event-time chunks behaving exactly as before.
+				nil,
+				// series_key (migration 190): likewise NULL. The partial index
+				// backing the recurring-series EXISTS is on
+				// `series_key IS NOT NULL`, so an empty string here would put
+				// every ordinary chunk into it.
 				nil).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
@@ -176,7 +181,8 @@ func TestUpsertChunks_WithDocumentProvenance(t *testing.T) {
 		WithArgs(chunk.ID, chunk.ProjectID, chunk.TaskID, chunk.ArtifactID, chunk.SourceName,
 			chunk.ChunkIndex, chunk.Content, chunk.ContentHash,
 			EmbedInputHash(chunk.SourceName, chunk.Content), &docID, &secID,
-			nil). // event_time — unset on this fixture (migration 157)
+			nil,  // event_time — unset on this fixture (migration 157)
+			nil). // series_key — an extracted document is not a recurring series
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := r.UpsertChunks(context.Background(), []MemoryChunk{chunk}); err != nil {
 		t.Fatal(err)
@@ -1036,7 +1042,11 @@ func TestHybridSearch_Happy(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery(regexp.QuoteMeta("WITH q AS")).
-		WithArgs("p", "q", 5, "[0.1,0.2]", "q").
+		// Over-fetched (§5.5): the SQL LIMIT is no longer the caller's limit,
+		// because a LIMIT applied before the recency factors exist would choose
+		// the result set without them. Expressed as the rule rather than as the
+		// number so a change to the factor shows up as a deliberate edit here.
+		WithArgs("p", "q", overFetchLimit(5, DefaultRecencyConfig()), "[0.1,0.2]", "q").
 		WillReturnRows(makeRR([]string{"c1", "c2"}, []float64{0.9, 0.5}))
 	got, err := r.HybridSearch(context.Background(), "p", []float32{0.1, 0.2}, "q", 5)
 	if err != nil || len(got) != 2 {
@@ -1137,7 +1147,7 @@ func TestHybridSearchWithEpochs_Happy(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery(regexp.QuoteMeta("epoch_id = ANY($5")).
-		WithArgs("p", "q", 5, "[1]", sqlmock.AnyArg(), nil, nil, nil, "q").
+		WithArgs("p", "q", overFetchLimit(5, DefaultRecencyConfig()), "[1]", sqlmock.AnyArg(), nil, nil, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.7}))
 	got, err := r.HybridSearchWithEpochs(context.Background(), "p", []float32{1}, "q", 5, []string{"e1"}, true, time.Time{}, time.Time{}, "", false)
 	if err != nil || len(got) != 1 {

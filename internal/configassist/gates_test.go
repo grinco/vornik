@@ -114,31 +114,47 @@ func TestGateDeclaredScope(t *testing.T) {
 	}
 }
 
-// Tests 21 (refusal half) and 29: the chat and agent doors refuse B1, C, D
-// and E by class and name the door; operator doors carry every class.
-func TestGateDoorCeiling(t *testing.T) {
-	for _, door := range []string{DoorChat, DoorAgent} {
+func TestGateWorkspaceContext(t *testing.T) {
+	if r := GateWorkspaceContext("assistant", []Op{{Op: "replace", Path: "projects/assistant/PROJECT_CONTEXT.md"}}); r != nil {
+		t.Fatalf("own workspace context must pass: %v", r)
+	}
+	if r := GateWorkspaceContext("assistant", []Op{{Op: "replace", Path: "projects/other/PROJECT_CONTEXT.md"}}); r == nil || !strings.Contains(r.Error(), "other") {
+		t.Fatalf("other project context must be refused: %v", r)
+	}
+	ops := []Op{
+		{Op: "replace", Path: "projects/assistant/PROJECT_CONTEXT.md"},
+		{Op: "replace", Path: "projects/assistant.yaml"},
+	}
+	if r := GateWorkspaceContext("assistant", ops); r == nil || !strings.Contains(r.Error(), "may not be mixed") {
+		t.Fatalf("mixed workspace/config edit must be refused: %v", r)
+	}
+}
+
+// Tests 21 (refusal half) and 29: the chat and agent entrypoints refuse B1, C, D
+// and E by class and name the entrypoint; operator entrypoints carry every class.
+func TestGateEntrypointCeiling(t *testing.T) {
+	for _, entrypoint := range []string{EntrypointChat, EntrypointAgent} {
 		for _, class := range []string{ClassB1, ClassC, ClassD, ClassE} {
-			r := GateDoorCeiling(door, class)
-			if r == nil || !strings.Contains(r.Message, door) || !strings.Contains(r.Message, "class "+class) {
-				t.Fatalf("%s/%s must be refused naming the door and class: %v", door, class, r)
+			r := GateEntrypointCeiling(entrypoint, class)
+			if r == nil || !strings.Contains(r.Message, entrypoint) || !strings.Contains(r.Message, "class "+class) {
+				t.Fatalf("%s/%s must be refused naming the entrypoint and class: %v", entrypoint, class, r)
 			}
 		}
 		for _, class := range []string{ClassA, ClassB2} {
-			if r := GateDoorCeiling(door, class); r != nil {
-				t.Fatalf("%s/%s must pass: %v", door, class, r)
+			if r := GateEntrypointCeiling(entrypoint, class); r != nil {
+				t.Fatalf("%s/%s must pass: %v", entrypoint, class, r)
 			}
 		}
 	}
-	for _, door := range []string{DoorREST, DoorCLI, DoorConsole} {
-		if r := GateDoorCeiling(door, ClassE); r != nil {
-			t.Fatalf("operator door %s must carry class E (human-approved): %v", door, r)
+	for _, entrypoint := range []string{EntrypointREST, EntrypointCLI, EntrypointConsole} {
+		if r := GateEntrypointCeiling(entrypoint, ClassE); r != nil {
+			t.Fatalf("operator entrypoint %s must carry class E (human-approved): %v", entrypoint, r)
 		}
-		if !MayAutoApply(door) {
-			t.Fatalf("%s may auto-apply (A/B with opt-in)", door)
+		if !MayAutoApply(entrypoint) {
+			t.Fatalf("%s may auto-apply (A/B with opt-in)", entrypoint)
 		}
 	}
-	if MayAutoApply(DoorChat) || MayAutoApply(DoorAgent) {
-		t.Fatal("raising doors never auto-apply")
+	if MayAutoApply(EntrypointChat) || MayAutoApply(EntrypointAgent) {
+		t.Fatal("raising entrypoints never auto-apply")
 	}
 }

@@ -1524,11 +1524,15 @@ func (te *ToolExecutor) listArtifacts(ctx context.Context, argsJSON string, allo
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Found %d artifact(s) for task %s:\n", len(artifacts), args.TaskID)
+	fmt.Fprintf(&sb, "Found %d artifact(s) for task %s, newest first:\n", len(artifacts), args.TaskID)
 	for i, a := range artifacts {
-		line := fmt.Sprintf("%d. %s (%s)", i+1, a.Name, a.ArtifactClass)
+		// WHEN, always. A name is not a date: a digest filed under
+		// czech-news-20260905.md sits beside today's and the model has no way
+		// to rank them, which is how an 11-day-old news digest was summarised
+		// as "what's in the news today" (2026-09-16 stale-news incident).
+		line := fmt.Sprintf("%d. %s (%s) — produced %s", i+1, a.Name, a.ArtifactClass, artifactAge(a.CreatedAt))
 		if a.SizeBytes != nil {
-			line += fmt.Sprintf(" — %d bytes", *a.SizeBytes)
+			line += fmt.Sprintf(", %d bytes", *a.SizeBytes)
 		}
 		if a.ExecutionID != nil {
 			line += fmt.Sprintf(" [exec: %s]", *a.ExecutionID)
@@ -2027,8 +2031,8 @@ func (te *ToolExecutor) readArtifact(ctx context.Context, argsJSON string, allow
 	}
 	// Artifact bodies are agent-authored or scraped; wrap as untrusted.
 	var b strings.Builder
-	fmt.Fprintf(&b, "Artifact %s (%d bytes total) for task %s:\n\n",
-		target.Name, totalBytes, args.TaskID)
+	fmt.Fprintf(&b, "Artifact %s, produced %s (%d bytes total) for task %s:\n\n",
+		target.Name, artifactAge(target.CreatedAt), totalBytes, args.TaskID)
 	b.WriteString(untrusted.WrapLabeled("artifact_"+target.Name, string(data)))
 	if truncated {
 		fmt.Fprintf(&b, "\n\n(truncated to first %d bytes — use send_artifact to deliver the full file to the user)",
@@ -2804,4 +2808,30 @@ func truncatePrompt(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// artifactAge renders when an artifact was produced, as an absolute date AND
+// a relative age.
+//
+// Both, deliberately. The absolute date is what a reader cites; the relative
+// age is what makes "11 days ago" impossible to skim past. An artifact's
+// NAME is not its date — a digest filed under czech-news-20260905.md looks
+// exactly like a current one in a list — and the 2026-09-16 stale-news
+// incident was a model summarising 11-day-old headlines as today's because
+// every surface that showed it the content hid when the content was made.
+func artifactAge(t time.Time) string {
+	if t.IsZero() {
+		return "at an unrecorded time"
+	}
+	d := time.Since(t)
+	switch {
+	case d < 0:
+		return t.UTC().Format("2006-01-02 15:04Z") + " (clock skew: timestamped in the future)"
+	case d < time.Hour:
+		return fmt.Sprintf("%s (%d min ago)", t.UTC().Format("2006-01-02 15:04Z"), int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%s (%dh ago)", t.UTC().Format("2006-01-02 15:04Z"), int(d.Hours()))
+	default:
+		return fmt.Sprintf("%s (%d days ago)", t.UTC().Format("2006-01-02 15:04Z"), int(d.Hours()/24))
+	}
 }

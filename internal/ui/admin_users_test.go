@@ -30,6 +30,8 @@ type stubUsersIdentityRepo struct {
 		off    bool
 	}
 	revoked []struct{ channel, externalID string }
+	// rebound records admin-authority repoints (§5.4 AssignKey).
+	rebound []persistence.UserIdentity
 	created []persistence.User
 
 	setAccessErr error
@@ -73,6 +75,27 @@ func (s *stubUsersIdentityRepo) SetUserDisabled(_ context.Context, userID string
 func (s *stubUsersIdentityRepo) RevokeIdentity(_ context.Context, channel, externalID string) error {
 	s.revoked = append(s.revoked, struct{ channel, externalID string }{channel, externalID})
 	return nil
+}
+
+// RevokeIdentityOwnedBy is the atomic owner-qualified revoke self-unlink uses
+// (audit 2026-09-15 CA-10). The stub honours the owner predicate against the
+// fixture's views, so a test cannot pass here and fail against a real driver.
+func (s *stubUsersIdentityRepo) RevokeIdentityOwnedBy(ctx context.Context, channel, externalID, expectedUserID string) error {
+	views, err := s.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, v := range views {
+		if v.UserID != expectedUserID {
+			continue
+		}
+		for _, idn := range v.Identities {
+			if idn.Channel == channel && idn.ExternalID == externalID {
+				return s.RevokeIdentity(ctx, channel, externalID)
+			}
+		}
+	}
+	return persistence.ErrIdentityNotFound
 }
 
 func usersServer(repo *stubUsersIdentityRepo, audit *stubAdminAuditRepo) *Server {
@@ -356,13 +379,27 @@ func TestAdminLanding_NoCalloutWhenNoneAwaiting(t *testing.T) {
 	}
 }
 
-func TestAdminUsers_RouterDispatchesList(t *testing.T) {
+// TestAdminUsers_ListRedirectsToTheCanonicalSurface — /ui/admin/users used to
+// render its own account list. It now 302s to /ui/operator/accounts, which
+// shows the same accounts with MORE actions (create, assign-key,
+// unassign-key, issue-link-code) and works in Community, where /ui/admin/*
+// answers 501. An operator reported the two pages as indistinguishable; they
+// were, and this was the lesser one.
+//
+// Redirect rather than delete, so a bookmark still lands somewhere useful —
+// the same posture as the /ui/mcp and /integrations/mcp dedupes.
+func TestAdminUsers_ListRedirectsToTheCanonicalSurface(t *testing.T) {
 	repo := &stubUsersIdentityRepo{users: twoUserFixture()}
 	s := usersServer(repo, &stubAdminAuditRepo{})
-	rec := httptest.NewRecorder()
-	s.adminRouter(rec, withAdminUI(httptest.NewRequest(http.MethodGet, "/admin/users", nil)))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "@janka-lang") {
-		t.Fatalf("router did not dispatch /admin/users (code=%d)", rec.Code)
+	for _, path := range []string{"/admin/users", "/admin/users/"} {
+		rec := httptest.NewRecorder()
+		s.adminRouter(rec, withAdminUI(httptest.NewRequest(http.MethodGet, path, nil)))
+		if rec.Code != http.StatusFound {
+			t.Errorf("%s: code = %d, want 302", path, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/ui/operator/accounts" {
+			t.Errorf("%s: Location = %q, want /ui/operator/accounts", path, loc)
+		}
 	}
 }
 
@@ -397,4 +434,13 @@ func TestAdminUsers_Regression_JankaApprovedIntoProject(t *testing.T) {
 		repo.setAccess[0].role != "user" || repo.setAccess[0].projects[0] != "janka" {
 		t.Fatalf("janka not granted into project janka: %+v", repo.setAccess)
 	}
+}
+
+// RebindIdentity is the admin-authority repoint AssignKey uses. Recorded
+// rather than ignored: the finding that produced this method was a bind that
+// wrote nothing and reported success, so a double that accepted silently
+// would reproduce exactly the blindness that hid it.
+func (s *stubUsersIdentityRepo) RebindIdentity(_ context.Context, id *persistence.UserIdentity) error {
+	s.rebound = append(s.rebound, *id)
+	return nil
 }

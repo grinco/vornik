@@ -29,23 +29,28 @@ func (r *Refusal) Error() string {
 
 // Refusal codes.
 const (
-	RefusePaused          = "ASSISTANT_PAUSED"
-	RefuseSubjectDisabled = "ASSISTANT_SUBJECT_DISABLED"
-	RefuseClassDisabled   = "ASSISTANT_CLASS_DISABLED"
-	RefuseSecretHygiene   = "CONFIG_SECRET_HYGIENE"
-	RefuseSchema          = "CONFIG_SCHEMA"
-	RefuseSkew            = "CONFIG_VERSION_SKEW"
-	RefuseDiffScope       = "DIFF_OUT_OF_SCOPE"
-	RefuseDoorCeiling     = "DOOR_CLASS_CEILING"
-	RefuseClassECap       = "CLASS_E_DAILY_CAP"
-	RefuseOutputCap       = "MAX_OUTPUT_BYTES"
-	RefuseTurnCap         = "MAX_TOOL_TURNS"
-	RefuseNoChange        = "NO_CHANGE"
-	RefusePlaceholder     = "SECRET_PLACEHOLDER_TAMPERED"
-	RefuseIdentity        = "IDENTITY_UNAVAILABLE"
-	RefuseBudget          = "BUDGET"
-	RefuseModelFamily     = "JUDGE_SAME_FAMILY"
-	RefuseAdmission       = "ADMISSION"
+	RefusePaused            = "ASSISTANT_PAUSED"
+	RefuseSubjectDisabled   = "ASSISTANT_SUBJECT_DISABLED"
+	RefuseClassDisabled     = "ASSISTANT_CLASS_DISABLED"
+	RefuseSecretHygiene     = "CONFIG_SECRET_HYGIENE"
+	RefuseSchema            = "CONFIG_SCHEMA"
+	RefuseSkew              = "CONFIG_VERSION_SKEW"
+	RefuseDiffScope         = "DIFF_OUT_OF_SCOPE"
+	RefuseEntrypointCeiling = "ENTRYPOINT_CLASS_CEILING"
+	RefuseClassECap         = "CLASS_E_DAILY_CAP"
+	RefuseOutputCap         = "MAX_OUTPUT_BYTES"
+	RefuseTurnCap           = "MAX_TOOL_TURNS"
+	RefuseNoChange          = "NO_CHANGE"
+	RefusePlaceholder       = "SECRET_PLACEHOLDER_TAMPERED"
+	RefuseIdentity          = "IDENTITY_UNAVAILABLE"
+	RefuseBudget            = "BUDGET"
+	RefuseModelFamily       = "JUDGE_SAME_FAMILY"
+	RefuseAdmission         = "ADMISSION"
+	// RefuseIdempotencyConflict is returned when an idempotency key that
+	// already names a filed proposal is presented with a DIFFERENT request
+	// (audit 2026-09-15 CA-16). Replaying the stored proposal would answer
+	// a question the caller did not ask.
+	RefuseIdempotencyConflict = "IDEMPOTENCY_KEY_CONFLICT"
 )
 
 // Gate results are refusals; nil means the bundle passed every
@@ -72,6 +77,32 @@ func GateDeclaredScope(declared []string, ops []Op, ignoredDeletions []string) *
 	}
 	sort.Strings(out)
 	return &Refusal{Code: RefuseDiffScope, Message: "the edit touched files outside the declared plan", Findings: out}
+}
+
+// GateWorkspaceContext keeps the virtual workspace context bridge narrow:
+// it may touch only this project's PROJECT_CONTEXT.md, and it may not be
+// mixed with config-tree edits until a transactional cross-root apply design
+// exists.
+func GateWorkspaceContext(projectID string, ops []Op) *Refusal {
+	workspaceTouches := 0
+	var findings []string
+	for _, op := range ops {
+		if isWorkspaceVirtualPath(projectID, op.Path) {
+			workspaceTouches++
+			continue
+		}
+		if strings.HasSuffix(op.Path, "/PROJECT_CONTEXT.md") {
+			findings = append(findings, op.Path+" is not the workspace context file for project "+projectID)
+		}
+	}
+	if workspaceTouches > 0 && workspaceTouches != len(ops) {
+		findings = append(findings, "workspace PROJECT_CONTEXT.md edits may not be mixed with config-tree edits")
+	}
+	if len(findings) == 0 {
+		return nil
+	}
+	sort.Strings(findings)
+	return &Refusal{Code: RefuseDiffScope, Message: "the edit touched files outside the workspace context bridge contract", Findings: findings}
 }
 
 // GateSchemas runs the loader's own validators over every op (design §5
@@ -163,16 +194,16 @@ func feedsFindings(op Op) []string {
 	return out
 }
 
-// GateDoorCeiling is design §6.3: chat and agent doors carry classes A and
-// B2 only; a request through a raising door that resolves to B1, C, D or E
-// is refused with the by-hand remedy, naming the class and the door
+// GateEntrypointCeiling is design §6.3: chat and agent entrypoints carry classes A and
+// B2 only; a request through a raising entrypoint that resolves to B1, C, D or E
+// is refused with the by-hand remedy, naming the class and the entrypoint
 // (tests 21, 29).
-func GateDoorCeiling(door, class string) *Refusal {
-	if door != DoorChat && door != DoorAgent {
+func GateEntrypointCeiling(entrypoint, class string) *Refusal {
+	if entrypoint != EntrypointChat && entrypoint != EntrypointAgent {
 		return nil
 	}
 	if class == ClassA || class == ClassB2 {
 		return nil
 	}
-	return &Refusal{Code: RefuseDoorCeiling, Message: fmt.Sprintf("class %s is not available through the %s door (it carries classes A and B2 only); make this change through the operator REST/CLI or console door, or by hand", class, door)}
+	return &Refusal{Code: RefuseEntrypointCeiling, Message: fmt.Sprintf("class %s is not available through the %s entrypoint (it carries classes A and B2 only); make this change through the operator REST/CLI or console entrypoint, or by hand", class, entrypoint)}
 }

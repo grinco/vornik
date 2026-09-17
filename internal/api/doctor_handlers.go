@@ -558,6 +558,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkAPISecurityPosture())
 	report.Checks = append(report.Checks, h.checkAPIKeyStrength())
 	report.Checks = append(report.Checks, h.checkPricingCoverage())
+	report.Checks = append(report.Checks, h.checkPricingDrift())
 	report.Checks = append(report.Checks, h.checkAutonomyBudgetGuard())
 	report.Checks = append(report.Checks, h.checkBudgetUtilisation(ctx))
 	report.Checks = append(report.Checks, h.checkOrphanWorktrees(fix))

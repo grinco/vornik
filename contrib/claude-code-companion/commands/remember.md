@@ -22,7 +22,8 @@ Optional leading flags, then the note body:
 
 User's arguments: `$ARGUMENTS`
 
-!`ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-remember-args.XXXXXX")"
+```!
+ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-remember-args.XXXXXX")"
 trap 'rm -f "$ARGS_FILE"' EXIT
 cat >"$ARGS_FILE" <<'VORNIK_REMEMBER_ARGS_EOF'
 $ARGUMENTS
@@ -128,7 +129,7 @@ if gf:
 scope_msg = f" (repo_scope={repo_scope!r})" if repo_scope else " (no repo_scope)"
 print(f"stored {len(content):,}-char note{scope_msg}.")
 PYEOF
-`
+```
 
 Branch on the `decision` line printed above:
 

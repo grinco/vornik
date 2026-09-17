@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 854053bfbde1841f46e29ddbb551ab2ed5204bbb3dcf11949ce4e800fbf30781
+      sha256: bbc4f025974e150a5a4c0e6873347dd6036a765466ca3a77cef63cc315e15976
 ---
 # Release Notes
 
@@ -14,6 +14,42 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.9.5
+
+**Your memory knows what is current.** Retrieval now ranks by freshness, and a
+recurring series supersedes its own older members — so a daily digest answers
+today's question instead of yesterday's. The decay half-life is read per row,
+which lets one store hold fast-moving news beside reference material that never
+goes stale. Nothing is filtered out; freshness is a ranking signal. Existing
+rows are untouched: absent series membership means "not part of a series",
+which is what everything written before this release is.
+
+**Self-hosted inference stops being billed at a made-up rate.** If you run a
+model through vLLM or a LiteLLM proxy, its cost metrics were almost certainly
+wrong — an unpriced model falls through to a default rate, and the table
+carried no prompt-cache tier at all. On our own benchmark that was a 7.3×
+overstatement: $40.51 recorded against $7.12 actually billed. Both the proxy
+and direct spellings of a model are priced now, because lookup is exact-match.
+
+**A new doctor check, `pricing_drift`,** reports prices that disagree with a
+pinned snapshot of LiteLLM's published table. It reports and never applies —
+your operator-verified rate is often the better one — and it tells you how many
+prices it could actually compare rather than implying it checked them all.
+`vornikctl pricing sync-upstream` refreshes the snapshot and prints the diff.
+Nothing fetches at runtime: prices drive budget enforcement.
+
+**Fixes you may have hit.** Telegram commands did nothing in group chats
+(`/cmd@botname` never dispatched), and everyone in a group was treated as the
+same speaker. An agent path that lost its leading slash resolved nowhere. A
+backtick in an `/upload` prompt aborted the upload silently, with no error and
+no task id.
+
+**Restart required for pricing changes.** `vornikctl config reload` reports
+success on a `pricing.yaml` change it does not apply — the table is read once
+at startup. Restart the daemon after editing rates.
 
 ---
 

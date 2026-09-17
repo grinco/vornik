@@ -268,6 +268,11 @@ type Metrics struct {
 	//     completed_steps), "error" (load/persist/relaunch failure).
 	// LLD: https://docs.vornik.io §3.1.2.
 	RetryFromStepTotal *prometheus.CounterVec
+	// SkillDistillSkippedTotal counts auto-proposed skill drafts suppressed by
+	// the near-duplicate gate, labelled by the reason that matched. The rate
+	// is the operator's signal that the gate is doing work rather than that
+	// the distiller has gone quiet.
+	SkillDistillSkippedTotal *prometheus.CounterVec
 
 	// RetryFromStepSideEffectingUpstreamTotal counts retry-from-step
 	// attempts where at least one PRESERVED upstream step had external
@@ -729,6 +734,14 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 			},
 			[]string{"project", "file"},
 		),
+		SkillDistillSkippedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Name:      "skill_distill_skipped_total",
+				Help:      "Auto-proposed skill drafts suppressed as near-duplicates, by match reason.",
+			},
+			[]string{"reason"},
+		),
 		RetryFromStepTotal: promauto.With(registerer).NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "vornik",
@@ -813,6 +826,16 @@ func (m *Metrics) RecordIngestSkippedProducerFailed(projectID, status string) {
 // attempt. result ∈ {succeeded, refused_bad_state, refused_unknown_step,
 // error}. Nil-safe so executors constructed without metrics (tests) are
 // a no-op.
+// RecordSkillDistillSkipped counts drafts the near-duplicate gate suppressed,
+// by the reason that matched. Without it, "the gate is working" and "the
+// distiller stopped proposing" look identical from outside.
+func (m *Metrics) RecordSkillDistillSkipped(reason string) {
+	if m == nil || m.SkillDistillSkippedTotal == nil {
+		return
+	}
+	m.SkillDistillSkippedTotal.WithLabelValues(reason).Inc()
+}
+
 func (m *Metrics) RecordRetryFromStep(result string) {
 	if m == nil {
 		return

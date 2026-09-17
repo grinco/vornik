@@ -141,25 +141,105 @@ statement about that ability, not about retrieval.
 
 **Reproduce:**
 
+The harness reads its target and credentials from the ENVIRONMENT, and the three
+variables below are not optional — a run without them either refuses or, worse,
+aims somewhere you did not intend. `VORNIK_URL` and `VORNIK_COMPANION_TOKEN` are
+what the *harness* reads; `vornikctl`'s own `VORNIK_API_URL` / `VORNIK_API_KEY`
+are a different pair and setting only those points the run at
+`http://localhost:8080` — which on a single-host deployment is **production**.
+The database guard is what catches that, and it is the last line of defence, not
+the first.
+
 ```bash
+# The daemon under test. NOT the production one: this run bulk-writes and
+# clears the store. Mint the token against that same daemon:
+#   VORNIK_API_URL=<daemon> vornikctl companion grant \
+#       --project bench --client claude-code --memory-all
+export VORNIK_URL=<your-bench-daemon>
+export VORNIK_COMPANION_TOKEN=<companion key with memory_read + memory_write>
+export VORNIK_BENCH_DSN=postgres://<user>:<pass>@<host>:5432/<your-bench-db>?sslmode=disable
+
 curl -sLO https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
 vornikctl bench memory run --system vornik --dataset longmemeval \
     --dataset-path ./longmemeval_oracle.json \
     --dataset-sha256 821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c \
     --database <your-bench-db> --i-know-this-wipes <your-bench-db> \
     --tier2-only --accept-unverified-path \
+    --our-extraction-model "<the embedder the daemon reports>" \
+    --recall-method context-assembly \
     --max-items-per-category 20 --max-tokens 4096 \
     --run-dir ./run-$i          # repeat for i in 1 2 3
 vornikctl bench memory aggregate ./run-*
 ```
 
+`--our-extraction-model` must match what the system reports it is embedding
+with, or the run is refused: *"a number labelled with a model that did not
+produce it is worse than no number"*. Read the value from the daemon rather than
+typing one — `whoami` reports it as `embedder`, and the id the key uses is
+`<provider>/<model>@<dimensions>d`, e.g. `openai/qwen3-embedding:0.6b@1024d`.
+Leaving it unset, or naming a model the daemon is not using, is what made the
+2026-09-08 run's key partial.
+
 **Dataset:** as above. **Budget:** `max_tokens=4096`. **Judge:** none — tier 2 is
 judge-free. **Corpus:** cold; the harness clears the store before each run.
+
+**The deployment under test must have `memory.reranker.enabled: false`.**
+`--tier2-only` stops *requesting* the reranked path but cannot disable it, and it
+refuses the run if recall reports a rerank happened. An LLM reranker is billed
+per call and reorders between identical runs, so leaving it on is the difference
+between a deterministic gate and one that fires on noise.
 
 | Release | Items | Abilities | Context recall | Context precision | MRR | Runs | Key |
 |---|---|---|---|---|---|---|---|
 | `2026.8.8-40-g2698eb67` | 120 | all 6 | 0.9900 ±0.0036 | 0.9854 ±0.0000 | 0.9958 ±0.0000 | n=3 | `93a6e7a0729b` |
 | `2026.8.9-50-g4b343821` | 120 | all 6 | 0.9891 ±0.0036 | 0.9854 ±0.0000 | 0.9958 ±0.0000 | n=3 | `93a6e7a0729b` |
+| `2026.9.4-205-g97fb8b36e` | 120 | all 6 | 0.9851 ±0.0000 | 0.9854 ±0.0000 | 0.9958 ±0.0000 | n=3 | `28fd464fb163` |
+| `2026.9.4-207-g61634a063` | 120 | all 6 | 0.9851 ±0.0000 | 0.9854 ±0.0000 | 0.9958 ±0.0000 | n=3 | `ed7ea84021e0` |
+
+**The fourth row is the build that shipped**, re-measured on the binary actually
+installed in production (`2026.9.4-207-g61634a063`) rather than on a
+development build. Every metric is identical to the row above it, to four
+decimal places — and the key nevertheless CHANGED, from `28fd464fb163` to
+`ed7ea84021e0`, because `daemon_revision` moved from `-205-…-dirty` to `-207-…`.
+That is the repaired key doing its job: two runs of the same code on different
+builds are no longer allowed to look like one measurement. Before 2026-09-17
+these two rows would have shared a key.
+
+**The third row is the first with a COMPLETE comparability key, and it is
+deliberately not comparable to the two above it.** Until 2026-09-17 two of the
+key's fields — `observed_embedder` and `daemon_revision` — were empty on every
+run ever made (harness design §13.25), so the key could not distinguish one
+build, or one embedding model, from another. That is why rows one and two share
+`93a6e7a0729b` despite being different releases. Both fields are now populated,
+which necessarily changes the key: `28fd464fb163` starts a new comparable set
+rather than extending the old one. `compare` will refuse to diff across that
+boundary, correctly.
+
+**What the numbers say anyway.** Precision and MRR are bit-identical to both
+earlier rows. Recall is 0.9851, **−0.0040** against the last published row —
+about a third of that row's own 3σ threshold of ±0.0107, so nothing here
+resembles a regression.
+
+**Two caveats that stop this being a clean release-over-release claim, stated
+rather than left for a reader to infer:**
+
+- **The ingest regime differed.** The self-hosted vLLM arm is down, so this run
+  had no LLM extraction model and the stored corpus is produced deterministically
+  by the embedder alone. That is visible in the spread: every metric has
+  **sd = 0.0000** here against ±0.0036 for both earlier rows, whose variance the
+  2026-08-21 note attributes to LLM-driven ingest differing per run. A −0.0040
+  recall difference and a collapsed spread have a common candidate cause, and
+  this measurement cannot separate "the corpus was built differently" from "the
+  code changed".
+- **`retrieval_path_unverified` is set**, because the run passed
+  `--accept-unverified-path`. The reranker was disabled on the deployment under
+  test (`memory.reranker.enabled: false`) as `--tier2-only` requires — its model
+  is the same unreachable vLLM — so the path exercised was plain
+  `context-assembly`.
+
+Re-measuring against a live extraction model is what would turn this into a
+comparable row; it is blocked on the benchmark arm's model endpoint, not on
+anything in the harness.
 
 **The second row is the first release-over-release comparison this table can
 actually support**, and it shows no regression. Precision and MRR are identical to

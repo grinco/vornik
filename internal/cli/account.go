@@ -8,7 +8,8 @@ package cli
 // refused with OPERATOR_CAPABILITY_REQUIRED.
 //
 // This is the CE bootstrap path for humans: an admin-keyed operator
-// creates the account, the person links a channel with `/account link`,
+// creates the account, the person links a channel with `/link <code>`
+// (Telegram) or `/vornik link <code>` (Slack),
 // and from then on every door resolves them to the same account.
 
 import (
@@ -44,7 +45,8 @@ var (
 		Long: `Accounts are what every door resolves to: a web session, a linked
 Telegram or Slack sender, an owned API key. Create one here, grant it
 'user' access scoped to projects or instance-wide 'admin', and link
-channels with '/account link <code>' in the chat. Revoking an account
+channels by issuing a link code here and redeeming it from the chat:
+'/link <code>' on Telegram, '/vornik link <code>' on Slack. Revoking an account
 revokes every door at once; disabling it does so immediately.
 
 Needs an explicit operator capability: an API key listed in

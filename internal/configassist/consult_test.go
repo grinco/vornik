@@ -79,7 +79,7 @@ func (a *fakeAudit) actions() []string {
 }
 
 func newConsultant(peer Peer, audit ConsultAudit) *Consultant {
-	return &Consultant{Peer: peer, Audit: audit, Actor: Actor{Principal: "api_key_id:k"}, Req: Request{RequestID: "req1", ProjectID: "assistant", Door: DoorREST},
+	return &Consultant{Peer: peer, Audit: audit, Actor: Actor{Principal: "api_key_id:k"}, Req: Request{RequestID: "req1", ProjectID: "assistant", Entrypoint: EntrypointREST},
 		Cfg: ConsultConfig{Enabled: true, PeerName: "vornik_architect", MaxQuestionBytes: 200, MaxAnswerBytes: 1000, Timeout: time.Second},
 		Now: func() time.Time { return time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC) }}
 }

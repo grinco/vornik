@@ -44,14 +44,14 @@ func RunProposalSuite(t *testing.T, repo persistence.ProposalRepository) {
 func proposalIdentifiersRoundTrip(t *testing.T, repo persistence.ProposalRepository) {
 	ctx := context.Background()
 	p := newTestProposal(uniqueID("ident"), "p1")
-	p.RequestID, p.IdempotencyKey, p.Door = "req-42", uniqueID("idem"), "console"
+	p.RequestID, p.IdempotencyKey, p.Entrypoint = "req-42", uniqueID("idem"), "console"
 	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = "user", "acct-7", "key-9"
 	mustCreateProposal(t, repo, p)
 	got, err := repo.GetByID(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if got.RequestID != "req-42" || got.IdempotencyKey != p.IdempotencyKey || got.Door != "console" ||
+	if got.RequestID != "req-42" || got.IdempotencyKey != p.IdempotencyKey || got.Entrypoint != "console" ||
 		got.ActorKind != "user" || got.ActorAccountID != "acct-7" || got.ActorCredentialID != "key-9" {
 		t.Fatalf("identifier columns did not round-trip: %+v", got)
 	}
@@ -71,7 +71,7 @@ func proposalIdentifiersLegacyNull(t *testing.T, repo persistence.ProposalReposi
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
-	if got.RequestID != "" || got.IdempotencyKey != "" || got.Door != "" ||
+	if got.RequestID != "" || got.IdempotencyKey != "" || got.Entrypoint != "" ||
 		got.ActorKind != "" || got.ActorAccountID != "" || got.ActorCredentialID != "" {
 		t.Fatalf("legacy row must read back with empty identifiers: %+v", got)
 	}

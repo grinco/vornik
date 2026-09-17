@@ -86,7 +86,17 @@ func TestScoreExecution_InvalidContractsFailClosed(t *testing.T) {
 		cases    []PinnedCaseEvidence
 		wantDiag string
 	}{
-		{"unknown id", []string{"a"}, 1, []PinnedCaseEvidence{{ID: "other", Status: "passed"}}, DiagnosticUnknownCaseID},
+		// "unknown id" MOVED OUT of this fail-closed table 2026-09-17, on the
+		// same principle as "count mismatch" below: an id the analyst did not
+		// pin voids nothing the pinned ids already answer. Measured on the
+		// 2026.9.4 arm — dp-01-nilguard reported all 14 pinned cases as passed
+		// PLUS three of its own, and scored 0.000, identically to a run that
+		// validated nothing. Extras are now ignored for the score, counted in
+		// ExtraCaseCount and recorded as a soft diagnostic; see
+		// TestScoreExecution_ExtraCasesDoNotVoidTheReport. A wholly disjoint id
+		// set still scores zero, because it validated no pinned case — that is
+		// TestScoreExecution_DisjointIDsStillScoreZero. Everything else here
+		// stays fatal.
 		{"unknown status", []string{"a"}, 1, []PinnedCaseEvidence{{ID: "a", Status: "skipped"}}, DiagnosticUnknownCaseStatus},
 		{"duplicate analyst id", []string{"a", "a"}, 2, []PinnedCaseEvidence{{ID: "a", Status: "passed"}}, DiagnosticDuplicateAnalystCaseID},
 		// "count mismatch" MOVED OUT of this fail-closed table 2026-08-19. It is

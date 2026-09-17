@@ -32,14 +32,6 @@ type WorkflowRollbackerUI interface {
 	Rollback(ctx context.Context, proposalID, revertedBy string) (*persistence.WorkflowProposal, error)
 }
 
-// MemeticArchitectUI is the narrow contract behind the "Generate
-// candidate" button on the workflow-healing trigger detail page.
-// *memetic.Architect satisfies it via a one-line adapter in the
-// service container so the ui package doesn't import internal/memetic.
-type MemeticArchitectUI interface {
-	Propose(ctx context.Context, workflowID string) (*persistence.WorkflowProposal, error)
-}
-
 // AdminWorkflowProposalDetailData backs the drill-down page
 // /ui/admin/workflow-proposals/{id}.
 type AdminWorkflowProposalDetailData struct {

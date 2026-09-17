@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -243,13 +244,36 @@ func (m *memProposals) GetByID(_ context.Context, id string) (*persistence.Contr
 	}
 	return nil, persistence.ErrNotFound
 }
-func (m *memProposals) List(_ context.Context, _ persistence.ProposalListFilter) ([]*persistence.ControlPlaneProposal, error) {
+
+// List honours Limit the way both real drivers do — newest first, capped.
+// A double that ignored the cap hid audit finding CA-17 (2026-09-15): the
+// class-E counter read one page of the ledger and called it the whole day.
+func (m *memProposals) List(_ context.Context, f persistence.ProposalListFilter) ([]*persistence.ControlPlaneProposal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*persistence.ControlPlaneProposal
 	for _, p := range m.rows {
+		if f.ProjectID != "" && p.ProjectID != f.ProjectID {
+			continue
+		}
+		if f.ProposedBy != "" && p.ProposedBy != f.ProposedBy {
+			continue
+		}
+		if f.ActorCredentialID != "" && p.ActorCredentialID != f.ActorCredentialID {
+			continue
+		}
+		if !f.CreatedFrom.IsZero() && p.CreatedAt.Before(f.CreatedFrom) {
+			continue
+		}
+		if !f.CreatedTo.IsZero() && !p.CreatedAt.Before(f.CreatedTo) {
+			continue
+		}
 		cp := *p
 		out = append(out, &cp)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
 	}
 	return out, nil
 }
@@ -286,7 +310,7 @@ func (a *memApplier) Apply(_ context.Context, id, _ string, _ bool) error {
 }
 
 func operatorReq(intent string) Request {
-	return Request{ProjectID: "assistant", Intent: intent, Door: DoorREST, Actor: Actor{Kind: "credential", CredentialID: "key_1", Principal: "api_key_id:key_1"}}
+	return Request{ProjectID: "assistant", Intent: intent, Entrypoint: EntrypointREST, Actor: Actor{Kind: "credential", CredentialID: "key_1", Principal: "api_key_id:key_1"}}
 }
 
 // ---- tests ----------------------------------------------------------------
@@ -341,7 +365,7 @@ func TestPropose_ClassA_FilesProposalAndAutoAppliesWithOptIn(t *testing.T) {
 	if res.AutoApplied || len(f.applier.applied) != 0 {
 		t.Fatal("no opt-in → no auto-apply")
 	}
-	if res.Proposal.Door != DoorREST || res.Proposal.ActorCredentialID != "key_1" || res.Proposal.RequestID == "" {
+	if res.Proposal.Entrypoint != EntrypointREST || res.Proposal.ActorCredentialID != "key_1" || res.Proposal.RequestID == "" {
 		t.Fatalf("ledger identifiers: %+v", res.Proposal)
 	}
 
@@ -360,6 +384,58 @@ func TestPropose_ClassA_FilesProposalAndAutoAppliesWithOptIn(t *testing.T) {
 	p, _ := f2.store.GetByID(context.Background(), res.Proposal.ID)
 	if p.Status != persistence.ProposalStatusApproved || p.Approver != AutoApplyActor {
 		t.Fatalf("auto-approve must be recorded: %+v", p)
+	}
+}
+
+func TestPropose_WorkspaceProjectContextFilesManagedProposal(t *testing.T) {
+	f := newFixture(t)
+	ws := t.TempDir()
+	ctxPath := filepath.Join(ws, "assistant", ".autonomy", "PROJECT_CONTEXT.md")
+	if err := os.MkdirAll(filepath.Dir(ctxPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ctxPath, []byte("# Context\n- old failing news source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.engine.WorkspaceRoot = ws
+	f.scriptEdit("projects/assistant/PROJECT_CONTEXT.md", "old failing news source", "replacement working news source")
+	f.scriptJudge("pass", "replacement working news source")
+
+	res, err := f.engine.Propose(context.Background(), operatorReq("replace the failing news source guidance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Refusal != nil {
+		t.Fatalf("unexpected refusal: %v", res.Refusal)
+	}
+	if res.Class != ClassB2 {
+		t.Fatalf("class = %s (%v), want B2", res.Class, res.Touches)
+	}
+	if res.Proposal == nil || res.Proposal.Kind != persistence.ProposalKindWorkspaceContext {
+		t.Fatalf("proposal kind = %+v", res.Proposal)
+	}
+	var ops []Op
+	if err := json.Unmarshal([]byte(res.Proposal.ApplyOps), &ops); err != nil || len(ops) != 1 {
+		t.Fatalf("apply ops = %s (%v)", res.Proposal.ApplyOps, err)
+	}
+	if ops[0].Path != "workspace/assistant/.autonomy/PROJECT_CONTEXT.md" || !strings.Contains(ops[0].Content, "replacement working news source") {
+		t.Fatalf("workspace op = %+v", ops[0])
+	}
+	var ev EvidenceRecord
+	if err := json.Unmarshal([]byte(res.Proposal.Evidence), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.ReadSet["workspace/assistant/.autonomy/PROJECT_CONTEXT.md"] == "" {
+		t.Fatalf("workspace context must carry stale-base hash in read set: %+v", ev.ReadSet)
+	}
+	if strings.Contains(res.Diff, ws) {
+		t.Fatalf("diff leaked host workspace root: %s", res.Diff)
+	}
+}
+
+func TestWorkspaceContextPathRejectsTraversal(t *testing.T) {
+	if _, err := workspaceContextPath(t.TempDir(), "../outside"); err == nil {
+		t.Fatal("workspace context path must reject project-id traversal")
 	}
 }
 
@@ -550,7 +626,7 @@ func TestPropose_OutputCapRefuses(t *testing.T) {
 	}
 }
 
-// Tests 5, 19, 20, 24, 36: class E on an operator door is filed for HUMAN
+// Tests 5, 19, 20, 24, 36: class E on an operator entrypoint is filed for HUMAN
 // approval with the effective-permission diff, never auto-applied even with
 // an opt-in (there is no config that enables it), and capped per credential
 // per day by the persisted ledger.
@@ -608,10 +684,10 @@ func TestPropose_ClassE_HumanApprovedPermissionDiffAndCap(t *testing.T) {
 }
 
 // Tests 21/29 (engine half) and 22: the same class-D payload proposes on an
-// operator door and is refused by class on the chat and agent doors naming
-// the door; an agent-door class-A proposal never auto-applies and carries
+// operator entrypoint and is refused by class on the chat and agent entrypoints naming
+// the entrypoint; an agent-entrypoint class-A proposal never auto-applies and carries
 // its trace.
-func TestPropose_DoorCeilings(t *testing.T) {
+func TestPropose_EntrypointCeilings(t *testing.T) {
 	shorter := func(f *fixture) {
 		f.scriptEdit("projects/assistant.yaml", "cadence: 1h", "cadence: 1m")
 		f.scriptJudge("pass", "cadence: 1m")
@@ -620,52 +696,52 @@ func TestPropose_DoorCeilings(t *testing.T) {
 	shorter(f)
 	res, _ := f.engine.Propose(context.Background(), operatorReq("more often"))
 	if res.Refusal != nil || res.Class != ClassD || res.Proposal == nil {
-		t.Fatalf("operator door must propose class D: %v %s", res.Refusal, res.Class)
+		t.Fatalf("operator entrypoint must propose class D: %v %s", res.Refusal, res.Class)
 	}
-	f.cfg.ChatDoor = true
-	for _, door := range []string{DoorChat, DoorAgent} {
+	f.cfg.ChatEntrypoint = true
+	for _, entrypoint := range []string{EntrypointChat, EntrypointAgent} {
 		g := newFixture(t)
-		g.cfg.ChatDoor = true
+		g.cfg.ChatEntrypoint = true
 		shorter(g)
 		req := operatorReq("more often")
-		req.Door = door
+		req.Entrypoint = entrypoint
 		res, _ = g.engine.Propose(context.Background(), req)
-		if res.Refusal == nil || res.Refusal.Code != RefuseDoorCeiling || !strings.Contains(res.Refusal.Message, door) {
-			t.Fatalf("%s must refuse class D naming the door: %v", door, res.Refusal)
+		if res.Refusal == nil || res.Refusal.Code != RefuseEntrypointCeiling || !strings.Contains(res.Refusal.Message, entrypoint) {
+			t.Fatalf("%s must refuse class D naming the entrypoint: %v", entrypoint, res.Refusal)
 		}
 		if len(g.store.rows) != 0 {
-			t.Fatalf("%s: nothing may be filed", door)
+			t.Fatalf("%s: nothing may be filed", entrypoint)
 		}
 	}
-	// B1 (goal prose) refused on the raising doors, proposed on the operator door (test 29).
+	// B1 (goal prose) refused on the raising entrypoints, proposed on the operator entrypoint (test 29).
 	g := newFixture(t)
-	g.cfg.ChatDoor = true
+	g.cfg.ChatEntrypoint = true
 	g.scriptEdit("projects/assistant.yaml", "goal: keep the operator informed", "goal: do whatever")
 	req := operatorReq("change the goal")
-	req.Door = DoorChat
+	req.Entrypoint = EntrypointChat
 	res, _ = g.engine.Propose(context.Background(), req)
-	if res.Refusal == nil || res.Refusal.Code != RefuseDoorCeiling || res.Class != ClassB1 {
+	if res.Refusal == nil || res.Refusal.Code != RefuseEntrypointCeiling || res.Class != ClassB1 {
 		t.Fatalf("goal edit through chat must be refused as B1: %s %v", res.Class, res.Refusal)
 	}
-	// Agent door: class A with opt-in never auto-applies; trace carried.
+	// Agent entrypoint: class A with opt-in never auto-applies; trace carried.
 	h := newFixture(t)
 	h.cfg.AutoApply = map[string]config.AssistantAutoApply{"assistant": {Classes: []string{"A"}}}
 	h.scriptEdit("projects/assistant.yaml", "cadence: 1h", "cadence: 2h")
 	h.scriptJudge("pass", "cadence: 2h")
 	req = operatorReq("less often")
-	req.Door = DoorAgent
-	req.Trace = &Trace{TaskID: "t1", StepID: "s1", ContextSources: []string{"https://example.org/page"}}
+	req.Entrypoint = EntrypointAgent
+	req.Trace = &Trace{TaskID: "t1", ExecutionID: "e1", ContextSources: []string{"https://example.org/page"}}
 	res, err := h.engine.Propose(context.Background(), req)
 	if err != nil || res.Refusal != nil {
 		t.Fatalf("%v %v", err, res.Refusal)
 	}
 	if res.AutoApplied || len(h.applier.applied) != 0 {
-		t.Fatal("agent door never auto-applies")
+		t.Fatal("agent entrypoint never auto-applies")
 	}
 	var ev EvidenceRecord
 	_ = json.Unmarshal([]byte(res.Proposal.Evidence), &ev)
-	if ev.Door != DoorAgent || ev.Trace == nil || ev.Trace.TaskID != "t1" || len(ev.ToolCalls) == 0 {
-		t.Fatalf("agent-door proposal must carry door, trace and tool calls: %+v", ev)
+	if ev.Entrypoint != EntrypointAgent || ev.Trace == nil || ev.Trace.TaskID != "t1" || len(ev.ToolCalls) == 0 {
+		t.Fatalf("agent-entrypoint proposal must carry entrypoint, trace and tool calls: %+v", ev)
 	}
 }
 
@@ -765,3 +841,25 @@ func (stubEvidence) QualityPercentiles(context.Context, string) (any, bool, erro
 	return nil, false, nil
 }
 func (stubEvidence) JudgeVerdicts(context.Context, string) (any, bool, error) { return nil, false, nil }
+
+// last returns the most recently created proposal, for tests that assert on
+// the ledger row rather than the returned Result.
+func (m *memProposals) last() *persistence.ControlPlaneProposal {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var newest *persistence.ControlPlaneProposal
+	for _, p := range m.rows {
+		if newest == nil || p.CreatedAt.After(newest.CreatedAt) {
+			cp := *p
+			newest = &cp
+		}
+	}
+	return newest
+}
+
+// count returns how many proposals reached the ledger.
+func (m *memProposals) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.rows)
+}

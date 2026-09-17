@@ -644,3 +644,71 @@ func TestAdminControlPlane_RegressedLedgerRowShowsBadge(t *testing.T) {
 		t.Errorf("regressed row must not offer Rollback")
 	}
 }
+
+// Regression: re-audit 2026-09-15 CA-13 — "the new proposal=ID link is
+// ignored by AdminControlPlane and its scripts; it still opens the general
+// paginated inbox."
+//
+// The assistant console's result links a specific proposal after filing. The
+// previous round added the query parameter to the URL and nothing on the
+// receiving side read it, so the operator landed in the full inbox — where
+// their proposal could be on any page, and is hidden outright by the default
+// "Open" filter once it is applied or rejected.
+//
+// THE SEAM: a link has two halves. Asserting the href contains the id proves
+// the producer; only requesting it proves the destination.
+func TestAdminControlPlane_ProposalDeepLinkShowsThatProposal(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	ctx := context.Background()
+	// Two proposals, and the one we deep-link to is CLOSED — so the default
+	// "Open" inbox would not show it at all.
+	for _, seed := range []struct{ id, title, status string }{
+		{"cpp-open", "an open one", persistence.ProposalStatusDraft},
+		{"cpp-target", "the linked one", persistence.ProposalStatusRejected},
+	} {
+		p := &persistence.ControlPlaneProposal{
+			ID: seed.id, ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+			BlastRadius: persistence.ProposalScopeProject, Title: seed.title,
+			Status: persistence.ProposalStatusDraft, ProposedBy: "config-assistant",
+			ApplyTarget: "config.yaml", ApplyContent: "x: 1\n",
+		}
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if seed.status != persistence.ProposalStatusDraft {
+			if err := repo.SetStatus(ctx, seed.id, seed.status, "someone"); err != nil {
+				t.Fatalf("seed status: %v", err)
+			}
+		}
+	}
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet,
+		"/admin/control-plane?section=proposals&proposal=cpp-target", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "the linked one") {
+		t.Fatal("the deep link did not land on its proposal")
+	}
+	if strings.Contains(body, "an open one") {
+		t.Error("the deep link rendered the whole inbox instead of the named proposal")
+	}
+	if !strings.Contains(body, "view the whole inbox") {
+		t.Error("a focused view must offer the way back")
+	}
+}
+
+// A stale or wrong id must say so rather than silently showing everything.
+func TestAdminControlPlane_ProposalDeepLinkMissingIsStated(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet,
+		"/admin/control-plane?section=proposals&proposal=cpp-gone", nil))
+	if body := rec.Body.String(); !strings.Contains(body, "was not found") {
+		t.Fatalf("a missing deep-link target must be reported:\n%s", body)
+	}
+}

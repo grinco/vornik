@@ -3,6 +3,7 @@ package featuredoctor
 import (
 	"context"
 	"fmt"
+
 	"strings"
 
 	"vornik.io/vornik/internal/modelfamily"

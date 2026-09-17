@@ -19,11 +19,11 @@ import (
 // AUTHORISE through the CE resolver and whether key ownership is honoured.
 type IdentityConfig struct {
 	// Enabled turns the CE identity core on: chat channels resolve every
-	// inbound sender through the account resolver, `/account link` is
+	// inbound sender through the account resolver, `/link <code>` is
 	// served, and an API key's owner participates in authorisation. Off is
 	// byte-identical to the pre-2026-09-13 daemon (hand-maintained
 	// allowlists, unowned keys).
-	Enabled bool `yaml:"enabled" doc:"Turn the CE identity core on: channel senders resolve to accounts, /account link is served, key ownership is honoured."`
+	Enabled bool `yaml:"enabled" doc:"Turn the CE identity core on: channel senders resolve to accounts, link-code redemption is served in chat, key ownership is honoured."`
 
 	// ChannelCompat selects how a chat sender that is NOT linked to an
 	// account is treated once Enabled is true (review R4):
@@ -37,7 +37,7 @@ type IdentityConfig struct {
 	//             can be measured.
 	ChannelCompat string `yaml:"channel_compat" doc:"Unlinked chat senders: strict (refuse; default) or legacy (explicit allowlist entries keep ordinary-chat permissions during migration)."`
 
-	// LinkCodeTTL is how long a /account link code stays redeemable. The
+	// LinkCodeTTL is how long a link code stays redeemable. The
 	// table's schema (migration 90) was written for a 10-minute code; this
 	// keeps that default and lets an operator tighten it.
 	LinkCodeTTL string `yaml:"link_code_ttl" doc:"Lifetime of an account-link code (duration string; default 10m)."`

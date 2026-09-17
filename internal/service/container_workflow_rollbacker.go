@@ -1,6 +1,6 @@
 package service
 
-// Slice 5 wiring — service-layer adapters for the memetic
+// Slice 5 wiring — service-layer adapters for the workflow-proposal
 // rollbacker. Git revert against the source tree; same
 // nil-safety conventions as Slice 4's applier.
 
@@ -12,12 +12,12 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/config"
-	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/workflowapply"
 )
 
 type workflowRollbackerAdapter struct {
-	r *memetic.Rollbacker
+	r *workflowapply.Rollbacker
 }
 
 func (w *workflowRollbackerAdapter) Rollback(ctx context.Context, proposalID, revertedBy string) (any, error) {
@@ -27,7 +27,7 @@ func (w *workflowRollbackerAdapter) Rollback(ctx context.Context, proposalID, re
 	return w.r.Rollback(ctx, proposalID, revertedBy)
 }
 
-// gitReverter implements memetic.GitReverter via `git revert`.
+// gitReverter implements workflowapply.GitReverter via `git revert`.
 // Uses --no-edit so the operator's revert lands without an
 // interactive editor, and -m 1 to handle merge-commit reverts
 // (no-op on regular commits).
@@ -87,7 +87,7 @@ func newWorkflowRollbacker(
 	proposals persistence.WorkflowProposalRepository,
 	reloader *config.ConfigReloader,
 	deployedConfigDir string,
-) *memetic.Rollbacker {
+) *workflowapply.Rollbacker {
 	if proposals == nil {
 		return nil
 	}
@@ -99,11 +99,11 @@ func newWorkflowRollbacker(
 	if !isGitRepo(gitDir) {
 		return nil
 	}
-	return memetic.NewRollbacker(
+	return workflowapply.NewRollbacker(
 		proposals,
 		&gitReverter{repoDir: gitDir},
 		&configReloadAdapter{reloader: reloader},
-		memetic.RollbackerConfig{
+		workflowapply.RollbackerConfig{
 			AuthorName:  envOr("VORNIK_GIT_AUTHOR_NAME", "vornik-architect"),
 			AuthorEmail: envOr("VORNIK_GIT_AUTHOR_EMAIL", "architect@vornik.local"),
 		},

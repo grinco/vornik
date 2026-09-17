@@ -31,6 +31,7 @@ func TestUpsertChunks_ZeroEventTimeIsNULL(t *testing.T) {
 			sqlmock.AnyArg(), // embed_input_hash
 			nil, nil,         // derived_from_*
 			nil, // event_time — the assertion: NULL, not a zero date
+			nil, // series_key — no resolver in play, so NULL (migration 190)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -63,6 +64,7 @@ func TestUpsertChunks_NonZeroEventTimeWrittenAsIs(t *testing.T) {
 			sqlmock.AnyArg(),
 			nil, nil,
 			when,
+			nil, // series_key — unset on this fixture (migration 190)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +18,7 @@ import (
 
 	"vornik.io/vornik/internal/configrecon"
 	"vornik.io/vornik/internal/controlplane"
+	"vornik.io/vornik/internal/leaderelection"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/registry"
@@ -208,7 +211,13 @@ func (o diagnoseObserver) metricsSummary(ctx context.Context, project string, ad
 			breaching++
 		}
 	}
-	me := rates[project]
+	me, measured := rates[project]
+	if !measured || me.Total == 0 {
+		// "0% (0/0)" reads as "this project is healthy" and means "nobody
+		// looked" — the exact confusion the diagnoser exists to avoid
+		// (companion review-20260915-10cd F6).
+		return fmt.Sprintf("project failed-rate: NOT MEASURED — no executions in the 6h window. %d project(s) daemon-wide are breaching (a daemon-wide cause if many).", breaching)
+	}
 	return fmt.Sprintf("project failed-rate: %.0f%% (%d/%d) over 6h. %d project(s) daemon-wide are breaching (a daemon-wide cause if many).",
 		rate(me)*100, me.Failed, me.Total, breaching)
 }
@@ -512,7 +521,259 @@ func (c *Container) newProposalApplier() *controlplane.ApplyEngine {
 			persistence.ProposalKindInstinctRetire: &controlplane.InstinctRetireApplier{Instincts: c.repos.Instincts},
 		}
 	}
+	// workspace_context (2026-09-13-config-assistant-design.md §6.4a) writes
+	// the project's canonical .autonomy/PROJECT_CONTEXT.md, so it is
+	// registered only when a runtime workspace root is configured. Config is
+	// nil in callers that build a bare Container, so guard it.
+	if c.Config != nil && c.Config.Runtime.ProjectWorkspacePath != "" {
+		if engine.KindAppliers == nil {
+			engine.KindAppliers = map[string]controlplane.KindApplier{}
+		}
+		ws := &controlplane.WorkspaceContextApplier{
+			WorkspaceRoot: c.Config.Runtime.ProjectWorkspacePath,
+			// Root for the non-workspace entries of the proposal's read set,
+			// so every dependency is re-checked before the write, not only
+			// the target file (audit 2026-09-15 CA-06).
+			ConfigDir: filepath.Dir(c.ConfigPath),
+			// The rollback record is committed to the ledger BEFORE the
+			// context file is touched. Without this the engine only stored
+			// it in MarkApplied, after the mutation.
+			PreImage: func(ctx context.Context, proposalID, snapshot string) error {
+				return c.repos.Proposals.StagePreApplySnapshot(ctx, proposalID, snapshot)
+			},
+		}
+		if elector := c.configWriter(); elector != nil {
+			ws.LeaderGate = elector
+		}
+		engine.KindAppliers[persistence.ProposalKindWorkspaceContext] = ws
+	}
+	c.attachApplyJournal(engine)
 	return engine
+}
+
+// attachApplyJournal switches file applies onto the durable journaled path
+// of LLD 2026-09-13-config-apply-journal-design.
+//
+// Everything this wires — the journal repositories, the writer fence, the
+// generation check, the startup reconciler — shipped and was unit-tested
+// with the dependency injected by hand. None of it was ever assigned here,
+// so the daemon took the legacy in-memory reverse path for every apply it
+// actually performed: no PREPARED row before the first write, no multi-file
+// read-set check, and nothing on disk for a restart to recover from, while
+// the feature doctor reported a durable journal confirmed (audit
+// 2026-09-15 CA-19). A capability that is only reachable from its own tests
+// is not shipped.
+func (c *Container) attachApplyJournal(engine *controlplane.ApplyEngine) {
+	if engine == nil || c.repos == nil || c.repos.ApplyJournal == nil {
+		return
+	}
+	engine.Journal = c.repos.ApplyJournal
+
+	// The config writer is a FENCED single writer (§1.2). A process-local
+	// mutex does not cover a second daemon or a manual writer, so the lease
+	// is re-verified before each write and at the terminal transition.
+	if elector := c.configWriter(); elector != nil {
+		engine.LeaderGate = elector
+		engine.WriterEpoch = elector.Epoch
+	}
+
+	// §1.3: a Reload that returns nil but leaves the previous content
+	// resolved is NOT an applied change. Without this the journal would
+	// record APPLIED for a reload that silently kept the old config.
+	engine.VerifyGeneration = c.verifyConfigGeneration
+	engine.Generation = c.configGeneration
+}
+
+// configWriterLease is the leader-lock name for the single config writer.
+const configWriterLease = "config_writer"
+
+// configWriter returns the ONE config-writer elector for this daemon,
+// constructing it on first use. Every apply engine, workspace applier and the
+// startup lifecycle share this instance: two electors with the same worker id
+// but different in-memory epochs would fence each other.
+func (c *Container) configWriter() *leaderelection.Elector {
+	if c == nil || c.repos == nil || c.repos.LeaderLocks == nil {
+		return nil
+	}
+	c.configWriterOnce.Do(func() {
+		c.configWriterElector = leaderelection.New(
+			c.repos.LeaderLocks,
+			configWriterLease,
+			c.daemonHolderID(),
+			leaderelection.DefaultTTL,
+			c.Logger.With().Str("component", "leader-election").Logger(),
+		)
+	})
+	return c.configWriterElector
+}
+
+// StartConfigWriterLease acquires the config-writer lease and starts renewing
+// it. It MUST run before journal recovery and before any apply.
+//
+// The first CA-19 fix wired ApplyEngine.LeaderGate and stopped there: nothing
+// called BootstrapAcquire or Run, so no `config_writer` row existed,
+// VerifyEpoch read ErrNotFound, and DangerousWriteAllowed refused every write
+// as "superseded by a newer leader epoch". On a single-node deployment that
+// refused EVERY config apply, assistant and non-assistant alike — the fence
+// turned into an outage (re-audit 2026-09-15, CA-19 reopened). A gate without
+// a lifecycle is not a gate.
+//
+// Acquisition is synchronous so the lease is held before the first write; the
+// renewal loop then runs until ctx is cancelled, at which point Elector.Run
+// releases so a successor can take over immediately.
+func (c *Container) StartConfigWriterLease(ctx context.Context) error {
+	elector := c.configWriter()
+	if elector == nil {
+		// No leader-lock repository: single-writer deployments without the
+		// lock table keep the pre-fence behaviour, since newProposalApplier
+		// leaves LeaderGate nil and DangerousWriteAllowed then proceeds.
+		return nil
+	}
+	elector.BootstrapAcquire(ctx)
+	if !elector.IsLeader() {
+		// Another daemon holds it. Do NOT fail boot: the diagnostic surface
+		// must stay up, and refusing every apply is the correct behaviour for
+		// a non-writer replica — it is the same refusal the fence gives.
+		c.Logger.Warn().Str("lease", configWriterLease).Err(elector.LastError()).
+			Msg("config-writer lease is held elsewhere; this daemon will refuse config applies until it acquires the lease")
+	}
+	c.configWriterRunOnce.Do(func() { go elector.Run(ctx) })
+	return nil
+}
+
+// StopConfigWriterLease releases the lease so a successor does not have to
+// wait out the TTL. Safe to call when it was never acquired.
+func (c *Container) StopConfigWriterLease(ctx context.Context) error {
+	if c == nil || c.configWriterElector == nil {
+		return nil
+	}
+	return c.configWriterElector.Release(ctx)
+}
+
+// verifyConfigGeneration confirms, after Reload returned nil, that each
+// op's target on disk holds the bytes the apply intended (§1.3).
+//
+// What this DOES cover: a reload that reported success while the deployed
+// file was reverted, truncated, or rewritten by another writer between the
+// rename and the reload. What it does NOT cover: whether the in-memory
+// registry re-parsed those bytes — that needs a generation identifier the
+// registry does not yet expose, and configGeneration below is a content
+// digest standing in for one. The distinction is stated rather than papered
+// over, because a check that cannot tell "verified" from "not examined"
+// reports the first and means the second.
+func (c *Container) verifyConfigGeneration(_ context.Context, ops []controlplane.JournaledOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	root := filepath.Dir(c.ConfigPath)
+	for _, op := range ops {
+		target, err := safepath.JoinUnder(root, op.Path)
+		if err != nil {
+			return fmt.Errorf("verify generation: %s: %w", op.Path, err)
+		}
+		data, err := os.ReadFile(target)
+		if err != nil {
+			return fmt.Errorf("verify generation: %s unreadable after reload: %w", op.Path, err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != op.ContentSHA256 {
+			return fmt.Errorf("verify generation: %s does not hold the applied content after reload (want %s, got %s)", op.Path, op.ContentSHA256, got)
+		}
+	}
+	return nil
+}
+
+// configGeneration is the journal's generation_before/after marker: a digest
+// over the deployed tree's resolved project set. It is not a registry
+// generation counter — the registry has none — so it identifies WHAT is
+// resolved, not how many times it changed. That is enough for the journal's
+// purpose: telling two generations apart.
+func (c *Container) configGeneration() string {
+	if c.Registry == nil {
+		return ""
+	}
+	h := sha256.New()
+	projects := c.Registry.ListProjects()
+	ids := make([]string, 0, len(projects))
+	for _, p := range projects {
+		ids = append(ids, p.ID)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		_, _ = h.Write([]byte(id))
+		if p := c.Registry.GetProject(id); p != nil {
+			if raw, err := yaml.Marshal(p); err == nil {
+				_, _ = h.Write(raw)
+			}
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// configApplyBlockedGate is the scheduler's per-project admission gate for
+// unresolved config applies (§1.4, re-audit CA-20).
+//
+// ApplyEngine.BlockedProjects returns the affected projects of every DRIFT
+// row. It shipped implemented and unit-tested with NO production caller, so
+// startup recovery logged that projects might be mid-apply and the scheduler
+// dispatched against that config regardless. A set nothing reads blocks
+// nothing.
+//
+// The set is re-read per dispatch rather than cached at boot: an operator
+// resolving a DRIFT row must unblock their project without a restart, and a
+// row that appears while the daemon runs must block it without one.
+//
+// FAIL-OPEN on a read error, deliberately, and this is the one place in this
+// change where that is the right direction: a database hiccup must not become
+// a total scheduling outage. The journal's own fence already fails CLOSED on
+// the write side, which is where a wrong answer costs data.
+func (c *Container) configApplyBlockedGate() func(projectID string) (bool, string) {
+	if c == nil || c.repos == nil || c.repos.ApplyJournal == nil {
+		return nil
+	}
+	return func(projectID string) (bool, string) {
+		engine := c.newProposalApplier()
+		if engine == nil || engine.Journal == nil {
+			return false, ""
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		blocked, err := engine.BlockedProjects(ctx)
+		if err != nil {
+			c.Logger.Warn().Err(err).Msg("config-apply blocked-project check failed; allowing dispatch")
+			return false, ""
+		}
+		for _, p := range blocked {
+			if p == projectID || p == "*" {
+				return true, "configuration apply unresolved (journal DRIFT) for " + p
+			}
+		}
+		return false, ""
+	}
+}
+
+// ReconcileConfigApplyJournal runs the §5 startup recovery before the
+// affected config is loaded or scheduled. An open journal row means a
+// previous process died mid-apply: either the generation is provably
+// complete and is finished, or every pre-image is restored. Ambiguous drift
+// blocks the affected projects rather than guessing.
+func (c *Container) ReconcileConfigApplyJournal(ctx context.Context) error {
+	engine := c.newProposalApplier()
+	if engine == nil {
+		return nil
+	}
+	var errs []error
+	if engine.Journal != nil {
+		if err := engine.Reconcile(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// Kind-appliers bypass the journal by design, so their staged pre-images
+	// need their own recovery pass or a write that landed without its ledger
+	// transition is unrecoverable (re-audit 2026-09-15, CA-06).
+	if err := engine.RecoverStagedKindApplies(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // Control-plane server-side workers (LLD 2026-07-07-control-plane-design,

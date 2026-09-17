@@ -122,6 +122,29 @@ func (r *APIKeyRepository) LookupActiveByHash(ctx context.Context, keyHash strin
 	return scanAPIKeyRow(row)
 }
 
+// GetByID returns one key by id, INCLUDING revoked and expired rows.
+//
+// The contrast with LookupActiveByHash above is deliberate and is the whole
+// reason this method exists separately: that one hides a revoked key because
+// an auth layer must not let a caller tell "revoked" from "never existed".
+// This one is the §5.4 claim path, where a revoked key must stay claimable —
+// its recorded history is what the claim attributes to a person, and hiding
+// the row would strand it.
+func (r *APIKeyRepository) GetByID(ctx context.Context, keyID string) (*persistence.APIKey, error) {
+	row := r.db.QueryRowContext(ctx, `
+		SELECT id, project_id, name, key_hash, key_prefix,
+		       created_at, last_used_at, expires_at, revoked_at, created_by,
+		       rate_limit_rps, rate_limit_burst,
+		       allowed_workflows, budget_cap_usd, client_kind, session_label,
+		       memory_read, memory_write, allow_push, default_repo_scope,
+		       skill_read, skill_write, skill_admin
+		FROM api_keys
+		WHERE id = $1`,
+		keyID,
+	)
+	return scanAPIKeyRow(row)
+}
+
 // ListByProject returns every key for a project (including
 // revoked ones) newest-first. Used by the management surface
 // to render the per-project table.
@@ -138,6 +161,36 @@ func (r *APIKeyRepository) ListByProject(ctx context.Context, projectID string) 
 		ORDER BY created_at DESC`,
 		projectID,
 	)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.APIKey
+	for rows.Next() {
+		k, err := scanAPIKeyRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ListAttributable — see the interface. Per-task keys are excluded by a
+// prefix COMPARISON rather than LIKE: TaskKeyNamePrefix ends in "_", which
+// LIKE reads as "any single character", so a LIKE pattern would also exclude
+// a human key named "agent:taskforce".
+func (r *APIKeyRepository) ListAttributable(ctx context.Context) ([]*persistence.APIKey, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, project_id, name, key_hash, key_prefix,
+		       created_at, last_used_at, expires_at, revoked_at, created_by,
+		       rate_limit_rps, rate_limit_burst,
+		       allowed_workflows, budget_cap_usd, client_kind, session_label,
+		       memory_read, memory_write, allow_push, default_repo_scope,
+		       skill_read, skill_write, skill_admin
+		FROM api_keys
+		WHERE left(name, length($1)) <> $1
+		ORDER BY created_at DESC`, persistence.TaskKeyNamePrefix)
 	if err != nil {
 		return nil, mapDBError(err)
 	}

@@ -1,8 +1,8 @@
 package service
 
-// Slice 4 wiring — service-layer adapters for the memetic
+// Slice 4 wiring — service-layer adapters for the workflow-proposal
 // applier. Filesystem writer (two-tree discipline), git committer,
-// and config-reload trigger. Kept here so internal/memetic stays
+// and config-reload trigger. Kept here so internal/workflowapply stays
 // free of filesystem / exec / git dependencies.
 
 import (
@@ -14,16 +14,16 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/config"
-	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/safepath"
+	"vornik.io/vornik/internal/workflowapply"
 )
 
-// workflowApplierAdapter bridges *memetic.Applier (returns the
+// workflowApplierAdapter bridges *workflowapply.Applier (returns the
 // typed persistence.WorkflowProposal) to the api package's
 // WorkflowApplier interface (returns any).
 type workflowApplierAdapter struct {
-	a *memetic.Applier
+	a *workflowapply.Applier
 }
 
 func (w *workflowApplierAdapter) Apply(ctx context.Context, proposalID, appliedBy string) (any, error) {
@@ -33,7 +33,7 @@ func (w *workflowApplierAdapter) Apply(ctx context.Context, proposalID, appliedB
 	return w.a.Apply(ctx, proposalID, appliedBy)
 }
 
-// fsWorkflowWriter implements memetic.WorkflowWriter against the
+// fsWorkflowWriter implements workflowapply.WorkflowWriter against the
 // two-tree config discipline: writes to both source (operator's
 // vornik checkout) and deployed (daemon's read-target) trees. The
 // source path is returned for git staging.
@@ -103,7 +103,7 @@ func (w *fsWorkflowWriter) writeToTree(configDir, workflowID string, body []byte
 	return candidate, nil
 }
 
-// gitCommitter implements memetic.GitCommitter via `git` binary
+// gitCommitter implements workflowapply.GitCommitter via `git` binary
 // calls. Stages one path (so the commit doesn't accidentally
 // include unrelated working-tree changes) and commits with the
 // operator-supplied message + identity.
@@ -154,7 +154,7 @@ func (g *gitCommitter) Commit(ctx context.Context, path, message, authorName, au
 }
 
 // configReloadAdapter bridges *config.ConfigReloader to
-// memetic.ConfigReloadTrigger. The reloader's post-reload hook
+// workflowapply.ConfigReloadTrigger. The reloader's post-reload hook
 // (installed by installConfigReloadBroadcast) handles the cross-
 // instance NOTIFY automatically — we just call Reload() and the
 // machinery downstream fires the broadcast.
@@ -169,7 +169,7 @@ func (a *configReloadAdapter) Reload() error {
 	return a.reloader.Reload()
 }
 
-// newWorkflowApplier wires the memetic.Applier out of the
+// newWorkflowApplier wires the workflowapply.Applier out of the
 // container's primitives. Returns nil if prerequisites are
 // missing; the admin endpoint nil-checks and surfaces 503.
 //
@@ -183,7 +183,7 @@ func newWorkflowApplier(
 	proposals persistence.WorkflowProposalRepository,
 	reloader *config.ConfigReloader,
 	deployedConfigDir string,
-) *memetic.Applier {
+) *workflowapply.Applier {
 	if proposals == nil || deployedConfigDir == "" {
 		return nil
 	}
@@ -201,15 +201,15 @@ func newWorkflowApplier(
 	if gitDir == "" {
 		gitDir = deployedConfigDir
 	}
-	var git memetic.GitCommitter
+	var git workflowapply.GitCommitter
 	if isGitRepo(gitDir) {
 		git = &gitCommitter{repoDir: gitDir}
 	}
 
-	return memetic.NewApplier(
+	return workflowapply.NewApplier(
 		proposals, writer, git,
 		&configReloadAdapter{reloader: reloader},
-		memetic.ApplierConfig{
+		workflowapply.ApplierConfig{
 			AuthorName:  envOr("VORNIK_GIT_AUTHOR_NAME", "vornik-architect"),
 			AuthorEmail: envOr("VORNIK_GIT_AUTHOR_EMAIL", "architect@vornik.local"),
 		},

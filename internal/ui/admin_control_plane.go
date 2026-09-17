@@ -117,6 +117,13 @@ const (
 	cpSectionProposals = "proposals"
 	cpSectionDiagnose  = "diagnose"
 	cpSectionMCP       = "mcp"
+	// cpSectionAssist is an OUTBOUND tab: it links to /ui/operator/assist
+	// rather than rendering inside the hub. The assistant belongs to the
+	// control plane conceptually — every run files a proposal into this very
+	// ledger — but design §6.3 puts its door on the CE operator shell
+	// (operatorCapable), never in the EE admin router, which answers 501
+	// EDITION_UNSUPPORTED in Community. So it is linked, not absorbed.
+	cpSectionAssist = "assist"
 )
 
 // AdminCPSourceCount is the open-DRAFT count for one proposal source
@@ -165,6 +172,18 @@ type AdminControlPlaneData struct {
 	Sections     []AdminCPSection // top-level hub tabs
 	Filter       string
 	SourceFilter string // ProposedBy filter (proposals section)
+	// FocusProposal is a ?proposal=<id> deep link: the page shows THAT
+	// proposal rather than the paginated inbox.
+	//
+	// The assistant console links here after filing, and the link was
+	// produced without the destination implementing it — so it dropped the
+	// operator into the general inbox, where their proposal might be on any
+	// page and hidden by the default "Open" filter (re-audit 2026-09-15,
+	// CA-13). A link whose target ignores it is not a link.
+	FocusProposal string
+	// FocusMissing marks a deep link whose proposal could not be found, so
+	// the page says so instead of silently showing the whole inbox.
+	FocusMissing bool
 	Tabs         []AdminCPTab
 	SourceTabs   []AdminCPTab
 	Rows         []AdminCPRow
@@ -264,13 +283,19 @@ var cpFlashMessages = map[string]string{
 	// Unified-inbox round-trip tokens (Part B §5.2): the memetic workflow-
 	// proposal and healing-candidate handlers redirect here on success when
 	// the hub form carried return_to=control-plane.
-	"wf-approved":        "Workflow proposal approved.",
-	"wf-rejected":        "Workflow proposal rejected.",
-	"wf-applied":         "Workflow proposal applied (WORKFLOW.md updated).",
-	"wf-rolled-back":     "Workflow proposal rolled back.",
-	"trial-started":      "Trial started — the verdict lands on the candidate's trial history.",
-	"candidate-promoted": "Candidate promoted — the repair was applied via its workflow proposal.",
-	"candidate-rejected": "Candidate rejected — production untouched.",
+	"wf-approved":    "Workflow proposal approved.",
+	"wf-rejected":    "Workflow proposal rejected.",
+	"wf-applied":     "Workflow proposal applied (WORKFLOW.md updated).",
+	"wf-rolled-back": "Workflow proposal rolled back.",
+	// One token per real outcome. "Trial started" covered both modes and
+	// was true of neither for static, which finishes before the redirect
+	// (report 2026-09-16).
+	"trial-replay-started":      "Replay trial started — it runs in the background; the verdict lands on the candidate's trial history.",
+	"trial-static-passed":       "Static trial PASSED — the candidate's shape and policy validate clean. This does NOT unlock promotion, and the candidate stays in draft: promotion requires a replay trial, which re-runs the recorded evidence with side-effects blocked.",
+	"trial-static-failed":       "Static trial FAILED — the candidate's shape or policy did not validate. The validator's findings are on the candidate's trial history.",
+	"trial-static-inconclusive": "Static trial finished without a pass or fail verdict — see the candidate's trial history.",
+	"candidate-promoted":        "Candidate promoted — the repair was applied via its workflow proposal.",
+	"candidate-rejected":        "Candidate rejected — production untouched.",
 	// Black Box trigger actions folded into the Overview (item 5 part 3).
 	"trigger-dismissed":   "Black Box trigger dismissed.",
 	"candidate-generated": "Candidate generated — review it on the Proposals tab.",
@@ -331,6 +356,10 @@ func (s *Server) AdminControlPlane(w http.ResponseWriter, r *http.Request) {
 		s.buildCPMCP(ctx, &data)
 	default: // proposals
 		data.SourceFilter = strings.TrimSpace(r.URL.Query().Get("source"))
+		if focus := strings.TrimSpace(r.URL.Query().Get("proposal")); focus != "" {
+			s.buildCPFocusedProposal(ctx, &data, all, focus)
+			break
+		}
 		page := 1
 		if n, perr := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page"))); perr == nil && n > 1 {
 			page = n
@@ -349,13 +378,22 @@ func (s *Server) cpSections(active string) []AdminCPSection {
 		{cpSectionProposals, "Proposals"},
 		{cpSectionDiagnose, "Diagnose"},
 		{cpSectionMCP, "MCP servers"},
+		{cpSectionAssist, "Configuration assistant"},
 	}
 	out := make([]AdminCPSection, 0, len(defs))
 	for _, d := range defs {
 		if d.key == cpSectionDiagnose && s.diagnoser == nil {
 			continue
 		}
+		// Data-driven like Diagnose: never advertise a tab that leads to a
+		// "not available" page.
+		if d.key == cpSectionAssist && s.configAssist == nil {
+			continue
+		}
 		href := "/ui/admin/control-plane?section=" + d.key
+		if d.key == cpSectionAssist {
+			href = "/ui/operator/assist"
+		}
 		out = append(out, AdminCPSection{Key: d.key, Label: d.label, Href: href, Active: d.key == active})
 	}
 	return out
@@ -429,7 +467,7 @@ func (s *Server) buildCPOverview(ctx context.Context, data *AdminControlPlaneDat
 				data.OpenTriggers = append(data.OpenTriggers, healingTriggerToRow(t))
 			}
 			data.OpenTriggerCount = len(data.OpenTriggers)
-			data.TriggerGenerateWired = s.blackboxArchitect != nil
+			data.TriggerGenerateWired = s.healingGenerator != nil
 		}
 	}
 
@@ -535,6 +573,29 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 	}
 
 	cpPaginateProposals(data, filter, sourceFilter, page)
+}
+
+// buildCPFocusedProposal renders ONE proposal named by ?proposal=<id>.
+//
+// It looks in the page the list query already returned and falls back to a
+// direct fetch, because the proposal an operator was just sent to is
+// frequently not on page 1 of a filtered inbox — which is exactly how the
+// original deep link failed to land.
+func (s *Server) buildCPFocusedProposal(ctx context.Context, data *AdminControlPlaneData, all []*persistence.ControlPlaneProposal, id string) {
+	data.FocusProposal = id
+	superseded := cpSupersededLedgerIDs(all)
+	for _, p := range all {
+		if p.ID == id {
+			data.Rows = append(data.Rows, s.cpLedgerRow(p, superseded))
+			return
+		}
+	}
+	p, err := s.proposalStore.GetByID(ctx, id)
+	if err != nil || p == nil {
+		data.FocusMissing = true
+		return
+	}
+	data.Rows = append(data.Rows, s.cpLedgerRow(p, superseded))
 }
 
 // cpPaginateProposals slices the already-assembled+filtered data.Rows down to

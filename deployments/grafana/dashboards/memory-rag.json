@@ -384,6 +384,96 @@
       ],
       "title": "Chunks by Project",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 28
+      },
+      "id": 141,
+      "targets": [
+        {
+          "expr": "sum by (project_id) (rate(vornik_memory_recency_reordered_total{project_id=~\"$project_id\"}[5m]))",
+          "legendFormat": "{{project_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Recency Re-ranks (searches/s)",
+      "type": "timeseries",
+      "description": "Searches where the recency re-rank actually CHANGED the returned order. A feature that is enabled but never reorders anything is indistinguishable from one that is off \u2014 this panel is what tells those apart. Flat zero while enabled means the re-rank is inert, not that nothing is stale."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 28
+      },
+      "id": 142,
+      "targets": [
+        {
+          "expr": "sum by (leg) (rate(vornik_memory_recency_demoted_total{project_id=~\"$project_id\"}[5m]))",
+          "legendFormat": "{{leg}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Chunks Demoted by Leg (/s)",
+      "type": "timeseries",
+      "description": "Result chunks whose score the re-rank reduced. \"series\" = a newer member of the same recurring series exists, so this one loses the undated query by contract. \"age\" = the chunk is far through its own retention window. The two are different operator stories and are deliberately not summed."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "id": 143,
+      "targets": [
+        {
+          "expr": "sum by (project_id) (rate(vornik_memory_recency_pool_clipped_total{project_id=~\"$project_id\"}[5m]))",
+          "legendFormat": "{{project_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Over-fetch Clipped by Pool Cap (/s)",
+      "type": "timeseries",
+      "description": "Searches whose over-fetch was truncated by the per-arm candidate cap (20/arm, 40 total). The EFFECTIVE over-fetch is min(limit x factor, 40)/limit, which is 1.0 once the caller asks for 40 \u2014 a pure re-sort that can rescue nothing from outside the pool. A rising line here means recency reaches less far than the configured factor suggests."
     }
   ],
   "refresh": "30s",

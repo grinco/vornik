@@ -375,7 +375,23 @@ func shortHash(h string) string {
 func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
 	var out GoldManifest
 	byTask := map[string]Gold{}
-	runs := 0
+	// Per-task run target, accumulated per task rather than globally.
+	//
+	// This used to be a single `runs += m.Runs` across every manifest, which is
+	// correct ONLY for repeat batching — where each batch re-runs the SAME tasks
+	// for a subset of the repeats, so the targets genuinely add. Under TASK
+	// batching the batches are disjoint and each declares the same per-task
+	// target, so summing multiplies it by the batch count.
+	//
+	// Measured 2026-09-17: ten task-batches at --runs 3 merged to runs=30 while
+	// every entry held exactly 3 paths, so shortGoldReport called a COMPLETE
+	// gold set 100% short and printed `--topup --runs 30` — 810 further
+	// task-runs to fix nothing.
+	//
+	// Summing PER TASK covers both: a task appearing in one batch keeps that
+	// batch's target, a task appearing in all of them gets their sum. The
+	// manifest's target is the largest, since that is what a complete entry owes.
+	runsByTask := map[string]int{}
 
 	for _, m := range manifests {
 		if m.TaskSetSHA256 == "" {
@@ -391,7 +407,9 @@ func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
 				"sets (%s vs %s): the result would pin neither",
 				shortHash(out.TaskSetSHA256), shortHash(m.TaskSetSHA256))
 		}
-		runs += m.Runs
+		for _, e := range m.Entries {
+			runsByTask[e.TaskID] += m.Runs
+		}
 
 		for _, e := range m.Entries {
 			// Filter at merge as well as at build: the per-batch manifests stay
@@ -421,7 +439,11 @@ func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
 		}
 	}
 
-	out.Runs = runs
+	for _, n := range runsByTask {
+		if n > out.Runs {
+			out.Runs = n
+		}
+	}
 	for _, e := range byTask {
 		out.Entries = append(out.Entries, e)
 	}

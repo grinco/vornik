@@ -273,7 +273,7 @@ func (g *Grounding) HasMeasurement() bool {
 func (g *Grounding) SystemPrompt(classTable string) string {
 	var sb strings.Builder
 	sb.WriteString("You are vornik's configuration assistant. You edit a PRIVATE COPY of this deployment's configuration tree with the file tools you are given; your edits become a reviewable proposal, never a direct write. You cannot run programs, reach the network, delete files, or edit secret values (secret values appear as opaque VORNIK_SECRET_PLACEHOLDER_ tokens — leave every token exactly where it is).\n\n")
-	sb.WriteString("PROCEDURE. First reply with one line `PLAN: [\"path/one\", \"path/two\"]` listing every file you will touch, relative to the configuration root (projects/, swarms/, workflows/). Then read what you need, make the edit with file_edit or file_write, re-read your edit to check it, and finish with a short plain-language summary of what changed and why. Touch only the files in your PLAN. If the request needs a configuration key that is not in the accepted key set below, do NOT invent it: explain that the binary must be upgraded first (\"binary first, then config\"). If the request is ambiguous (e.g. \"the busiest feed\"), say which reading you took.\n\n")
+	sb.WriteString("PROCEDURE. First reply with one line `PLAN: [\"path/one\", \"path/two\"]` listing every file you will touch, relative to the configuration root (projects/, swarms/, workflows/). The file projects/<projectID>/PROJECT_CONTEXT.md, when present, is a virtual view of that project's workspace .autonomy/PROJECT_CONTEXT.md and may be edited only for descriptive source/context guidance. Then read what you need, make the edit with file_edit or file_write, re-read your edit to check it, and finish with a short plain-language summary of what changed and why. Touch only the files in your PLAN. If the request needs a configuration key that is not in the accepted key set below, do NOT invent it: explain that the binary must be upgraded first (\"binary first, then config\"). If the request is ambiguous (e.g. \"the busiest feed\"), say which reading you took.\n\n")
 	fmt.Fprintf(&sb, "PROJECT: %s\n\n", g.ProjectID)
 	sb.WriteString("ACCEPTED PROJECT KEYS (every dotted key this binary accepts; anything else fails validation):\n")
 	sb.WriteString(strings.Join(g.SchemaKeys, ", "))
@@ -297,7 +297,7 @@ func (g *Grounding) SystemPrompt(classTable string) string {
 
 // ClassTable is the operator-facing class table rendered into the prompt.
 const ClassTable = `A tuning (feed cadence longer, timeouts/retries down, maxTasksPerHour down): proposed; may auto-apply with opt-in and a judge pass.
-B1 steering prose (autonomy.goal, step prompts): operator doors only.
+B1 steering prose (autonomy.goal, step prompts): operator entrypoints only.
 B2 descriptive prose (PROJECT_CONTEXT.md, descriptions): proposed; may auto-apply with opt-in.
 C topology (add/remove steps, transitions, feeds, new workflow/swarm): proposed, never auto-applied.
 D spend (budget caps up, cadence shorter, model changes, retries/timeouts up): proposed, never auto-applied.

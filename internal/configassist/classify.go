@@ -134,6 +134,12 @@ func classifyOne(ch Change) Touch {
 	lk := strings.ToLower(k)
 	t := Touch{File: ch.File, Key: k}
 	switch {
+	// ---- E: a document the flattener refused to expand (audit CA-02:
+	// cyclic aliases, runaway expansion, unparseable YAML). Checked before
+	// everything, because the alternative reading — an empty document, no
+	// changes, class A — is exactly the one an attacker wants.
+	case strings.HasPrefix(k, "<") && strings.HasSuffix(k, ">"):
+		t.Class, t.Reason = ClassE, "the document could not be safely expanded ("+strings.Trim(k, "<>")+"): deny by default"
 	// ---- E: authority. Checked FIRST so a widening cannot hide behind a
 	// friendlier prefix (the allowed_tools/allowedTools casing collision is
 	// exactly a key that fails the strict decode and lands here as E).
@@ -156,16 +162,28 @@ func classifyOne(ch Change) Touch {
 		strings.HasSuffix(lk, "maxtokens"), strings.HasSuffix(lk, "contextsize"), lk == "assistant.model", lk == "hallucinationjudge.model":
 		t.Class, t.Reason = ClassD, "model or token-window change alters what a privileged role does with what it has"
 	case lk == "autonomy.maxtasksperhour", strings.HasPrefix(lk, "rate_limit."), lk == "maxconcurrenttasks":
-		if numericIncreased(ch) {
+		switch {
+		case removesNumericLimit(ch):
+			// Manager.checkRateLimit: `MaxTasksPerHour <= 0` returns true,
+			// "no limit". Zero is not a smaller number here, it is the
+			// ABSENCE of the cap — and so is deleting the key, which decodes
+			// to the same zero (audit 2026-09-15 CA-01).
+			t.Class, t.Reason = ClassD, "throughput cap removed: zero or absent is the no-limit sentinel, so this RAISES throughput"
+		case numericIncreased(ch):
 			t.Class, t.Reason = ClassD, "throughput cap raised (more spend)"
-		} else {
+		default:
 			t.Class, t.Reason = ClassA, "throughput cap lowered or unchanged"
 		}
 	case strings.HasSuffix(lk, ".cadence"), lk == "autonomy.pollinterval", lk == "autonomy.feeds", strings.HasPrefix(lk, "autonomy.feeds"):
 		switch {
 		case durationShortened(ch):
 			t.Class, t.Reason = ClassD, "cadence shortened: more ticks, more spend (design §6: a cadence edit is a spend edit wearing a tuning edit's clothes)"
-		case ch.Before == "" && ch.After != "" && strings.HasSuffix(lk, "feeds"):
+		case ch.Before == "" && ch.After != "" && (lk == "autonomy.feeds" || strings.HasPrefix(lk, "autonomy.feeds.")):
+			// Matching only the whole-key transition ("" -> a first feed)
+			// missed the shape an insertion actually produces: per-item keys
+			// like autonomy.feeds.<slug>.url. Adding a feed to a NON-EMPTY
+			// list is the same topology change as declaring the first one
+			// (audit 2026-09-15 CA-01).
 			t.Class, t.Reason = ClassC, "feed declared: topology"
 		default:
 			t.Class, t.Reason = ClassA, "cadence lengthened or unchanged"
@@ -182,7 +200,7 @@ func classifyOne(ch Change) Touch {
 	case strings.HasPrefix(lk, "steps."):
 		t.Class, t.Reason = classifyStepKey(lk, ch)
 	case lk == "steps", lk == "entrypoint", strings.HasPrefix(lk, "terminals"), lk == "roles", strings.HasPrefix(lk, "roles.") && (strings.HasSuffix(lk, ".name") || strings.HasSuffix(lk, ".count")),
-		lk == "swarmid", lk == "defaultworkflowid", lk == "autonomy.workflow_id", lk == "leadrole", lk == "adaptivecandidateworkflows", lk == "autonomy.mode", lk == "autonomy.enabled", lk == "autonomy.allowedtasktypes", lk == "verifiers", strings.HasPrefix(lk, "qualityscoring"):
+		lk == "swarmid", lk == "defaultworkflowid", lk == "workflowid", lk == "projectid", lk == "autonomy.workflow_id", lk == "leadrole", lk == "adaptivecandidateworkflows", lk == "autonomy.mode", lk == "autonomy.enabled", lk == "autonomy.allowedtasktypes", lk == "verifiers", strings.HasPrefix(lk, "qualityscoring"):
 		if isProseStepField(lk) {
 			t.Class, t.Reason = ClassB1, "step prompt reaches the model's system prompt unwrapped"
 		} else {
@@ -201,8 +219,8 @@ func classifyOne(ch Change) Touch {
 		strings.HasPrefix(lk, "recording."), strings.HasPrefix(lk, "backlogdeposits"), strings.HasPrefix(lk, "hallucinationjudge.enabled"),
 		strings.HasPrefix(lk, "slack.progress"), strings.HasPrefix(lk, "slack.post_message"), strings.HasPrefix(lk, "email.poll_interval"), strings.HasPrefix(lk, "voice."),
 		strings.HasPrefix(lk, "trading.scorecard"), strings.HasPrefix(lk, "trading.regime"), strings.HasPrefix(lk, "trading.analysis_evidence"), strings.HasPrefix(lk, "trading.watchlist"), strings.HasPrefix(lk, "trading.protected_symbols"), strings.HasPrefix(lk, "trading.notify"),
-		lk == "version", lk == "workflowid", lk == "projectid", strings.HasPrefix(lk, "forge.ci."), lk == "forge.review_draft_prs", lk == "forge.auto_review_on_push", lk == "git.enabled", strings.HasPrefix(lk, "memory."), strings.HasPrefix(lk, "lifecycle."):
-		if lk == "autonomy.requireapproval" && strings.EqualFold(ch.After, "false") && !strings.EqualFold(ch.Before, "false") {
+		lk == "version", strings.HasPrefix(lk, "forge.ci."), lk == "forge.review_draft_prs", lk == "forge.auto_review_on_push", lk == "git.enabled", strings.HasPrefix(lk, "memory."), strings.HasPrefix(lk, "lifecycle."):
+		if lk == "autonomy.requireapproval" && removesApproval(ch) {
 			t.Class, t.Reason = ClassE, "removing the approval requirement widens what runs unattended"
 		} else {
 			t.Class, t.Reason = ClassA, "tuning"

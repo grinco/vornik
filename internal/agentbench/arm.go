@@ -52,11 +52,20 @@ import (
 //	v5  2026-08-17. Release-gate tier semantics and the observed immutable
 //	    agent-image set become arm axes. Task outcomes are journaled at the
 //	    submitted-task/repeat unit for calibration.
+//	v6  2026-09-17. A verifier-reported case id the analyst did not pin no
+//	    longer voids the whole report: extras are ignored for the score,
+//	    counted in ExtraCaseCount and recorded as a soft diagnostic. Measured
+//	    on the 2026.9.4 arm, where dp-01-nilguard reported all 14 pinned cases
+//	    as passed plus three of its own and scored 0.000 — the same figure as a
+//	    run that validated nothing. Omissions are unchanged and a wholly
+//	    disjoint report still scores zero, so the bump covers only the extras
+//	    rule. Figures below v6 are not comparable with those at or above it,
+//	    which is precisely why this number moves.
 //
 // v1 was never bumped through any of those, which is the failure this comment
 // exists to prevent: the mechanism refused nothing because nobody moved the
 // number it keys on.
-const HarnessVersion = "5"
+const HarnessVersion = "6"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.

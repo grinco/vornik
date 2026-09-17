@@ -32,6 +32,42 @@ func newAccountsStubRepo() *accountsStubRepo {
 		disabled: map[string]bool{}, bindings: map[string]string{}, revoked: map[string]bool{}}
 }
 
+// ResolvePrincipalRows answers "is this identity bound, and to whom" — the
+// lookup the §5.4 claim path runs on every attempt, including the ones it
+// will refuse.
+func (m *accountsStubRepo) ResolvePrincipalRows(_ context.Context, channel, ext string) ([]persistence.PrincipalRow, error) {
+	key := channel + ":" + ext
+	userID, ok := m.bindings[key]
+	if !ok || m.revoked[key] {
+		return nil, nil
+	}
+	return []persistence.PrincipalRow{{UserID: userID, Disabled: m.disabled[userID]}}, nil
+}
+
+// BindIdentity records a binding. The repository's real uniqueness and
+// repoint-after-revoke rules are pinned by repotest against both backends.
+// BindIdentity enforces the SAME guard the real repositories do: an active
+// binding held by another user is left alone and reported, not overwritten.
+// While this double simply overwrote, every test built on it agreed with a
+// production path that silently wrote nothing (review-20260914-3c36 F11).
+func (m *accountsStubRepo) BindIdentity(_ context.Context, id *persistence.UserIdentity) (bool, error) {
+	key := id.Channel + ":" + id.ExternalID
+	if owner, ok := m.bindings[key]; ok && !m.revoked[key] && owner != id.UserID {
+		return false, nil
+	}
+	m.bindings[key] = id.UserID
+	delete(m.revoked, key)
+	return true, nil
+}
+
+// RebindIdentity is the unguarded admin-authority twin.
+func (m *accountsStubRepo) RebindIdentity(_ context.Context, id *persistence.UserIdentity) error {
+	key := id.Channel + ":" + id.ExternalID
+	m.bindings[key] = id.UserID
+	delete(m.revoked, key)
+	return nil
+}
+
 func (m *accountsStubRepo) CreateUser(_ context.Context, u *persistence.User) error {
 	m.users[u.ID] = u
 	return nil
@@ -77,6 +113,23 @@ func (m *accountsStubRepo) RevokeIdentity(_ context.Context, ch, ext string) err
 	m.revoked[k] = true
 	return nil
 }
+
+// RevokeIdentityOwnedBy mirrors the real repositories: the owner predicate is
+// part of the write, so a binding reassigned since the caller last looked is
+// not revoked (audit 2026-09-15 CA-10).
+func (m *accountsStubRepo) RevokeIdentityOwnedBy(_ context.Context, ch, ext, expectedUserID string) error {
+	k := ch + ":" + ext
+	owner, ok := m.bindings[k]
+	if !ok || m.revoked[k] {
+		return persistence.ErrIdentityNotFound
+	}
+	if expectedUserID != "" && owner != expectedUserID {
+		return persistence.ErrIdentityNotFound
+	}
+	m.revoked[k] = true
+	return nil
+}
+
 func (m *accountsStubRepo) ListUsers(context.Context) ([]persistence.UserAdminView, error) {
 	var out []persistence.UserAdminView
 	for id, u := range m.users {

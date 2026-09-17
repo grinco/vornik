@@ -109,7 +109,28 @@ type IdentityRepository interface {
 	// binding or repoints a REVOKED row to id.UserID and clears
 	// revoked_at. An active conflict is left attached to its existing
 	// user so concurrent provisioning converges on one principal.
-	BindIdentity(ctx context.Context, id *UserIdentity) error
+	//
+	// bound reports whether the binding is now id.UserID's. It is false,
+	// WITHOUT an error, when an active binding to a DIFFERENT user already
+	// holds (channel, external_id) — a re-bind to the same user is true,
+	// because that is the state the caller asked for.
+	//
+	// The bool exists because its absence shipped a false success: admin
+	// re-assignment and link-code redemption both wrote nothing, returned
+	// nil, and then audited the change as done (review-20260914-3c36 F11,
+	// which predicted a unique violation; the upsert's WHERE guard made it
+	// quieter than that). Convergence is still the right behaviour for the
+	// OIDC provisioning race — what was wrong was that no caller could tell
+	// it had happened. Callers MUST decide what false means for them; a
+	// caller that genuinely does not care assigns it to _ and says why.
+	BindIdentity(ctx context.Context, id *UserIdentity) (bound bool, err error)
+	// RebindIdentity repoints (channel, external_id) to id.UserID
+	// unconditionally — including over an ACTIVE binding to another user,
+	// which BindIdentity refuses. This is admin authority, and it is a
+	// separate method rather than a flag so the authority is visible at
+	// every call site: correcting a wrong mapping is exactly what the
+	// self-service paths must not be able to do.
+	RebindIdentity(ctx context.Context, id *UserIdentity) error
 	// MigrateIdentityExternalID repoints an ACTIVE binding from a legacy
 	// external_id to a new one within the same channel. Used by the lazy
 	// login-keyed→immutable-ID migration (review of a799e3f2, 2026-06-07):
@@ -121,6 +142,23 @@ type IdentityRepository interface {
 	// (legacy binding absent / already revoked) is NOT an error.
 	MigrateIdentityExternalID(ctx context.Context, channel, oldExternalID, newExternalID string) error
 	RevokeIdentity(ctx context.Context, channel, externalID string) error
+	// RevokeIdentityOwnedBy is RevokeIdentity with the expected owner IN
+	// the predicate, so the ownership check and the revoke are one atomic
+	// operation.
+	//
+	// The self-unlink path used to check ownership from a ListUsers
+	// snapshot and then revoke by (channel, external_id) alone. An
+	// administrator reassigning the binding in that window meant the old
+	// owner's unlink revoked the NEW owner's binding and killed the new
+	// owner's sessions, auditing the old owner as the target (audit
+	// 2026-09-15 CA-10). A check whose result can go stale before the write
+	// it guards is not a check.
+	//
+	// ErrIdentityNotFound when no ACTIVE binding matches BOTH the
+	// (channel, external_id) and the expected owner — the caller cannot
+	// distinguish "gone" from "someone else's", and must not: that is the
+	// same non-disclosure the rest of the identity surface keeps.
+	RevokeIdentityOwnedBy(ctx context.Context, channel, externalID, expectedUserID string) error
 	// TouchIdentityLastUsed is fired async by the resolver's
 	// callers; failures are non-fatal (column goes stale).
 	TouchIdentityLastUsed(ctx context.Context, channel, externalID string) error
@@ -173,6 +211,44 @@ type AccessRevocationReader interface {
 	// deliberately revoked (or was re-granted since), ErrUserNotFound for
 	// an unknown user.
 	AccessRevokedAt(ctx context.Context, userID string) (*time.Time, error)
+}
+
+// LinkCodeRepository owns the self-service channel-link codes of
+// oidc-identity-permissions-design §5.2. The `link_codes` table shipped with
+// the identity core and, until Phase 4, had no producer and no consumer.
+//
+// Two contract rules here are security properties rather than storage
+// preferences, and both are pinned by repotest.RunLinkCodeSuite:
+//
+//   - **Consumption is single-use and atomic.** ConsumeLinkCode must mark the
+//     row used in the same statement that claims it, so two racing
+//     redemptions cannot both succeed — one code binding two channel
+//     identities is an identity-takeover primitive, not a duplicate write.
+//   - **Expired is indistinguishable from absent.** Both answer ErrNotFound,
+//     so no caller can tell whether a code ever existed. §5.2 requires the
+//     redeeming reply to carry no such oracle, and the cheapest way to keep
+//     that promise is to make the distinction unavailable at this layer.
+type LinkCodeRepository interface {
+	// CreateLinkCode stores a new code. Only the sha256 is persisted; the
+	// raw code is shown to its issuer once and never reaches the database.
+	CreateLinkCode(ctx context.Context, lc *LinkCode) error
+
+	// GetLinkCode returns the row by hash regardless of used/expired state —
+	// the inspection path, used to report a redemption back to the issuing
+	// panel. Returns ErrNotFound when no such hash exists.
+	GetLinkCode(ctx context.Context, codeHash string) (*LinkCode, error)
+
+	// ConsumeLinkCode atomically claims an unused, unexpired code and
+	// records what redeemed it, returning the row as it stood. Returns
+	// ErrNotFound when the code is absent, already used, or expired —
+	// deliberately one error for all three (see the type comment).
+	ConsumeLinkCode(ctx context.Context, codeHash, channel, externalID string) (*LinkCode, error)
+
+	// OutstandingLinkCodes lists this user's live codes — unused and
+	// unexpired, never another user's. The §5.5 panel polls while a code it
+	// issued is outstanding, so a consumed or expired code must not keep it
+	// waiting.
+	OutstandingLinkCodes(ctx context.Context, userID string) ([]*LinkCode, error)
 }
 
 // UISessionRepository owns browser login sessions (migration 91).

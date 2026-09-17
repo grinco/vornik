@@ -40,6 +40,10 @@ type allowPushCall struct {
 	allow bool
 }
 
+func (s *spyAPIKeyRepo) GetByID(_ context.Context, _ string) (*persistence.APIKey, error) {
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (s *spyAPIKeyRepo) UpdateAllowPush(_ context.Context, id string, allowed bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

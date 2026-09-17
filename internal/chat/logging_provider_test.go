@@ -82,7 +82,7 @@ func TestLoggingProvider_MetadataAtInfo_NoContentWhenInfoLevel(t *testing.T) {
 	log := zerolog.New(&buf).Level(zerolog.InfoLevel)
 	p := NewLoggingProvider(&logStub{resp: okResponse(`{"confidence":0.82}`), model: "minimax-m2"}, log)
 
-	ctx := WithCallSite(context.Background(), "memetic.architect")
+	ctx := WithCallSite(context.Background(), "config-assistant")
 	if _, err := p.Complete(ctx, []Message{{Role: "user", Content: "hello"}}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLoggingProvider_MetadataAtInfo_NoContentWhenInfoLevel(t *testing.T) {
 	if call == nil {
 		t.Fatalf("missing 'llm call' INFO line; got %v", lines)
 	}
-	if call["call_site"] != "memetic.architect" {
+	if call["call_site"] != "config-assistant" {
 		t.Errorf("call_site = %v, want memetic.architect", call["call_site"])
 	}
 	if call["model"] != "minimax-m2" {

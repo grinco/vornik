@@ -224,7 +224,10 @@ type Server struct {
 	assistantSpend llmspend.Recorder
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
-	apiKeyRepo  persistence.APIKeyRepository
+	apiKeyRepo persistence.APIKeyRepository
+	// sessionUser answers "who is signed in", for the self-service
+	// /ui/account page. Nil means nobody ever is.
+	sessionUser SessionUserResolver
 	outcomeRepo persistence.ExecutionStepOutcomeRepository
 	// llmExchangeRepo answers "did this execution record its model
 	// exchanges?" so the execution page can offer the link only when there
@@ -309,6 +312,9 @@ type Server struct {
 	// operatorCapability is admin.allowed_keys, accepted by the CE shell as
 	// an explicit operator capability in both editions.
 	operatorCapability config.AdminConfig
+	// slackLinkCommands is every Slack slash command this daemon answers,
+	// empty when Slack is not wired — see WithSlackLinkCommands.
+	slackLinkCommands []string
 	// configAssist backs /ui/operator/assist (the console door). Nil →
 	// "not wired" page.
 	configAssist *configassist.Engine
@@ -695,10 +701,14 @@ type Server struct {
 	// *memetic.Architect via a service-layer adapter so the ui
 	// package doesn't import internal/memetic. nil-safe — the
 	// button is hidden when unwired.
-	blackboxArchitect MemeticArchitectUI
-	adminReadiness    ReadinessProvider
-	adminLeaseAudit   LeaseAuditSource
-	adminStuckExecs   StuckExecutionSource
+	// healingGenerator backs the Generate candidate button on the trigger
+	// page and the control-plane hub. One producer shared with the admin API
+	// (2026-09-16): the UI used to hold a second copy of the orchestration and
+	// was left pointing at a deleted architect when the producer changed.
+	healingGenerator HealingCandidateGeneratorUI
+	adminReadiness   ReadinessProvider
+	adminLeaseAudit  LeaseAuditSource
+	adminStuckExecs  StuckExecutionSource
 	// leaderLockSource powers /ui/admin/health/cluster — cluster
 	// topology + per-worker health derived from the
 	// daemon_leader_locks table. Nil-safe; page renders the
@@ -1882,12 +1892,12 @@ func WithHealingTriggerRepository(repo persistence.WorkflowHealingTriggerReposit
 	return func(s *Server) { s.healingTriggerRepo = repo }
 }
 
-// WithBlackBoxArchitect wires the memetic architect behind the
+// WithHealingCandidateGenerator wires the shared healing candidate producer behind the
 // "Generate candidate" button on the workflow-healing trigger
 // detail page. Optional — when nil the button is hidden and the
 // trigger can only be Dismissed.
-func WithBlackBoxArchitect(a MemeticArchitectUI) ServerOption {
-	return func(s *Server) { s.blackboxArchitect = a }
+func WithHealingCandidateGenerator(g HealingCandidateGeneratorUI) ServerOption {
+	return func(s *Server) { s.healingGenerator = g }
 }
 
 // WithHealingOverrideRepository wires the per-(project, workflow,
@@ -2378,6 +2388,10 @@ func (s *Server) Handler() http.Handler {
 	// CE operator shell — account management (2026-09-13 review R1/R2).
 	// Community routes, gated per handler by operatorCapable (operator
 	// scope + explicit capability), never by the EE admin router.
+	// Self-service account surface (§5.5). No operator capability and no
+	// admin surface, so it serves Community and Enterprise identically.
+	mux.HandleFunc("/account", s.MyAccount)
+	mux.HandleFunc("/account/", s.MyAccountAction)
 	mux.HandleFunc("/operator/accounts", s.operatorAccountsRouter)
 	mux.HandleFunc("/operator/accounts/", s.operatorAccountsRouter)
 	mux.HandleFunc("/operator/assist", s.operatorAssistRouter)

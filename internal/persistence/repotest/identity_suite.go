@@ -3,6 +3,9 @@ package repotest
 import (
 	"context"
 	"errors"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,12 +78,17 @@ func (f *identityFixture) sessionActive(t *testing.T, tokenHash string) bool {
 
 func (f *identityFixture) bind(t *testing.T, userID, channel, externalID string) {
 	t.Helper()
-	err := f.identity.BindIdentity(context.Background(), &persistence.UserIdentity{
+	bound, err := f.identity.BindIdentity(context.Background(), &persistence.UserIdentity{
 		ID: uniqueID("uident"), UserID: userID, Channel: channel, ExternalID: externalID,
 		Display: "bound " + externalID, CreatedAt: clock(),
 	})
 	if err != nil {
 		t.Fatalf("BindIdentity: %v", err)
+	}
+	// A fixture that silently did not bind makes every assertion built on
+	// it vacuous, which is how the false success stayed invisible.
+	if !bound {
+		t.Fatalf("BindIdentity(%s, %s) did not bind: the identity is already held by another user", channel, externalID)
 	}
 }
 
@@ -372,8 +380,89 @@ func RunIdentityAdminSuite(t *testing.T, repo persistence.IdentityRepository, se
 	t.Run("remove_user_access", func(t *testing.T) { identityRemoveUserAccess(t, f) })
 	t.Run("set_user_disabled", func(t *testing.T) { identitySetUserDisabled(t, f) })
 	t.Run("revoke_identity", func(t *testing.T) { identityRevokeIdentity(t, f) })
+	t.Run("revoke_identity_owned_by", func(t *testing.T) { identityRevokeIdentityOwnedBy(t, f) })
 	t.Run("migrate_identity_external_id", func(t *testing.T) { identityMigrateExternalID(t, f) })
 	t.Run("noop_on_absent_rows", func(t *testing.T) { identityNoops(t, f) })
+	t.Run("both_resolvers_agree", func(t *testing.T) { identityBothResolversAgree(t, f) })
+	t.Run("bind_reports_an_active_conflict", func(t *testing.T) { identityBindReportsConflict(t, f) })
+	t.Run("rebind_moves_an_active_binding", func(t *testing.T) { identityRebindMovesActive(t, f) })
+}
+
+// identityBindReportsConflict pins the bool BindIdentity gained after the
+// silent-write defect: it must be TRUE for a fresh insert, a same-user
+// re-bind and a revoked repoint, and FALSE — with no error — when another
+// user actively holds the identity.
+//
+// Before the bool, that last case returned nil and wrote nothing, so admin
+// re-assignment and link-code redemption reported success and then audited a
+// change that had not happened (review-20260914-3c36 F11).
+func identityBindReportsConflict(t *testing.T, f *identityFixture) {
+	ctx := context.Background()
+	owner, other := f.user(t), f.user(t)
+	ext := uniqueID("ext")
+
+	id := func(userID string) *persistence.UserIdentity {
+		return &persistence.UserIdentity{
+			ID: uniqueID("uident"), UserID: userID, Channel: "github",
+			ExternalID: ext, Display: "bound " + ext, CreatedAt: clock(),
+		}
+	}
+	bind := func(what, userID string) bool {
+		bound, err := f.identity.BindIdentity(ctx, id(userID))
+		wantOK(t, "BindIdentity("+what+")", err)
+		return bound
+	}
+	resolvesTo := func() string {
+		rows, err := f.identity.ResolvePrincipalRows(ctx, "github", ext)
+		wantOK(t, "ResolvePrincipalRows", err)
+		if len(rows) == 0 {
+			return ""
+		}
+		return rows[0].UserID
+	}
+
+	if !bind("fresh insert", owner.ID) {
+		t.Fatal("a fresh insert must report bound")
+	}
+	if !bind("same user again", owner.ID) {
+		t.Error("re-binding the SAME user must report bound: that is the state the caller asked for")
+	}
+	if bind("active conflict", other.ID) {
+		t.Error("binding over another user's ACTIVE identity must report NOT bound")
+	}
+	if got := resolvesTo(); got != owner.ID {
+		t.Errorf("after the refused bind the identity resolves to %q, want the original owner %q", got, owner.ID)
+	}
+
+	// A revoked row is the case the guard was written for: it repoints.
+	wantOK(t, "RevokeIdentity", f.identity.RevokeIdentity(ctx, "github", ext))
+	if !bind("revoked repoint", other.ID) {
+		t.Fatal("binding over a REVOKED identity must report bound")
+	}
+	if got := resolvesTo(); got != other.ID {
+		t.Errorf("after the revoked repoint the identity resolves to %q, want %q", got, other.ID)
+	}
+}
+
+// identityRebindMovesActive pins admin authority: RebindIdentity does what
+// BindIdentity refuses, so AssignKey can correct a wrong mapping — the one
+// thing §5.4 says self-claim must never be able to do.
+func identityRebindMovesActive(t *testing.T, f *identityFixture) {
+	ctx := context.Background()
+	owner, other := f.user(t), f.user(t)
+	ext := uniqueID("ext")
+	f.bind(t, owner.ID, "api_key", ext)
+
+	wantOK(t, "RebindIdentity", f.identity.RebindIdentity(ctx, &persistence.UserIdentity{
+		ID: uniqueID("uident"), UserID: other.ID, Channel: "api_key",
+		ExternalID: ext, Display: "reassigned", CreatedAt: clock(),
+	}))
+
+	rows, err := f.identity.ResolvePrincipalRows(ctx, "api_key", ext)
+	wantOK(t, "ResolvePrincipalRows", err)
+	if len(rows) == 0 || rows[0].UserID != other.ID {
+		t.Fatalf("RebindIdentity did not move the ACTIVE binding: rows=%+v, want owner %q", rows, other.ID)
+	}
 }
 
 func identityLastAdminGuard(t *testing.T, f *identityFixture) {
@@ -612,6 +701,42 @@ func identityRevokeIdentity(t *testing.T, f *identityFixture) {
 	wantErr(t, "RevokeIdentity(absent)", f.identity.RevokeIdentity(ctx, "github", uniqueID("absent")), persistence.ErrIdentityNotFound)
 }
 
+// identityRevokeIdentityOwnedBy pins the atomic ownership predicate on BOTH
+// drivers. Regression: audit 2026-09-15 CA-10 — self-unlink checked ownership
+// from a snapshot and then revoked by (channel, external_id) alone, so a
+// binding reassigned in between was revoked by its FORMER owner, taking the
+// new owner's sessions with it. Both drivers shared the unqualified
+// predicate, which is why this belongs in the shared suite.
+func identityRevokeIdentityOwnedBy(t *testing.T, f *identityFixture) {
+	ctx := context.Background()
+	owner := f.user(t)
+	other := f.user(t)
+	ext := uniqueID("ext")
+	f.bind(t, owner.ID, "api_key", ext)
+	sess := f.activeSession(t, owner.ID)
+
+	// A stranger's unlink of someone else's binding is refused, and leaves
+	// the binding and the owner's sessions intact.
+	wantErr(t, "RevokeIdentityOwnedBy(wrong owner)",
+		f.identity.RevokeIdentityOwnedBy(ctx, "api_key", ext, other.ID), persistence.ErrIdentityNotFound)
+	if !f.sessionActive(t, sess.TokenHash) {
+		t.Fatal("a refused owner-qualified revoke still killed the real owner's session")
+	}
+	if rows, err := f.identity.ResolvePrincipalRows(ctx, "api_key", ext); err != nil || len(rows) == 0 {
+		t.Fatalf("a refused owner-qualified revoke still revoked the binding (rows=%d, err=%v)", len(rows), err)
+	}
+
+	// The real owner succeeds, and their sessions go with it.
+	wantOK(t, "RevokeIdentityOwnedBy(owner)", f.identity.RevokeIdentityOwnedBy(ctx, "api_key", ext, owner.ID))
+	if f.sessionActive(t, sess.TokenHash) {
+		t.Fatal("RevokeIdentityOwnedBy left the user's session active")
+	}
+	wantErr(t, "RevokeIdentityOwnedBy(already revoked)",
+		f.identity.RevokeIdentityOwnedBy(ctx, "api_key", ext, owner.ID), persistence.ErrIdentityNotFound)
+	wantErr(t, "RevokeIdentityOwnedBy(absent)",
+		f.identity.RevokeIdentityOwnedBy(ctx, "api_key", uniqueID("absent"), owner.ID), persistence.ErrIdentityNotFound)
+}
+
 func identityMigrateExternalID(t *testing.T, f *identityFixture) {
 	ctx := context.Background()
 	resolves := func(ext string) (string, bool) {
@@ -667,4 +792,90 @@ func identityNoops(t *testing.T, f *identityFixture) {
 	if v := f.view(t, u.ID); v.Role != "" {
 		t.Fatalf("RemoveGroupMember not reflected: role %q", v.Role)
 	}
+}
+
+// identityBothResolversAgree pins the collapse — the central claim the whole
+// identity feature rests on: "a linked sender resolves to the SAME Principal
+// the web session resolves to."
+//
+// The two doors reach it by two DIFFERENT queries. The chat door calls
+// ResolvePrincipalRows, keyed by (channel, external_id); the web door calls
+// ResolveUserPrincipalRows, keyed by user id. Both feed the same
+// principalFromRows, so a divergence would be in the SQL — a join dropped
+// from one, a role or project column missing from the other — and neither
+// query's own test would notice, because each would still be internally
+// consistent. Two people, one account, different project scope depending on
+// which door they came through.
+//
+// Asserted at the repository contract, on BOTH drivers, because that is where
+// the divergence would live. Each resolver's semantics are tested separately
+// in internal/authz; nothing compared them until 2026-09-15.
+func identityBothResolversAgree(t *testing.T, f *identityFixture) {
+	ctx := context.Background()
+	u := f.user(t)
+	ext := uniqueID("ext")
+	f.bind(t, u.ID, "telegram", ext)
+
+	// A user with real scope: two groups, one of them multi-project, so a
+	// query that dropped a join or de-duplicated wrongly shows up.
+	g1 := f.group(t, "user", "alpha", "beta")
+	g2 := f.group(t, "user", "gamma")
+	f.member(t, g1.ID, u.ID)
+	f.member(t, g2.ID, u.ID)
+
+	chatRows, err := f.identity.ResolvePrincipalRows(ctx, "telegram", ext)
+	wantOK(t, "ResolvePrincipalRows", err)
+	webRows, err := f.identity.ResolveUserPrincipalRows(ctx, u.ID)
+	wantOK(t, "ResolveUserPrincipalRows", err)
+
+	if got := principalShape(chatRows); got != principalShape(webRows) {
+		t.Errorf("the two doors disagree about the same person:\n  chat: %s\n  web:  %s\n"+
+			"a linked sender must resolve to the SAME principal the web session does — "+
+			"otherwise project scope depends on which door they came through", got, principalShape(webRows))
+	}
+	// And the shape must be non-trivial, or the comparison above passes on
+	// two empty sets and asserts nothing.
+	if len(chatRows) == 0 {
+		t.Fatal("the chat door resolved nothing; the agreement above is vacuous")
+	}
+
+	// Disabling must reach both doors identically — it is the one property
+	// §5.0 calls the whole feature's justification.
+	wantOK(t, "SetUserDisabled", f.identity.SetUserDisabled(ctx, u.ID, true))
+	chatRows, err = f.identity.ResolvePrincipalRows(ctx, "telegram", ext)
+	wantOK(t, "ResolvePrincipalRows(disabled)", err)
+	webRows, err = f.identity.ResolveUserPrincipalRows(ctx, u.ID)
+	wantOK(t, "ResolveUserPrincipalRows(disabled)", err)
+	if len(chatRows) == 0 || !chatRows[0].Disabled {
+		t.Errorf("the chat door does not see the disable: %+v", chatRows)
+	}
+	if len(webRows) == 0 || !webRows[0].Disabled {
+		t.Errorf("the web door does not see the disable: %+v", webRows)
+	}
+	wantOK(t, "re-enable", f.identity.SetUserDisabled(ctx, u.ID, false))
+}
+
+// principalShape renders the principal-relevant content of a row set in a
+// stable, order-independent form: everything principalFromRows reads, and
+// nothing else. Comparing rendered shapes rather than slices keeps the
+// assertion about the PRINCIPAL rather than about row ordering, which the two
+// queries are not required to match on.
+func principalShape(rows []persistence.PrincipalRow) string {
+	if len(rows) == 0 {
+		return "<none>"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		role, project := "-", "-"
+		if r.Role != nil {
+			role = *r.Role
+		}
+		if r.ProjectID != nil {
+			project = *r.ProjectID
+		}
+		parts = append(parts, role+"/"+project)
+	}
+	sort.Strings(parts)
+	return rows[0].UserID + " disabled=" + strconv.FormatBool(rows[0].Disabled) +
+		" [" + strings.Join(parts, " ") + "]"
 }

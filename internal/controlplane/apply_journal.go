@@ -393,6 +393,24 @@ func (e *ApplyEngine) verifyAndCommit(ctx context.Context, row *persistence.Conf
 			to = persistence.JournalStatePendingRestart
 		}
 	}
+	// THE LAST FENCE CHECK, and the one that was missing (re-audit
+	// 2026-09-15, CA-22). Reload is the longest window in the apply, and the
+	// lease can be lost inside it: every forward write was correctly fenced
+	// and the AUTHORITATIVE LEDGER was then committed by a process that is no
+	// longer the config writer. Fencing writes but not the transition that
+	// declares them applied protects the files and not the truth about them.
+	//
+	// A lost lease here does NOT revert: the files are written and another
+	// writer now owns this tree, so reversing would be a second superseded
+	// mutation. The row is left open, carrying the reason, for the current
+	// leader's recovery to resolve.
+	if isFenced, reason := e.fenced(ctx); isFenced {
+		if terr := e.Journal.Transition(ctx, row.ID, persistence.JournalStateVerifying, persistence.JournalStateVerifying,
+			persistence.JournalPatch{Failure: "fence before ledger commit: " + reason}); terr != nil {
+			e.Logger.Error().Err(terr).Str("journal", row.ID).Msg("could not record the fence stop on the journal row")
+		}
+		return fmt.Errorf("%w: %s (writes are on disk; the row is left for the current leader to recover)", ErrWriterFenced, reason)
+	}
 	commit := persistence.JournalLedgerCommit{
 		JournalID: row.ID, To: to, GenerationAfter: e.generation(),
 		ProposalID: p.ID, AppliedBy: actor, Snapshot: buildSnapshot(p, resolved),
@@ -416,9 +434,26 @@ func (e *ApplyEngine) verifyAndCommit(ctx context.Context, row *persistence.Conf
 // restored (a created file is deleted only when its bytes are exactly what
 // this row wrote); anything else is DRIFT and the file is left alone.
 func (e *ApplyEngine) revertJournaled(ctx context.Context, row *persistence.ConfigApplyJournal, resolved []resolvedOp, failure string) error {
+	// A REVERSAL IS A WRITE, and was never fenced (re-audit 2026-09-15,
+	// CA-22). A superseded process restoring pre-images would overwrite
+	// content the CURRENT writer now owns — the reversal is the more
+	// dangerous of the two directions, because it puts back bytes that are
+	// old by definition. Refuse and leave the row open, naming the reason, so
+	// the current leader's recovery resolves it.
 	cur, err := e.Journal.Get(ctx, row.ID)
 	if err != nil {
 		return fmt.Errorf("journal: %w", err)
+	}
+	if isFenced, reason := e.fenced(ctx); isFenced {
+		// Recorded against the row's CURRENT state, not the caller's stale
+		// copy: the row has moved on since Apply captured it (PREPARED →
+		// APPLYING → VERIFYING), and a transition from a stale state is a
+		// no-op that loses the reason the current leader needs.
+		if terr := e.Journal.Transition(ctx, row.ID, cur.State, cur.State,
+			persistence.JournalPatch{Failure: "fence before revert: " + reason + " (original failure: " + failure + ")"}); terr != nil {
+			e.Logger.Error().Err(terr).Str("journal", row.ID).Msg("could not record the fence stop on the journal row")
+		}
+		return fmt.Errorf("%w: %s (revert refused; the row is left for the current leader to recover)", ErrWriterFenced, reason)
 	}
 	if cur.State != persistence.JournalStateReverting {
 		if terr := e.Journal.Transition(ctx, row.ID, cur.State, persistence.JournalStateReverting,
@@ -520,6 +555,12 @@ func (e *ApplyEngine) Reconcile(ctx context.Context) error {
 	if e.Journal == nil {
 		return nil
 	}
+	// Recovery writes files, so it takes the process-wide writer lock too
+	// (CA-06) — a reconcile racing an apply is the same hazard.
+	if !configWriteMu.TryLock() {
+		return ErrApplyInProgress
+	}
+	defer configWriteMu.Unlock()
 	if !e.mu.TryLock() {
 		return ErrApplyInProgress
 	}
@@ -527,6 +568,16 @@ func (e *ApplyEngine) Reconcile(ctx context.Context) error {
 	rows, err := e.Journal.ListOpen(ctx)
 	if err != nil {
 		return fmt.Errorf("journal list open: %w", err)
+	}
+	// Recovery ROLLS BUNDLES FORWARD and RESTORES PRE-IMAGES — both are
+	// writes, so a daemon that does not hold the writer lease must not run
+	// it at all (re-audit 2026-09-15, CA-22, tenet 4.5: the same seam the
+	// forward path had). Checked once here rather than only per-op, because
+	// a replica that never holds the lease should not begin.
+	if len(rows) > 0 {
+		if isFenced, reason := e.fenced(ctx); isFenced {
+			return fmt.Errorf("%w: %s (%d open journal row(s) left for the current leader)", ErrWriterFenced, reason, len(rows))
+		}
 	}
 	var errs []error
 	for _, row := range rows {
@@ -573,6 +624,28 @@ func (e *ApplyEngine) reconcileRow(ctx context.Context, row *persistence.ConfigA
 	resolved, p, err := e.resolvedFromJournal(ctx, row)
 	if err != nil {
 		return err
+	}
+	// RE-CHECK THE READ SET BEFORE ROLLING ANYTHING FORWARD (re-audit
+	// 2026-09-15, CA-21).
+	//
+	// PREPARE persists row.ReadSet for exactly this moment, and recovery
+	// never read it. The forward path validates the read set twice (§4
+	// passes 1 and 2), so every forward test passed while recovery — the
+	// path that runs after a crash, when an operator is most likely to have
+	// hand-edited config — skipped it entirely and completed a bundle
+	// computed from content that no longer exists.
+	//
+	// This is §1.4's "recovery never overwrites a hand edit" applied to the
+	// inputs a proposal was DERIVED from, not only to the targets it writes.
+	// A changed dependency parks the row in DRIFT: an operator decides,
+	// because rolling forward and rolling back are both wrong when the
+	// premise changed.
+	if drifted, cerr := e.checkReadSet(row.ReadSet); cerr != nil || drifted != "" {
+		if cerr != nil {
+			return fmt.Errorf("journal %s: read dependency unreadable during recovery: %w", row.ID, cerr)
+		}
+		cur, existed, _ := readIfExists(e.mustResolve(drifted))
+		return e.markDrift(ctx, row, drifted, cur, existed)
 	}
 	switch row.State {
 	case persistence.JournalStatePrepared:
@@ -709,4 +782,13 @@ func (e *ApplyEngine) revertOrErr(ctx context.Context, row *persistence.ConfigAp
 		return rerr
 	}
 	return cause
+}
+
+// mustResolve resolves a read-set path for diagnostics, falling back to a
+// plain join when the guard refuses (the caller is already reporting drift).
+func (e *ApplyEngine) mustResolve(rel string) string {
+	if full, err := e.resolveTarget(rel); err == nil {
+		return full
+	}
+	return filepath.Join(e.ConfigDir, filepath.FromSlash(rel))
 }

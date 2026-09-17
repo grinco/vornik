@@ -127,6 +127,13 @@ func (m *countingMetrics) RecordPromotion() { m.promotions++ }
 
 // --- helpers ---------------------------------------------------------
 
+// promoFixtureTimeout is the timeout the shared fixture's workflow carries.
+// seedPromoCandidate stamps the matching baseline and newPromoterUnderTest
+// serves the same workflow as live, so the default fixture is a CURRENT
+// candidate and these tests keep exercising what they were written for. A
+// test about staleness builds its own pair (promoter_drift_test.go).
+const promoFixtureTimeout = "180s"
+
 func seedPromoCandidate(t *testing.T, repo *fakeCandidateRepo, status persistence.HealingCandidateStatus, proposalID string) *persistence.HealingCandidate {
 	t.Helper()
 	c := &persistence.HealingCandidate{
@@ -136,13 +143,17 @@ func seedPromoCandidate(t *testing.T, repo *fakeCandidateRepo, status persistenc
 		WorkflowID: "wf_1",
 		ProposalID: proposalID,
 		Status:     status,
+		// Current by construction — promotion now requires a verifiable
+		// baseline (2026-09-16 currency gate).
+		BaselineGenomeHash: GenomeHash(liveWorkflow(t, promoFixtureTimeout)),
 	}
 	repo.put(c)
 	return c
 }
 
 func newPromoterUnderTest(cr *fakeCandidateRepo, pr *fakeProposalRepo, ap ProposalApplier, m Metrics) *Promoter {
-	return NewPromoter(cr, pr, ap, m, zerolog.Nop())
+	return NewPromoter(cr, pr, ap, m, zerolog.Nop()).
+		WithWorkflowLookup(&fakeWorkflowLookup{wf: mustLiveWorkflow(promoFixtureTimeout)})
 }
 
 // --- Promote: happy path ---------------------------------------------

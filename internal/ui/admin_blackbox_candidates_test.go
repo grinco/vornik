@@ -147,18 +147,22 @@ func (s *stubHealingTrialRepoUI) Finish(_ context.Context, _ string, _ persisten
 }
 
 type stubTrialRunnerUI struct {
-	err        error
+	err error
+	// verdict is what a synchronous (static) run recorded. The handler
+	// reports it, so a test that leaves it empty exercises the
+	// unrecognised-verdict fallback rather than a pass.
+	verdict    string
 	lastMode   string
 	lastCandID string
 	calls      int
 	asyncCalls int
 }
 
-func (s *stubTrialRunnerUI) RunTrial(_ context.Context, candidateID, mode string, _ []string) error {
+func (s *stubTrialRunnerUI) RunTrial(_ context.Context, candidateID, mode string, _ []string) (string, error) {
 	s.calls++
 	s.lastMode = mode
 	s.lastCandID = candidateID
-	return s.err
+	return s.verdict, s.err
 }
 
 func (s *stubTrialRunnerUI) RunTrialAsync(_ context.Context, candidateID, mode string, _ []string) error {

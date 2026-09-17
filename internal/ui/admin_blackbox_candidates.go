@@ -48,11 +48,18 @@ import (
 // package so ui doesn't import internal/workflowhealing.
 type HealingTrialRunnerUI interface {
 	// RunTrial runs a trial of the candidate in the given mode
-	// (static | replay) against the evidence set and persists the
-	// result. The ui handler only needs the error (it re-reads the
-	// candidate + trials for the redirect target), so the concrete
-	// verdict is not part of this seam.
-	RunTrial(ctx context.Context, candidateID, mode string, evidenceIDs []string) error
+	// (static | replay) against the evidence set, persists the result,
+	// and returns the VERDICT it recorded.
+	//
+	// The verdict used to be dropped here, on the reasoning that the
+	// handler re-reads the candidate anyway. It does not survive contact
+	// with a static trial: static runs synchronously and leaves the
+	// candidate at draft whether it passed or failed (promotion needs a
+	// replay pass), so the candidate row the handler re-reads is
+	// identical in both cases and the operator was told only that a
+	// trial had "started" — of something already finished, with an
+	// outcome nothing reported (report 2026-09-16).
+	RunTrial(ctx context.Context, candidateID, mode string, evidenceIDs []string) (verdict string, err error)
 	// RunTrialAsync opens the trial and returns immediately; the
 	// evaluation finishes in a detached goroutine and lands on the
 	// candidate's trial history. Used for replay trials, whose real
@@ -77,8 +84,15 @@ var (
 	ErrUICandidateNotFound      = errors.New("healing candidate not found")
 	ErrUICandidateTerminal      = errors.New("healing candidate is terminal")
 	ErrUICandidateNotPromotable = errors.New("healing candidate is not promotable (requires trial_passed)")
-	ErrUITrialMode              = errors.New("unsupported trial mode")
-	ErrUITrialRunning           = errors.New("a trial is already running for this candidate")
+	// ErrUICandidateStale is the currency refusal: the candidate DID clear a
+	// trial, but the workflow it patches has changed since the genome was
+	// generated, so promoting it would revert the edits made in between.
+	// Deliberately not folded into ErrUICandidateNotPromotable, whose banner
+	// says the trial has not passed — which would be false here and would
+	// send the operator to re-run a trial that cannot help.
+	ErrUICandidateStale = errors.New("healing candidate is stale: the workflow changed after the genome was generated")
+	ErrUITrialMode      = errors.New("unsupported trial mode")
+	ErrUITrialRunning   = errors.New("a trial is already running for this candidate")
 )
 
 // CandidateRow is the pre-formatted shape the list template renders.
@@ -519,13 +533,20 @@ func (s *Server) AdminBlackBoxCandidateRunTrial(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 	var err error
+	// done is the flash token the redirect carries. Replay is the only
+	// mode that can truthfully say "started": it detaches. Static has
+	// already finished by the time the operator reads anything, so it
+	// reports its verdict instead.
+	done := "trial-replay-started"
 	if mode == string(persistence.HealingTrialModeReplay) {
 		// Replay re-runs real evidence executions — minutes to tens of
 		// minutes. Open the trial and return at once; the verdict lands
 		// in the trial history below when the detached run finishes.
 		err = s.healingTrialRunner.RunTrialAsync(ctx, id, mode, nil)
 	} else {
-		err = s.healingTrialRunner.RunTrial(ctx, id, mode, nil)
+		var verdict string
+		verdict, err = s.healingTrialRunner.RunTrial(ctx, id, mode, nil)
+		done = staticTrialFlash(verdict)
 	}
 	if err != nil {
 		switch {
@@ -548,7 +569,22 @@ func (s *Server) AdminBlackBoxCandidateRunTrial(w http.ResponseWriter, r *http.R
 		}
 	}
 	s.auditCandidate(ctx, r, "blackbox-candidate.trial-run", id, "mode="+mode)
-	cpAwareCandidateRedirect(w, r, id, "trial-started", "")
+	cpAwareCandidateRedirect(w, r, id, done, "")
+}
+
+// staticTrialFlash maps a finished static trial's verdict onto its flash
+// token. An unrecognised verdict (inconclusive, errored, or a mode the
+// runner declined) falls back to the neutral "it ran, go look" token rather
+// than claiming either outcome — the distinction tenet 4 is about.
+func staticTrialFlash(verdict string) string {
+	switch persistence.HealingTrialVerdict(verdict) {
+	case persistence.HealingTrialPassed:
+		return "trial-static-passed"
+	case persistence.HealingTrialFailed:
+		return "trial-static-failed"
+	default:
+		return "trial-static-inconclusive"
+	}
 }
 
 // AdminBlackBoxCandidatePromote handles
@@ -575,6 +611,10 @@ func (s *Server) AdminBlackBoxCandidatePromote(w http.ResponseWriter, r *http.Re
 		switch {
 		case errors.Is(err, ErrUICandidateNotFound):
 			http.NotFound(w, r)
+			return
+		case errors.Is(err, ErrUICandidateStale):
+			cpAwareCandidateRedirect(w, r, id, "", "promotion refused — "+err.Error()+
+				" Regenerate the candidate against the current workflow.")
 			return
 		case errors.Is(err, ErrUICandidateNotPromotable):
 			if cpHubReturnRequested(r) {

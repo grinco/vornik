@@ -30,7 +30,7 @@ DIRECT=(
   internal/archiveutil/archiveutil.go
   internal/extractor/runner.go
   internal/projectarchive/lifecycle.go
-  internal/service/container_workflow_architect.go
+  internal/service/container_workflow_surfaces.go
   internal/templates/suggest.go
   internal/templates/write.go
   internal/ui/artifacts.go

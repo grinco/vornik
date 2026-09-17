@@ -27,6 +27,20 @@ type memAPIKeyRepo struct {
 	failCre bool // simulate a Create() error path
 }
 
+// GetByID mirrors the real repository: it returns revoked and expired rows
+// too, because the §5.4 key-claim flow must still be able to claim them.
+func (m *memAPIKeyRepo) GetByID(_ context.Context, keyID string) (*persistence.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.ID == keyID {
+			cp := *r
+			return &cp, nil
+		}
+	}
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (m *memAPIKeyRepo) Create(_ context.Context, k *persistence.APIKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -969,4 +983,11 @@ var _ = bytes.NewReader
 
 func (*memAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*memAPIKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

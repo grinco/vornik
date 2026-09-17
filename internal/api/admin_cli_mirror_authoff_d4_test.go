@@ -68,22 +68,6 @@ func TestD4_AdminWorkflowStats_AuthOff_AdmittedWithoutKey(t *testing.T) {
 	}
 }
 
-func TestD4_AdminWorkflowArchitect_AuthOff_AdmittedWithoutKey(t *testing.T) {
-	s := NewServer(
-		WithAdminConfig(config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}}),
-		WithWorkflowArchitect(&stubArchitect{}),
-	)
-	rec := httptest.NewRecorder()
-	req := authDisabledReq(newProposeRequest(`{"workflow_id":"wf-a"}`, ""))
-	s.AdminWorkflowArchitectPropose(rec, req)
-	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-		t.Fatalf("auth-off operator must be admitted, got %d (body=%q)", rec.Code, rec.Body.String())
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200 for auth-off architect propose, got %d", rec.Code)
-	}
-}
-
 func TestD4_AdminWorkflowProposalsList_AuthOff_AdmittedWithoutKey(t *testing.T) {
 	s := NewServer(
 		WithAdminConfig(config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}}),

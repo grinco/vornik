@@ -106,6 +106,7 @@ type Deps struct {
 	// (users, groups, bindings). The `identity` feature's prereq and
 	// Verify read it; nil means the tables are not wired on this backend.
 	Identity persistence.IdentityRepository
+
 	// AdminAudit is the admin audit sink the `architect-consult` feature
 	// requires before it may enable (review R8: a nil repository means
 	// zero consultations, never an unaudited one).

@@ -28,6 +28,18 @@ type uiMemAPIKeyRepo struct {
 	rows []*persistence.APIKey
 }
 
+func (m *uiMemAPIKeyRepo) GetByID(_ context.Context, keyID string) (*persistence.APIKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range m.rows {
+		if k.ID == keyID {
+			cp := *k
+			return &cp, nil
+		}
+	}
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (m *uiMemAPIKeyRepo) Create(_ context.Context, k *persistence.APIKey) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -391,4 +403,11 @@ func TestRenderKeyRows_StatusAndNullDisplay(t *testing.T) {
 
 func (*uiMemAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*uiMemAPIKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

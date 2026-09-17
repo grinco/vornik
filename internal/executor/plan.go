@@ -605,7 +605,20 @@ func rewriteInputPathsInPrompt(userPrompt string, inputFiles []string) string {
 		base := filepath.Base(src)
 		containerPath := "/app/workspace/artifacts/in/" + base
 		// (a) exact host path → container path.
-		if strings.Contains(out, src) {
+		//
+		// Skipped when src is a substring of the canonical path — a
+		// staged path recorded RELATIVE to the workspace
+		// ("artifacts/in/<base>", or a bare basename) is ALREADY
+		// canonical, and the prompt's correct absolute path contains
+		// it. Replacing it prepends the prefix a second time, and
+		// every later pass prepends another: the agent is handed
+		// /app/workspace//app/workspace/artifacts/in/<base>, cannot
+		// read its own input, and the step dies "missing
+		// prerequisite" pointing at an upstream role that is not
+		// involved. Incident 2026-09-16,
+		// exec_20260916164618_4c53e9deafd4e8e6. The invariant this
+		// restores is idempotency: rewrite(rewrite(x)) == rewrite(x).
+		if !strings.Contains(containerPath, src) && strings.Contains(out, src) {
 			out = strings.ReplaceAll(out, src, containerPath)
 		}
 		// (b) any absolute /tmp/<base> or ./<base> reference →

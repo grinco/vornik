@@ -1819,6 +1819,34 @@ func (s *Server) companionToolWhoami(ctx context.Context, key *persistence.APIKe
 			}
 		}
 	}
+	// Build identity and the resolved embedder — the two ComparabilityFields the
+	// memory benchmark could never fill, because ObservedEmbedder read the
+	// admin-only /api/v1/memory/stats (403 for the companion key the harness
+	// authenticates with) and nothing exposed the revision at all. Both sit
+	// inside the comparability key, so an always-empty value made runs from
+	// different releases and different embedding models hash alike and compare
+	// clean. Same door, and the same reason, as embedding_readiness above.
+	//
+	// Omitted rather than emptied when unknown: a key stamped with a guessed
+	// build is worse than one honestly marked partial.
+	// BuildVersion(), not the s.buildVersion field: the daemon wires the LAZY
+	// WithBuildVersionFunc because initHTTPServer builds these options before
+	// container.SetVersion runs, so the eager field is empty on every real
+	// daemon. Reading it directly is the mistake that made /api/v1/capabilities
+	// report an empty version until 2026-08-15 — and it is invisible in a test
+	// that sets the field, which is why the test below wires the func.
+	if rev := s.BuildVersion(); rev != "" {
+		out["daemon_revision"] = rev
+	}
+	if s.memoryEmbedder != nil {
+		if provider, model, dims := s.memoryEmbedder.Embedder(); model != "" {
+			emb := map[string]any{"provider": provider, "model": model}
+			if dims > 0 {
+				emb["dimensions"] = dims
+			}
+			out["embedder"] = emb
+		}
+	}
 	if key.SessionLabel != "" {
 		out["session_label"] = key.SessionLabel
 	}

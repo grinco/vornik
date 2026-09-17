@@ -76,24 +76,52 @@ models:
   # sub-provider (local Ollama at 192.168.192.168:11434), grouped
   # together here since both serve the same bare Ollama-tag model IDs
   # (no vornik-added namespace — see
-  # https://docs.vornik.io). Most rates are
-  # priced at the equivalent model's rate on openrouter.ai — for the
-  # http (local) entries this means the cost metric reflects what the
-  # workload would cost on a metered API instead of understating spend
-  # just because it happens to run on self-hosted hardware. Researched
-  # 2026-07-13; per-line source noted. A handful have no public listing
-  # anywhere (custom fine-tunes, embedding models) — those are marked
-  # ESTIMATE with the reasoning, per operator instruction to use
-  # judgment rather than leave them unpriced.
-  glm-5.2:cloud: { input: 0.93, output: 3.00 } # openrouter.ai/z-ai/glm-5.2 (identical to Ollama's own price)
-  glm-5.2:                { input: 0.93, output: 3.00 } # same model, bare-tag alias
-  glm-5.1:                { input: 0.97, output: 3.04 } # openrouter.ai/z-ai/glm-5.1
+  # https://docs.vornik.io).
+  #
+  # SOURCE POLICY (revised 2026-09-17 — supersedes the blanket OpenRouter rule
+  # this block used to state):
+  #   - An id Ollama Cloud actually SERVES is priced from ollama.com/pricing,
+  #     the vendor's own published table. That is the invoice.
+  #   - An id served by the http (local/Hetzner) sub-provider, or present only
+  #     as a Bedrock twin, keeps its openrouter.ai-equivalent rate. For the
+  #     self-hosted entries this is deliberate: the metric reflects what the
+  #     workload WOULD cost on a metered API, instead of understating spend
+  #     just because it happens to run on owned hardware.
+  # Where the same model is served by both, the two keys now legitimately carry
+  # different numbers — see the deepseek-v4-flash block below.
+  # Researched 2026-07-13 (OpenRouter), revised 2026-09-17 (Ollama Cloud);
+  # per-line source noted. A handful have no public listing anywhere (custom
+  # fine-tunes, embedding models) — those are marked ESTIMATE with the
+  # reasoning, per operator instruction to use judgment rather than leave them
+  # unpriced.
+  # 2026-09-17: the Ollama CLOUD ids below are repriced from ollama.com/pricing,
+  # the vendor's own published table, replacing OpenRouter-derived estimates.
+  # OpenRouter prices a DIFFERENT host's serving of the same weights; for a
+  # model this daemon actually buys from Ollama, the vendor's number is the one
+  # that bills. The old glm-5.2 comment asserted the two were "identical" — they
+  # were not (0.93/3.00 against 1.40/4.40, a 34%/32% understatement feeding
+  # every budget gate and cost metric). Self-hosted (http/Hetzner) and
+  # Bedrock-twin ids keep their OpenRouter-equivalent rates by design — see the
+  # header note above.
+  #
+  # PEAK PRICING, NOT MODELLED: ollama.com doubles selected models' rates
+  # 12:00–18:00 UTC Mon–Fri. That window covers most of the US cash session, so
+  # ibkr-trader ticks land in it routinely. internal/pricing has no
+  # time-of-day dimension (only reasoning_multiplier / cache tiers), so peak
+  # spend is under-reported by up to 2x on affected models. Stated here rather
+  # than left for someone to discover from a budget that never trips.
+  glm-5.3:                { input: 1.40, output: 4.40, cache_read: 0.26 } # ollama.com/pricing
+  "glm-5.3:cloud":        { input: 1.40, output: 4.40, cache_read: 0.26 } # :cloud suffix form
+  "glm-5.3-flash":        { input: 0.15, output: 0.50, cache_read: 0.03 } # ollama.com/pricing
+  glm-5.2:cloud: { input: 1.40, output: 4.40, cache_read: 0.26 } # ollama.com/pricing (was 0.93/3.00 via OpenRouter)
+  glm-5.2:                { input: 1.40, output: 4.40, cache_read: 0.26 } # same model, bare-tag alias
+  glm-5.1:                { input: 1.00, output: 3.20, cache_read: 0.20 } # ollama.com/pricing (was 0.97/3.04 via OpenRouter)
   glm-5:                  { input: 1.00, output: 3.20 } # matches zai.glm-5 (Bedrock)
   glm-4.7:                { input: 0.60, output: 2.20 } # matches zai.glm-4.7 (Bedrock)
   "glm-4.7-flash:latest":   { input: 0.07, output: 0.40 } # matches zai.glm-4.7-flash (Bedrock)
   "kimi-k2.5":             { input: 0.60, output: 3.00, reasoning_multiplier: 2.0 } # matches moonshotai.kimi-k2.5 (Bedrock)
-  "kimi-k2.6":             { input: 0.66, output: 3.41 } # openrouter.ai/moonshotai/kimi-k2.6 (paid; the :free variant is a different id)
-  "kimi-k2.7-code":        { input: 0.72, output: 3.49 } # openrouter.ai/moonshotai/kimi-k2.7-code
+  "kimi-k2.6":             { input: 0.95, output: 4.00, cache_read: 0.16 } # ollama.com/pricing (was 0.66/3.41 via OpenRouter). ibkr-trader strategist primary since 2026-09-17.
+  "kimi-k2.7-code":        { input: 0.95, output: 4.00, cache_read: 0.19 } # ollama.com/pricing (was 0.72/3.49 via OpenRouter)
   # kimi-k3 — operator-supplied vendor rates (2026-07-29). The most expensive
   # model on this route by a wide margin: 3.2x glm-5.2's input and 5x its
   # output. Vision-capable, but that alone is a poor reason to point a
@@ -101,6 +129,23 @@ models:
   # config.yaml. The cache_read rate is 10% of input, so a stable system
   # prefix pays back heavily here if it is ever used for bulk work.
   "kimi-k3":               { input: 3.00, output: 15.00, cache_read: 0.30 }
+  # The self-hosted vLLM model, under BOTH names it is served by. Absent until
+  # 2026-09-17, so every agent-bench cost figure this host has ever produced
+  # fell through to `default` (1.00/3.00) and overstated by ~3x on input before
+  # the cache tier is even considered — measured on the 2026.9.4 gold pass,
+  # which recorded $40.51 against the $7.12 LiteLLM actually billed.
+  #
+  # cache_read is 10% of input, confirmed from LiteLLM's /model/info
+  # (input_cost_per_token 3.5e-07, cache_read_input_token_cost 3.5e-08). It is
+  # load-bearing here rather than a rounding detail: vLLM prefix-caches
+  # aggressively and 79.5% of that pass's 35.4M prompt tokens were cache reads,
+  # so omitting the tier alone overstates a prompt-heavy agent workload ~2.6x.
+  #
+  # Both keys, because Lookup is EXACT-MATCH with no prefix fallback: the model
+  # is "vllm/qwen3.8:27b" through LiteLLM and "Qwen/Qwen3.8-27B-FP8" direct,
+  # and the transport can change without the hardware doing so.
+  "vllm/qwen3.8:27b":       { input: 0.35, output: 2.75, cache_read: 0.035 }
+  "Qwen/Qwen3.8-27B-FP8":   { input: 0.35, output: 2.75, cache_read: 0.035 }
   "deepseek-v3.1:671b":    { input: 0.25, output: 0.95 } # openrouter.ai/deepseek/deepseek-chat-v3.1
   "deepseek-v3.2":         { input: 0.62, output: 1.85 } # matches deepseek.v3.2 (Bedrock)
   # deepseek-v4-flash — operator-supplied vendor rates (2026-08-22), replacing
@@ -109,11 +154,36 @@ models:
   # model under TAGGED ids — so the bare key alone would let a role naming
   # "deepseek-v4-flash:0731" record the default rate while looking priced.
   # Every tag the cloud advertises is listed for that reason.
-  "deepseek-v4-flash":         { input: 0.065, output: 0.18 }
-  "deepseek-v4-flash:0731":    { input: 0.065, output: 0.18 }
-  "deepseek-v4-flash:preview": { input: 0.065, output: 0.18 }
-  "deepseek-v4-flash:cloud":   { input: 0.065, output: 0.18 } # :cloud suffix form, as glm-5.2:cloud uses
-  "deepseek-v4-pro":       { input: 0.44, output: 0.87 } # openrouter.ai/deepseek/deepseek-v4-pro
+  # 2026-09-17 CONFLICT, FLAGGED NOT BURIED: ollama.com/pricing lists
+  # deepseek-v4-flash at 0.22/0.66 — ~3.4x the operator-supplied 0.065/0.18
+  # defended above and in the pricing-coverage LLD. The Ollama-Cloud-served
+  # spellings move to the vendor's published rate, because that is what Ollama
+  # bills for traffic this daemon sends there. The Hetzner spelling below KEEPS
+  # 0.065/0.18: it is self-hosted, so the operator's figure is the real cost
+  # there and the two genuinely diverge now. If 0.065 was a NEGOTIATED Ollama
+  # rate rather than a self-hosting cost, revert these four and say so here.
+  "deepseek-v4-flash":         { input: 0.22, output: 0.66, cache_read: 0.007 } # ollama.com/pricing
+  "deepseek-v4-flash:0731":    { input: 0.22, output: 0.66, cache_read: 0.007 }
+  "deepseek-v4-flash:preview": { input: 0.22, output: 0.66, cache_read: 0.007 }
+  "deepseek-v4-flash:cloud":   { input: 0.22, output: 0.66, cache_read: 0.007 } # :cloud suffix form, as glm-5.2:cloud uses
+  # deepseek-v4.1-flash — new on Ollama Cloud, LIVE in `vornikctl models list`
+  # and previously UNPRICED, so it billed at `default` (1.00/3.00): a 6.7x input
+  # overstatement. Tagged spellings listed for the same exact-match reason as
+  # the v4 tags above.
+  "deepseek-v4.1-flash":       { input: 0.15, output: 0.60, cache_read: 0.003 } # ollama.com/pricing
+  "deepseek-v4.1-flash:cloud": { input: 0.15, output: 0.60, cache_read: 0.003 }
+  # The Hetzner (`http` sub-provider) spelling of the SAME model — capitalised,
+  # and hyphen-not-colon before the tag. It is chat.router.http.model, i.e. the
+  # naked-fallthrough default for anything routed there, so it is genuinely
+  # reachable. Added 2026-08-23: exact-match lookup meant this id was inheriting
+  # `default` (1.00/3.00) — a ~15x input / ~17x output overstatement on every
+  # call that lands on it. Priced at the operator-supplied vendor rate above so
+  # all five spellings of one model agree; today's OpenRouter cross-check on the
+  # matching tag (openrouter.ai/deepseek/deepseek-v4-flash-0731) reads 0.08/0.18,
+  # close enough to leave the operator's number in place.
+  "DeepSeek-V4-Flash-0731":    { input: 0.065, output: 0.18 }
+  "deepseek-v4-pro":       { input: 0.66, output: 1.98, cache_read: 0.022 } # ollama.com/pricing (was 0.44/0.87 via OpenRouter)
+  "deepseek-v4-pro:0813":  { input: 0.66, output: 1.98, cache_read: 0.022 } # tagged spelling — live in models list, previously unpriced
   "devstral-2:123b":       { input: 0.40, output: 2.00 } # openrouter.ai/mistralai/devstral-2512
   "devstral-small-2:24b":  { input: 0.10, output: 0.30 } # openrouter.ai (Devstral Small 2)
   "devstral-small-2:latest": { input: 0.10, output: 0.30 } # same as devstral-small-2:24b
@@ -123,14 +193,14 @@ models:
   "gemma3:27b":            { input: 0.23, output: 0.38 } # matches google.gemma-3-27b-it (Bedrock)
   "gemma4:12b":            { input: 0.09, output: 0.29 } # ESTIMATE — no Gemma 4 12B SKU found on OpenRouter (only 4B/26B-A4B/31B); reused Gemma 3 12B's rate as same size class
   "gemma4:26b":            { input: 0.06, output: 0.30 } # openrouter.ai/google/gemma-4-26b-a4b-it
-  "gemma4:31b":            { input: 0.12, output: 0.35 } # openrouter.ai/google/gemma-4-31b-it
-  "gpt-oss:20b":           { input: 0.029, output: 0.14 } # openrouter.ai/openai/gpt-oss-20b
-  "gpt-oss:120b":          { input: 0.15, output: 0.60 } # matches openai.gpt-oss-120b-1:0 (Bedrock) — clean OpenRouter paid listing not found
-  "gpt-oss:latest":        { input: 0.029, output: 0.14 } # assumed :latest = 20b size
+  "gemma4:31b":            { input: 0.14, output: 0.40, cache_read: 0.05 } # ollama.com/pricing "gemma4" (was 0.12/0.35 via OpenRouter); the 12b/26b keys above are NOT Ollama-Cloud-served and keep their OpenRouter rates
+  "gpt-oss:20b":           { input: 0.07, output: 0.30, cache_read: 0.035 } # ollama.com/pricing (was 0.029/0.14 via OpenRouter)
+  "gpt-oss:120b":          { input: 0.15, output: 0.60, cache_read: 0.014 } # ollama.com/pricing — rate unchanged, and it agrees with the Bedrock twin
+  "gpt-oss:latest":        { input: 0.07, output: 0.30, cache_read: 0.035 } # assumed :latest = 20b size
   "minimax-m2.1":          { input: 0.30, output: 1.20 } # matches minimax.minimax-m2.1 (Bedrock)
   "minimax-m2.5":          { input: 0.30, output: 1.20 } # matches minimax.minimax-m2.5 (Bedrock)
-  "minimax-m2.7":          { input: 0.24, output: 0.96 } # openrouter.ai/minimax/minimax-m2.7
-  "minimax-m3":            { input: 0.30, output: 1.20 } # openrouter.ai/minimax/minimax-m3 (promotional "50% off" rate at time of lookup — re-verify once the promo ends)
+  "minimax-m2.7":          { input: 0.30, output: 1.20, cache_read: 0.06 } # ollama.com/pricing (was 0.24/0.96 via OpenRouter). ibkr-trader executor primary.
+  "minimax-m3":            { input: 0.60, output: 2.40, cache_read: 0.12 } # ollama.com/pricing (was 0.30/1.20 — exactly half, i.e. the OpenRouter "50% off" promo the old comment warned about; the promo is what the gap was)
   "ministral-3:3b":        { input: 0.10, output: 0.10 } # matches mistral.ministral-3-3b-instruct (Bedrock)
   "ministral-3:8b":        { input: 0.15, output: 0.15 } # matches mistral.ministral-3-8b-instruct (Bedrock)
   "ministral-3:14b":       { input: 0.20, output: 0.20 } # matches mistral.ministral-3-14b-instruct (Bedrock)
@@ -138,12 +208,15 @@ models:
   "mistral-nemo:latest":   { input: 0.02, output: 0.03 } # openrouter.ai/mistralai/mistral-nemo
   "magistral:latest":      { input: 0.10, output: 0.30 } # openrouter.ai (Magistral Medium 2509) — assumed Medium is the ":latest" default
   "lfm2:latest":           { input: 0.03, output: 0.12 } # ESTIMATE — no exact ":latest" tag match on OpenRouter; used flagship LFM2-24B-A2B's rate as best reference, actual served size may differ
-  "nemotron-3-nano:30b":   { input: 0.05, output: 0.20 } # openrouter.ai/nvidia/nemotron-3-nano-30b-a3b
-  "nemotron-3-super":      { input: 0.08, output: 0.45 } # openrouter.ai/nvidia/nemotron-3-super-120b-a12b (distinct id from nvidia.nemotron-super-3-120b's 0.20/0.85 — different model)
-  "nemotron-3-ultra":      { input: 0.50, output: 2.20 } # openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+  "nemotron-3-nano:30b":   { input: 0.06, output: 0.24 } # ollama.com/pricing "nemotron-3-nano" (was 0.05/0.20 via OpenRouter)
+  # nemotron-3-super's published INPUT (0.015) sits BELOW nano's (0.06) while its
+  # output is 2.5x nano's. That inversion is what ollama.com prints; recorded
+  # as-published rather than "corrected" into something that looks sensible.
+  "nemotron-3-super":      { input: 0.015, output: 0.60, cache_read: 0.015 } # ollama.com/pricing (was 0.08/0.45 via OpenRouter)
+  "nemotron-3-ultra":      { input: 0.10, output: 3.00, cache_read: 0.10 } # ollama.com/pricing (was 0.50/2.20 via OpenRouter)
   "qwen3-coder-next":      { input: 0.11, output: 0.80 } # openrouter.ai/qwen/qwen3-coder-next (distinct from qwen.qwen3-next-80b-a3b, a different/older model)
   "qwen3-coder:480b":      { input: 0.22, output: 1.80 } # openrouter.ai/qwen/qwen3-coder paid tier (the Bedrock qwen.qwen3-coder-480b-a35b-v1:0 entry was a rough estimate; this is the real number)
-  "qwen3.5:397b":          { input: 0.39, output: 2.45 } # openrouter.ai/qwen/qwen3.5-397b-a17b
+  "qwen3.5:397b":          { input: 0.60, output: 3.60 } # ollama.com/pricing "qwen3.5" (was 0.39/2.45 via OpenRouter); the :27b/:9b keys below are not Ollama-Cloud-served and keep theirs
   "qwen3.5:27b":           { input: 0.20, output: 1.56 } # openrouter.ai/qwen/qwen3.5-27b
   "qwen3.5:9b":            { input: 0.10, output: 0.15 } # openrouter.ai/qwen/qwen3.5-9b
   "qwen3.6:35b":           { input: 0.14, output: 1.00 } # openrouter.ai/qwen/qwen3.6-35b-a3b
@@ -152,6 +225,22 @@ models:
   # "output" doesn't apply (no completion tokens); left at 0.
   "bge-m3:latest":                    { input: 0.01, output: 0.0 } # openrouter.ai/baai/bge-m3
   "nomic-embed-text-v2-moe:latest":   { input: 0.02, output: 0.0 } # ESTIMATE — Nomic v2 MoE has no commercial API tier (open-weight, self-host-only); reused OpenAI text-embedding-3-small as a comparable-class reference
+  # memory.embedding_model — served from the LOCAL Ollama on the daemon host
+  # (memory.embedding_endpoint: http://127.0.0.1:11434), which is a different
+  # instance from the 192.168.192.168 one the http block used to point at.
+  # Added 2026-08-23: this is the single highest-frequency model in the
+  # deployment (every memory write and every recall embeds) and it was
+  # inheriting `default` at 1.00/3.00, so memory spend in the cost metrics was
+  # inflated by two orders of magnitude against a workload that bills nothing.
+  # ESTIMATE — OpenRouter carries NO embedding models at all as of 2026-08-23
+  # (bge / nomic / qwen3-embedding all return no listing; the bge-m3 URL in the
+  # line above has evidently gone stale since 2026-07-13). Priced at bge-m3's
+  # rate: 568M vs 600M params is the same size class, and matching the file's
+  # nearest existing reference keeps the two comparable models consistent rather
+  # than inventing a third number. Per the section note above, self-hosted
+  # models are deliberately priced at the equivalent metered-API rate so the
+  # metric reflects what the workload WOULD cost, not $0.
+  "qwen3-embedding:0.6b":             { input: 0.01, output: 0.0 }
   # Home Assistant voice-control fine-tunes (acon96/Home-3B-v3, a
   # StableLM-3B derivative) — no public pricing anywhere for a custom
   # fine-tune. Both entries are the SAME underlying model under two

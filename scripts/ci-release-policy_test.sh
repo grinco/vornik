@@ -88,5 +88,22 @@ dispatch=[s for s in r['jobs']['goreleaser']['steps'] if 'fan-out' in s.get('nam
 assert dispatch, 'release.yaml must dispatch the publication fan-out'
 assert 'tag=' in str(dispatch[0]), 'release.yaml must pass the release tag to publish-ce (-f tag=…), or the CE tree is never tagged'
 
+# BOTH publication arms are asserted, not just the CE one. The upstream sync
+# branch reaches grinco/vornik-ee only through this dispatch — the `release:
+# published` trigger on release-upstream-pr.yaml never fires, for exactly the
+# reason stated above (a GITHUB_TOKEN-published release emits no release
+# event). So the dispatch line IS the mechanism, and until now nothing
+# asserted it: deleting it would have silently stopped every future release
+# from reaching the parent repo, with no failure anywhere.
+#
+# That is not hypothetical. It is the same unasserted-dispatch shape that
+# shipped 2026.9.3 AND 2026.9.4 with no CE tag, twice, through two different
+# doors. Asserting one arm and not the other leaves the trap armed on the
+# side nobody checked.
+assert 'release-upstream-pr.yaml' in str(dispatch[0]), \
+    'release.yaml must dispatch release-upstream-pr.yaml, or no release ever reaches grinco/vornik-ee'
+assert 'publish-ce.yaml' in str(dispatch[0]), \
+    'release.yaml must dispatch publish-ce.yaml, or no release is ever exported to CE'
+
 print('CI/release policy: PASS')
 PY

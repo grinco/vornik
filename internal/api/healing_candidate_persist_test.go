@@ -96,20 +96,18 @@ func TestGenerateCandidate_PersistsCandidateLinkedToProposal(t *testing.T) {
 	repo := newAPIStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), apiOpenTrigger("t-1"))
 	candRepo := newAPIStubHealingCandidateRepo()
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{
-			ID:           "wpr-7",
-			WorkflowID:   "wf-a",
-			ProposalYAML: persistTestWorkflowMD,
-			Motivation:   "remove the retry loop",
-		},
-	}
 	opts := append(adminAuthOpts(),
 		WithHealingTriggerRepository(repo),
 		WithHealingCandidateRepository(candRepo),
-		WithWorkflowArchitect(arch),
 	)
 	s := NewServer(opts...)
+	rows := &recordingWorkflowProposals{}
+	s.workflowProposals = rows
+	// Producer is the config assistant since the 2026-09-16 cutover; the
+	// candidate still LINKS to the workflow proposal it files.
+	s.SetHealingAssistant(&stubHealingAssistant{
+		proposal: assistantHealingProposal(t, "wf-a", persistTestWorkflowMD),
+	})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
@@ -123,7 +121,7 @@ func TestGenerateCandidate_PersistsCandidateLinkedToProposal(t *testing.T) {
 		t.Fatalf("expected 1 candidate persisted, got %d", len(candRepo.inserted))
 	}
 	c := candRepo.inserted[0]
-	if c.ProposalID != "wpr-7" {
+	if c.ProposalID != rows.rows[0].ID {
 		t.Errorf("candidate.ProposalID = %q, want wpr-7 (must link to the proposal)", c.ProposalID)
 	}
 	if c.TriggerID != "t-1" {
@@ -132,11 +130,15 @@ func TestGenerateCandidate_PersistsCandidateLinkedToProposal(t *testing.T) {
 	if c.WorkflowID != "wf-a" || c.ProjectID != "proj-x" {
 		t.Errorf("candidate scope = (%q,%q), want (proj-x, wf-a)", c.ProjectID, c.WorkflowID)
 	}
-	if c.CandidateClass != persistence.HealingCandidateArchitect {
-		t.Errorf("candidate.CandidateClass = %q, want architect", c.CandidateClass)
+	// The class names the producer that actually made it. It said "architect"
+	// for an assistant genome on the first cutover deploy (2026-09-16).
+	if c.CandidateClass != persistence.HealingCandidateAssistant {
+		t.Errorf("candidate.CandidateClass = %q, want assistant", c.CandidateClass)
 	}
-	if c.Motivation != "remove the retry loop" {
-		t.Errorf("candidate.Motivation = %q, want denormalised proposal motivation", c.Motivation)
+	// The motivation is denormalised from the proposal, whichever producer
+	// wrote it — the assistant's rationale since the 2026-09-16 cutover.
+	if c.Motivation == "" {
+		t.Error("candidate.Motivation must carry the proposal's reasoning to the operator")
 	}
 	if c.ProposalDiff != persistTestWorkflowMD {
 		t.Error("candidate.ProposalDiff should be the denormalised proposal YAML")
@@ -152,15 +154,14 @@ func TestGenerateCandidate_PersistsCandidateLinkedToProposal(t *testing.T) {
 func TestGenerateCandidate_NilCandidateRepoStillStampsTrigger(t *testing.T) {
 	repo := newAPIStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), apiOpenTrigger("t-1"))
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{ID: "wpr-7", WorkflowID: "wf-a", ProposalYAML: persistTestWorkflowMD},
-	}
 	// No WithHealingCandidateRepository — candidate repo stays nil.
-	opts := append(adminAuthOpts(),
-		WithHealingTriggerRepository(repo),
-		WithWorkflowArchitect(arch),
-	)
+	opts := append(adminAuthOpts(), WithHealingTriggerRepository(repo))
 	s := NewServer(opts...)
+	rows := &recordingWorkflowProposals{}
+	s.workflowProposals = rows
+	s.SetHealingAssistant(&stubHealingAssistant{
+		proposal: assistantHealingProposal(t, "wf-a", persistTestWorkflowMD),
+	})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
@@ -171,7 +172,7 @@ func TestGenerateCandidate_NilCandidateRepoStillStampsTrigger(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d, body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.lastMarkGen.proposalID != "wpr-7" {
+	if repo.lastMarkGen.proposalID != rows.rows[0].ID {
 		t.Errorf("trigger should still be stamped with the proposal id; got %+v", repo.lastMarkGen)
 	}
 }
@@ -181,15 +182,16 @@ func TestGenerateCandidate_CandidatePersistFailureDoesNotFailRequest(t *testing.
 	_ = repo.Insert(context.Background(), apiOpenTrigger("t-1"))
 	candRepo := newAPIStubHealingCandidateRepo()
 	candRepo.insertErr = errors.New("db down")
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{ID: "wpr-7", WorkflowID: "wf-a", ProposalYAML: persistTestWorkflowMD},
-	}
 	opts := append(adminAuthOpts(),
 		WithHealingTriggerRepository(repo),
 		WithHealingCandidateRepository(candRepo),
-		WithWorkflowArchitect(arch),
 	)
 	s := NewServer(opts...)
+	rows := &recordingWorkflowProposals{}
+	s.workflowProposals = rows
+	s.SetHealingAssistant(&stubHealingAssistant{
+		proposal: assistantHealingProposal(t, "wf-a", persistTestWorkflowMD),
+	})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
@@ -201,7 +203,7 @@ func TestGenerateCandidate_CandidatePersistFailureDoesNotFailRequest(t *testing.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d, want 200 (candidate persist is best-effort), body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.lastMarkGen.proposalID != "wpr-7" {
+	if repo.lastMarkGen.proposalID != rows.rows[0].ID {
 		t.Error("trigger should still be stamped even when candidate persist fails")
 	}
 }

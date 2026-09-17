@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -119,29 +120,23 @@ func (s *stubHealingTriggerRepo) MarkGenerated(_ context.Context, id, proposalID
 	return nil
 }
 
-// stubArchitect satisfies MemeticArchitectUI without dragging the
-// real memetic package + LLM provider in. Tests set either Proposal
-// (happy path) or Err (failure path) and assert which workflow ID
-// the handler passed through.
-type stubArchitect struct {
-	Proposal       *persistence.WorkflowProposal
-	Err            error
-	lastWorkflowID string
-	lastEvidence   []string
-	calls          int
+// stubGenerator satisfies HealingCandidateGeneratorUI — the seam over the ONE
+// producer shared with the admin API. It takes a TRIGGER ID and nothing else,
+// which is the operator's requirement expressed as a type: a candidate is one
+// button, with the project, evidence and intent all derived from the trigger
+// row, and there is no prompt field to type into (operator, 2026-09-16).
+type stubGenerator struct {
+	ProposalID  string
+	ByRecipe    bool
+	Err         error
+	lastTrigger string
+	calls       int
 }
 
-func (s *stubArchitect) Propose(_ context.Context, workflowID string) (*persistence.WorkflowProposal, error) {
+func (s *stubGenerator) Generate(_ context.Context, triggerID string) (string, bool, error) {
 	s.calls++
-	s.lastWorkflowID = workflowID
-	return s.Proposal, s.Err
-}
-
-func (s *stubArchitect) ProposeWithEvidence(_ context.Context, workflowID string, evidenceRunIDs []string) (*persistence.WorkflowProposal, error) {
-	s.calls++
-	s.lastWorkflowID = workflowID
-	s.lastEvidence = append([]string(nil), evidenceRunIDs...)
-	return s.Proposal, s.Err
+	s.lastTrigger = triggerID
+	return s.ProposalID, s.ByRecipe, s.Err
 }
 
 func openTrigger(id string) *persistence.HealingTrigger {
@@ -198,10 +193,10 @@ func TestAdminBlackBoxTriggerDetail_NotFound(t *testing.T) {
 func TestAdminBlackBoxTriggerDetail_OpenRendersBothActions(t *testing.T) {
 	repo := newStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), openTrigger("ht-1"))
-	arch := &stubArchitect{}
+	gen := &stubGenerator{}
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/triggers/ht-1", nil)
@@ -236,11 +231,24 @@ func TestAdminBlackBoxTriggerDetail_OpenWithoutArchitect(t *testing.T) {
 	if !strings.Contains(body, "Dismiss") {
 		t.Error("Dismiss form should still render")
 	}
-	if strings.Contains(body, "/generate-candidate") {
-		t.Error("Generate-candidate form should be hidden when architect is unwired")
+	// The FORM must be absent — there is nothing for it to call.
+	if strings.Contains(body, `action="/ui/admin/blackbox/triggers/ht-2/generate-candidate"`) {
+		t.Error("Generate-candidate form should be hidden when no producer is wired")
 	}
-	if !strings.Contains(body, "architect not wired") {
-		t.Error("expected 'architect not wired' hint when wiring is absent")
+	// It must say WHY, and must not send the operator anywhere that would
+	// also fail. Operator report 2026-09-16: the old copy pointed at
+	// /api/v1/admin/workflow-architect/propose, deleted with the memetic
+	// architect — so the one instruction it gave led to a 404. With no
+	// producer wired the API route has nothing to generate with either, so
+	// naming it would repeat the mistake in a newer form.
+	if !strings.Contains(body, "No healing candidate producer is wired") {
+		t.Error("the panel must say why generation is unavailable")
+	}
+	if strings.Contains(body, "/api/v1/admin/workflow-architect/propose") {
+		t.Error("the panel still points at the removed architect endpoint")
+	}
+	if strings.Contains(body, "/api/v1/admin/workflow-healing/triggers") {
+		t.Error("the panel points at an API route that has no producer either")
 	}
 }
 
@@ -255,10 +263,10 @@ func TestAdminBlackBoxTriggerDetail_TerminalHidesForms(t *testing.T) {
 	resolved := time.Now().UTC()
 	tr.ResolvedAt = &resolved
 	_ = repo.Insert(context.Background(), tr)
-	arch := &stubArchitect{}
+	gen := &stubGenerator{}
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/triggers/ht-3", nil)
@@ -508,13 +516,11 @@ func TestAdminBlackBoxTriggersBulkDismiss_NotWired(t *testing.T) {
 func TestAdminBlackBoxTriggerGenerateCandidate_HappyPath(t *testing.T) {
 	repo := newStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), openTrigger("ht-6"))
-	arch := &stubArchitect{
-		Proposal: &persistence.WorkflowProposal{ID: "wpr-7", WorkflowID: "wf-a"},
-	}
+	gen := &stubGenerator{ProposalID: "wpr-7"}
 	audit := &stubAdminAuditRepo{}
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 		WithAdminAuditRepository(audit),
 	)
 	rec := httptest.NewRecorder()
@@ -527,14 +533,14 @@ func TestAdminBlackBoxTriggerGenerateCandidate_HappyPath(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "/ui/admin/workflow-proposals/wpr-7" {
 		t.Errorf("redirect: %q", loc)
 	}
-	if arch.lastWorkflowID != "wf-a" {
-		t.Errorf("architect saw workflow %q, want wf-a", arch.lastWorkflowID)
+	// The handler passes the TRIGGER ID and nothing else — the producer
+	// derives project, workflow, evidence and intent from the row, which is
+	// what makes this one button rather than a form.
+	if gen.lastTrigger != "ht-6" {
+		t.Errorf("producer saw trigger %q, want ht-6", gen.lastTrigger)
 	}
-	if got := strings.Join(arch.lastEvidence, ","); got != "exec-1,exec-2,exec-3" {
-		t.Errorf("architect evidence = %q, want trigger evidence", got)
-	}
-	if repo.lastMarkGen.id != "ht-6" || repo.lastMarkGen.proposalID != "wpr-7" {
-		t.Errorf("MarkGenerated args: %+v", repo.lastMarkGen)
+	if gen.calls != 1 {
+		t.Errorf("producer called %d times, want 1", gen.calls)
 	}
 	if len(audit.rows) != 1 || audit.rows[0].Action != "blackbox-trigger.generated_candidate" {
 		t.Errorf("audit: %#v", audit.rows)
@@ -556,16 +562,16 @@ func TestAdminBlackBoxTriggerGenerateCandidate_NoArchitect(t *testing.T) {
 	}
 }
 
-// TestAdminBlackBoxTriggerGenerateCandidate_ArchitectFails — the
-// architect returning an error must NOT advance the trigger; the
-// row stays open and the operator gets an action_error redirect.
-func TestAdminBlackBoxTriggerGenerateCandidate_ArchitectFails(t *testing.T) {
+// TestAdminBlackBoxTriggerGenerateCandidate_ProducerFails — a producer error
+// must land the operator back on the trigger with the reason, not on a
+// half-finished proposal page.
+func TestAdminBlackBoxTriggerGenerateCandidate_ProducerFails(t *testing.T) {
 	repo := newStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), openTrigger("ht-8"))
-	arch := &stubArchitect{Err: errors.New("LLM timeout")}
+	gen := &stubGenerator{Err: errors.New("model timeout")}
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
@@ -669,12 +675,13 @@ func TestAdminBlackBoxTriggerGenerateCandidate_AlreadyTerminal(t *testing.T) {
 	tr := openTrigger("ht-9")
 	tr.Status = persistence.HealingTriggerStatusDismissed
 	_ = repo.Insert(context.Background(), tr)
-	arch := &stubArchitect{
-		Proposal: &persistence.WorkflowProposal{ID: "wpr-x", WorkflowID: "wf-a"},
-	}
+	// The OPEN check now lives in the producer, so the seam reports it. The
+	// UI's job is to render that refusal, not to re-derive it — a second copy
+	// of the rule is what let this page drift from the API in the first place.
+	gen := &stubGenerator{Err: ErrUITriggerNotOpen}
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
@@ -683,74 +690,49 @@ func TestAdminBlackBoxTriggerGenerateCandidate_AlreadyTerminal(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status: %d, want 303", rec.Code)
 	}
-	if arch.calls != 0 {
-		t.Errorf("architect should not be called for terminal trigger; saw %d call(s)", arch.calls)
+	// Decode rather than match the percent-encoding: an assertion on "+"
+	// escaping breaks the day the message is reworded, and proves nothing
+	// about what the operator reads.
+	loc := rec.Header().Get("Location")
+	u, perr := url.Parse(loc)
+	if perr != nil {
+		t.Fatalf("Location %q is not a URL: %v", loc, perr)
+	}
+	if !strings.Contains(u.Query().Get("action_error"), "already resolved") {
+		t.Errorf("redirect should explain the trigger is resolved: %q", loc)
 	}
 }
 
-// TestAdminBlackBoxTriggerGenerateCandidate_PersistsCandidateRow —
-// regression pin for the 2026-06-06 empty-candidates-menu report: the
-// UI generate path stamped the trigger + created the proposal but
-// never inserted a workflow_healing_candidates row, so every candidate
-// generated from the UI was invisible in
-// /ui/admin/blackbox/candidates. The handler must persist the linking
-// row (same shape as the API path, via
-// workflowhealing.CandidateFromArchitectProposal).
-func TestAdminBlackBoxTriggerGenerateCandidate_PersistsCandidateRow(t *testing.T) {
+// Candidate persistence, the trigger stamp and the recipe-then-assistant order
+// are the PRODUCER's, not this page's — they are asserted against the shared
+// implementation in internal/api. The tests that used to live here duplicated
+// that coverage against a second implementation, which is precisely the
+// arrangement that let the 2026-09-16 cutover repoint one copy and not the
+// other. What this page owes is that it calls the producer once, with the
+// trigger id, and renders each outcome where the operator's next action is.
+func TestAdminBlackBoxTriggerGenerateCandidate_DoesNotReimplementThePersistence(t *testing.T) {
 	repo := newStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), openTrigger("ht-7"))
-	arch := &stubArchitect{
-		Proposal: &persistence.WorkflowProposal{
-			ID:           "wpr-8",
-			WorkflowID:   "wf-a",
-			ProposalYAML: "---\nworkflow_id: wf-a\n---\nbody",
-			Motivation:   "telemetry says so",
-		},
-	}
+	gen := &stubGenerator{ProposalID: "wpr-8"}
 	candRepo := newStubHealingCandidateRepoUI()
 	s := NewServer(
 		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
+		WithHealingCandidateGenerator(gen),
 		WithHealingCandidateRepository(candRepo),
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
 		"/ui/admin/blackbox/triggers/ht-7/generate-candidate", nil)
 	s.AdminBlackBoxTriggerGenerateCandidate(rec, req, "ht-7")
+
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status: %d, want 303", rec.Code)
 	}
-	if len(candRepo.rows) != 1 {
-		t.Fatalf("candidate rows = %d, want 1 (the linking row)", len(candRepo.rows))
+	if len(candRepo.rows) != 0 {
+		t.Errorf("the UI wrote %d candidate row(s); persistence belongs to the producer, and a "+
+			"second writer here would double-insert", len(candRepo.rows))
 	}
-	for _, c := range candRepo.rows {
-		if c.TriggerID != "ht-7" || c.ProposalID != "wpr-8" {
-			t.Errorf("candidate links wrong: %+v", c)
-		}
-		if c.Status != persistence.HealingCandidateDraft {
-			t.Errorf("status = %q, want draft", c.Status)
-		}
-	}
-}
-
-// TestAdminBlackBoxTriggerGenerateCandidate_CandidateRepoNil — the
-// persist is best-effort: nil repo (pre-genome deployment) must not
-// break the generate flow.
-func TestAdminBlackBoxTriggerGenerateCandidate_CandidateRepoNil(t *testing.T) {
-	repo := newStubHealingTriggerRepo()
-	_ = repo.Insert(context.Background(), openTrigger("ht-8"))
-	arch := &stubArchitect{
-		Proposal: &persistence.WorkflowProposal{ID: "wpr-9", WorkflowID: "wf-a"},
-	}
-	s := NewServer(
-		WithHealingTriggerRepository(repo),
-		WithBlackBoxArchitect(arch),
-	)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost,
-		"/ui/admin/blackbox/triggers/ht-8/generate-candidate", nil)
-	s.AdminBlackBoxTriggerGenerateCandidate(rec, req, "ht-8")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status: %d, want 303 with nil candidate repo", rec.Code)
+	if repo.lastMarkGen.id != "" {
+		t.Errorf("the UI stamped the trigger (%+v); that is the producer's step", repo.lastMarkGen)
 	}
 }

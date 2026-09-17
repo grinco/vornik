@@ -34,6 +34,39 @@ func numericIncreased(ch Change) bool {
 	return a > b
 }
 
+// removesApproval reports whether a change to autonomy.requireApproval ends
+// with approval NOT required. Two shapes reach that state and only one used
+// to be recognised: an explicit `false`, and DELETING the key — which the
+// loader decodes to the zero value, the same false (audit 2026-09-15 CA-01).
+// A change is judged by the runtime state it produces, never by whether the
+// model wrote a word.
+func removesApproval(ch Change) bool {
+	was := strings.EqualFold(strings.TrimSpace(ch.Before), "true")
+	if !was {
+		return false // it was already off; this change does not remove it
+	}
+	now := strings.TrimSpace(ch.After)
+	return now == "" || strings.EqualFold(now, "false")
+}
+
+// removesNumericLimit reports whether a change takes a positive cap to a
+// value the runtime reads as NO cap: zero, a negative, or the deleted key
+// (which decodes to zero). `MaxTasksPerHour <= 0` is checked as "no limit"
+// in autonomy.Manager.checkRateLimit, so 4 -> 0 is not a reduction of four
+// units, it is the removal of the limit (audit 2026-09-15 CA-01).
+func removesNumericLimit(ch Change) bool {
+	before, err := strconv.ParseFloat(strings.TrimSpace(ch.Before), 64)
+	if err != nil || before <= 0 {
+		return false // there was no effective cap to remove
+	}
+	after := strings.TrimSpace(ch.After)
+	if after == "" {
+		return true // deleted: decodes to the zero sentinel
+	}
+	v, err := strconv.ParseFloat(after, 64)
+	return err == nil && v <= 0
+}
+
 // durationShortened reports whether After < Before as durations (a shorter
 // cadence = more ticks). Unparseable → conservative true only when both
 // are present and differ.

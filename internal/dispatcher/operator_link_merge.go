@@ -88,16 +88,33 @@ type OperatorLinkResult struct {
 // for telling the operator to re-run the link. The repo
 // implementations are idempotent enough that a retry is safe.
 func PerformOperatorLink(ctx context.Context, repos OperatorLinkRepos, issuerSpeaker, claimantSpeaker, linkedBy string) (*OperatorLinkResult, error) {
+	return performLink(ctx, repos, issuerSpeaker, claimantSpeaker, linkedBy, false)
+}
+
+// PerformAccountLink folds a chat speaker's profile into an ACCOUNT's
+// canonical id, with the account always the winner.
+//
+// The difference from PerformOperatorLink is the whole point.
+// PerformOperatorLink picks the side with more accumulated content, which is
+// right when two chat profiles meet as equals and nobody has an account. It
+// is wrong here: oidc-identity-permissions-design §5.0 says that once a
+// speaker is linked, **the account binding wins** — the account is the
+// identity, and a speaker who happens to have chattier history does not get
+// to become the canonical row for a person who has an account. Content volume
+// decides a tie between peers; it must not decide authority.
+//
+// Everything else — the merge, the repoint of every link row pointing at the
+// loser, the audit reassignment — is shared, because two implementations of
+// one merge is how they drift.
+func PerformAccountLink(ctx context.Context, repos OperatorLinkRepos, accountCanonical, speaker, linkedBy string) (*OperatorLinkResult, error) {
+	return performLink(ctx, repos, accountCanonical, speaker, linkedBy, true)
+}
+
+func performLink(ctx context.Context, repos OperatorLinkRepos, issuerSpeaker, claimantSpeaker, linkedBy string, issuerAlwaysWins bool) (*OperatorLinkResult, error) {
 	issuerSpeaker = strings.TrimSpace(issuerSpeaker)
 	claimantSpeaker = strings.TrimSpace(claimantSpeaker)
-	if issuerSpeaker == "" || claimantSpeaker == "" {
-		return nil, fmt.Errorf("operator-link: both ids required")
-	}
-	if issuerSpeaker == claimantSpeaker {
-		return nil, fmt.Errorf("operator-link: cannot link an identity to itself")
-	}
-	if repos.Links == nil || repos.Profiles == nil {
-		return nil, fmt.Errorf("operator-link: profile + link repositories required")
+	if err := checkLinkArgs(repos, issuerSpeaker, claimantSpeaker); err != nil {
+		return nil, err
 	}
 
 	issuerCanonical, err := canonicalFor(ctx, repos.Links, issuerSpeaker)
@@ -128,74 +145,44 @@ func PerformOperatorLink(ctx context.Context, repos OperatorLinkRepos, issuerSpe
 		return nil, fmt.Errorf("operator-link: load claimant profile: %w", err)
 	}
 
-	winnerCanonical, loserCanonical, winnerProfile, loserProfile := pickWinner(
-		issuerCanonical, claimantCanonical, issuerProfile, claimantProfile,
-	)
+	winnerCanonical, loserCanonical, winnerProfile, loserProfile, err := chooseWinner(
+		issuerCanonical, claimantCanonical, issuerProfile, claimantProfile, issuerAlwaysWins)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &OperatorLinkResult{
 		Canonical: winnerCanonical,
 		Loser:     loserCanonical,
 	}
 
-	if loserProfile != nil {
-		// Merge if there's anything to merge.
-		merged, mergedKeys, mergedNotes := mergeOperatorProfiles(winnerProfile, loserProfile, loserCanonical)
-		if merged != nil {
-			// Stamp the operator id so the Upsert lands on the
-			// winner's row whether or not it existed before
-			// the merge.
-			merged.OperatorID = winnerCanonical
-			if err := repos.Profiles.Upsert(ctx, merged); err != nil {
-				return nil, fmt.Errorf("operator-link: upsert merged profile: %w", err)
-			}
-			result.Merged = true
-			result.MergedKeys = mergedKeys
-			result.MergedNotes = mergedNotes
-		}
+	if err := mergeLoserProfile(ctx, repos, result, winnerCanonical, loserCanonical, winnerProfile, loserProfile); err != nil {
+		return nil, err
 	}
 
-	// Repoint every identity-link row that currently points at
-	// the loser → the winner. Then add the new link row for
-	// the claimant speaker (idempotent in case the operator
-	// re-runs).
-	if existing, err := repos.Links.ListForOperator(ctx, loserCanonical); err != nil {
-		return nil, fmt.Errorf("operator-link: list loser links: %w", err)
-	} else {
-		for _, row := range existing {
-			row.OperatorID = winnerCanonical
-			if err := repos.Links.Upsert(ctx, row); err != nil {
-				return nil, fmt.Errorf("operator-link: repoint link %s: %w", row.ChannelSpeakerID, err)
-			}
-			result.LinksMoved++
-		}
+	if err := repointLoserLinks(ctx, repos, result, winnerCanonical, loserCanonical); err != nil {
+		return nil, err
 	}
 	// Make sure both speakers point at the winner. The "loser
 	// canonical" is itself a speaker id we need to repoint.
 	if loserCanonical != winnerCanonical {
-		if err := repos.Links.Upsert(ctx, &persistence.OperatorIdentityLink{
-			ChannelSpeakerID: loserCanonical,
-			OperatorID:       winnerCanonical,
-			LinkedBy:         linkedBy,
-		}); err != nil {
+		if err := pointAt(ctx, repos, loserCanonical, winnerCanonical, linkedBy); err != nil {
 			return nil, fmt.Errorf("operator-link: repoint loser-canonical link: %w", err)
 		}
 		result.LinksMoved++
 	}
+	// SKIPPED on the PerformAccountLink path, where the claimant is a fresh
+	// speaker and therefore its own canonical — so the row that actually
+	// binds that speaker is the loser-canonical repoint just above, not this
+	// branch. A reader tracing "where does the speaker get bound" looks here
+	// first and finds nothing; the second-channel test pins the real write.
 	if claimantSpeaker != claimantCanonical {
-		if err := repos.Links.Upsert(ctx, &persistence.OperatorIdentityLink{
-			ChannelSpeakerID: claimantSpeaker,
-			OperatorID:       winnerCanonical,
-			LinkedBy:         linkedBy,
-		}); err != nil {
+		if err := pointAt(ctx, repos, claimantSpeaker, winnerCanonical, linkedBy); err != nil {
 			return nil, fmt.Errorf("operator-link: write claimant link: %w", err)
 		}
 	}
 	if issuerSpeaker != winnerCanonical {
-		if err := repos.Links.Upsert(ctx, &persistence.OperatorIdentityLink{
-			ChannelSpeakerID: issuerSpeaker,
-			OperatorID:       winnerCanonical,
-			LinkedBy:         linkedBy,
-		}); err != nil {
+		if err := pointAt(ctx, repos, issuerSpeaker, winnerCanonical, linkedBy); err != nil {
 			return nil, fmt.Errorf("operator-link: write issuer link: %w", err)
 		}
 	}
@@ -357,4 +344,136 @@ func mergeOperatorProfiles(winner, loser *persistence.OperatorProfile, loserID s
 	// stamping here would risk a mismatch if the caller
 	// re-assigns.
 	return out, mergedKeys, mergedNotes
+}
+
+// mergeLoserProfile folds the loser's profile into the winner's row. Split
+// out of performLink to keep that function under the complexity ceiling
+// after PerformAccountLink added its winner-selection branch; the behaviour
+// is unchanged.
+func mergeLoserProfile(
+	ctx context.Context, repos OperatorLinkRepos, result *OperatorLinkResult,
+	winnerCanonical, loserCanonical string,
+	winnerProfile, loserProfile *persistence.OperatorProfile,
+) error {
+	if loserProfile == nil {
+		return nil
+	}
+	merged, mergedKeys, mergedNotes := mergeOperatorProfiles(winnerProfile, loserProfile, loserCanonical)
+	if merged == nil {
+		return nil
+	}
+	// Stamp the operator id so the Upsert lands on the winner's row whether
+	// or not it existed before the merge.
+	merged.OperatorID = winnerCanonical
+	if err := repos.Profiles.Upsert(ctx, merged); err != nil {
+		return fmt.Errorf("operator-link: upsert merged profile: %w", err)
+	}
+	result.Merged = true
+	result.MergedKeys = mergedKeys
+	result.MergedNotes = mergedNotes
+	return nil
+}
+
+// repointLoserLinks moves every identity-link row pointing at the loser onto
+// the winner. Split out of performLink for the same reason as
+// mergeLoserProfile; the behaviour is unchanged.
+func repointLoserLinks(
+	ctx context.Context, repos OperatorLinkRepos, result *OperatorLinkResult,
+	winnerCanonical, loserCanonical string,
+) error {
+	existing, err := repos.Links.ListForOperator(ctx, loserCanonical)
+	if err != nil {
+		return fmt.Errorf("operator-link: list loser links: %w", err)
+	}
+	for _, row := range existing {
+		row.OperatorID = winnerCanonical
+		if err := repos.Links.Upsert(ctx, row); err != nil {
+			return fmt.Errorf("operator-link: repoint link %s: %w", row.ChannelSpeakerID, err)
+		}
+		result.LinksMoved++
+	}
+	return nil
+}
+
+// pointAt writes one link row. The three call sites above spelled the same
+// four-line literal three times; collapsing them is what kept performLink
+// under the length ceiling after PerformAccountLink was added.
+func pointAt(ctx context.Context, repos OperatorLinkRepos, speaker, canonical, linkedBy string) error {
+	return repos.Links.Upsert(ctx, &persistence.OperatorIdentityLink{
+		ChannelSpeakerID: speaker,
+		OperatorID:       canonical,
+		LinkedBy:         linkedBy,
+	})
+}
+
+// checkLinkArgs rejects the shapes a link can never have. Split out only to
+// keep performLink under the length ceiling; the rules are unchanged.
+func checkLinkArgs(repos OperatorLinkRepos, issuerSpeaker, claimantSpeaker string) error {
+	switch {
+	case issuerSpeaker == "" || claimantSpeaker == "":
+		return fmt.Errorf("operator-link: both ids required")
+	case issuerSpeaker == claimantSpeaker:
+		return fmt.Errorf("operator-link: cannot link an identity to itself")
+	case repos.Links == nil || repos.Profiles == nil:
+		return fmt.Errorf("operator-link: profile + link repositories required")
+	}
+	return nil
+}
+
+// accountCanonicalPrefix marks an operator id derived from an ACCOUNT rather
+// than from a chat speaker. It must match authz.AccountOperatorID's output;
+// a test in this package asserts that rather than trusting the two spellings
+// to stay in step.
+const accountCanonicalPrefix = "account:"
+
+// isAccountCanonical reports whether an operator id belongs to an account.
+func isAccountCanonical(operatorID string) bool {
+	return strings.HasPrefix(operatorID, accountCanonicalPrefix)
+}
+
+// chooseWinner decides which canonical survives the merge, and is the one
+// place the rule lives.
+//
+// Content volume settles a tie between PEERS — the case this design was
+// written for, where two chat profiles meet and neither has any claim to
+// authority. It must never settle AUTHORITY. An account canonical therefore
+// wins wherever it turns up, not only where PerformAccountLink put it: a
+// speaker who redeemed a link code resolves to "account:<user>", and without
+// this a later chat→chat /link with a chattier peer would make the account
+// the loser and repoint every row pointing at it onto a chat speaker.
+//
+// Two accounts are refused outright: that is either two different people or
+// one person who should unlink, and an unauthenticated chat OTP is not the
+// authority to decide which.
+func chooseWinner(
+	issuerCanonical, claimantCanonical string,
+	issuerProfile, claimantProfile *persistence.OperatorProfile,
+	issuerAlwaysWins bool,
+) (winner, loser string, winnerProfile, loserProfile *persistence.OperatorProfile, err error) {
+	issuerIsAccount := isAccountCanonical(issuerCanonical)
+	claimantIsAccount := isAccountCanonical(claimantCanonical)
+	switch {
+	case issuerIsAccount && claimantIsAccount:
+		// Reached only for DISTINCT accounts: performLink short-circuits on
+		// issuerCanonical == claimantCanonical before this is called, so a
+		// re-link from an already-bound speaker (whose canonical IS the
+		// account) returns success up there and never arrives here. Named
+		// because the refusal would otherwise look like it breaks every
+		// re-link, and a reviewer read it that way (review-20260915-1ea8 F1).
+		// The remedy is deliberately NOT named. The first version said
+		// "unlink one first", which names an operation that does not exist
+		// for this case: `account unlink` removes a CHANNEL identity, and
+		// there is no account-to-account unlink (review-20260915-b945). An
+		// instruction that cannot be followed is worse than none.
+		return "", "", nil, nil, fmt.Errorf(
+			"operator-link: cannot link two accounts (%s, %s): these are separate people to "+
+				"this system, and a chat code is not the authority to merge them",
+			issuerCanonical, claimantCanonical)
+	case issuerAlwaysWins || issuerIsAccount:
+		return issuerCanonical, claimantCanonical, issuerProfile, claimantProfile, nil
+	case claimantIsAccount:
+		return claimantCanonical, issuerCanonical, claimantProfile, issuerProfile, nil
+	}
+	w, l, wp, lp := pickWinner(issuerCanonical, claimantCanonical, issuerProfile, claimantProfile)
+	return w, l, wp, lp, nil
 }

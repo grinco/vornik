@@ -985,6 +985,16 @@ func (c *Container) initScheduler() error {
 				mgr.SetSecrets(c.secretsDetector, c.secretsActions)
 			}
 
+			// Recurring-series identity at ingest
+			// (2026-09-16-retrieval-recency-design.md §5.1.1). Wired HERE
+			// because this is the only place that holds both halves of the
+			// derivation — the task store, for the producing task's prompt,
+			// and the project registry, for the slugs that project declares.
+			// newSeriesResolver returns nil when either is missing, and a nil
+			// resolver leaves series_key NULL on every chunk, which is exactly
+			// the behaviour of a store that never had the column.
+			c.wireSeriesResolver(mgr.Indexer)
+
 			// Wire the retrieval audit repo so each Search call writes
 			// a row to memory_retrieval_audit. Powers the "feedback
 			// loop" CLI surface — `vornikctl memory feedback` and the
@@ -998,6 +1008,12 @@ func (c *Container) initScheduler() error {
 			// SQLite / unwired deployments skip the trace.
 			if c.repos.MemorySearchStage != nil {
 				mgr.Searcher.SetTraceSink(c.repos.MemorySearchStage)
+				// The recency re-rank writes its own stage row from the
+				// REPOSITORY, not the searcher: it is the only layer that
+				// sees both the pre- and post-rerank ordering, which is what
+				// reordered_count and top_shift are measured against
+				// (2026-09-16-retrieval-recency-design.md §5.7).
+				mgr.Repository().SetSearchStageSink(c.repos.MemorySearchStage)
 			}
 
 			// Scored-sufficiency iterative retrieval. Inert unless
@@ -1395,6 +1411,11 @@ func (c *Container) initScheduler() error {
 	}
 	if c.Registry != nil {
 		schedulerOptions = append(schedulerOptions, scheduler.WithProjectRegistry(c.Registry))
+	}
+	// Config-apply admission (§1.4, re-audit CA-20): a project whose apply
+	// journal is unresolved must not execute against that config.
+	if gate := c.configApplyBlockedGate(); gate != nil {
+		schedulerOptions = append(schedulerOptions, scheduler.WithConfigBlocked(gate))
 	}
 
 	c.Scheduler = scheduler.NewWithOptions(taskRepo, cfg, schedulerOptions...)

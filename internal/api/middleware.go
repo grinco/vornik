@@ -115,6 +115,18 @@ type AuthConfig struct {
 	// static map only (existing behaviour).
 	APIKeyLookup APIKeyLookup
 
+	// OwnerAccess is the §5.0 API-key door plus R2's grant narrowing: after
+	// a key authenticates,
+	// it reports whether that key's MAPPED account is disabled, and the
+	// request is refused when it is.
+	//
+	// Nil leaves the pre-Phase-4 behaviour exactly — which is correct for a
+	// deployment with no identity core, and was ACCIDENTALLY the behaviour
+	// everywhere until this field existed: the door was implemented on both
+	// sides and never joined, so the invariant "revoking the account revokes
+	// every door that authorizes" was unenforced on the key path.
+	OwnerAccess auth.OwnerAccessCheck
+
 	// APIKeyToucher fires an async last_used_at update on every
 	// successful DB-backed auth. Nil disables — the auth path
 	// still works, the "last used" column just stays stale.
@@ -225,6 +237,22 @@ func IsAuthEnabledFromContext(ctx context.Context) bool {
 	return v
 }
 
+// authBackends builds the credential chain. Extracted from AuthMiddleware so
+// a test can assert what it actually wires — notably that the §5.0 API-key
+// door is connected, which it was not when first written.
+func authBackends(config AuthConfig) []auth.Backend {
+	dbKeys := auth.NewDBKeysBackend(config.APIKeyLookup, config.APIKeyToucher)
+	// The §5.0 door: after a key authenticates, refuse it when its MAPPED
+	// owner is disabled. Nil when no identity core is wired, which is the
+	// pre-Phase-4 behaviour and every deployment that has not mapped a key.
+	dbKeys.OwnerAccess = config.OwnerAccess
+	return []auth.Backend{
+		auth.NewHMACWebhookBackend(),
+		dbKeys,
+		auth.NewStaticKeysBackend(config.StaticAPIKeys),
+	}
+}
+
 // AuthMiddleware returns a middleware that validates static API keys.
 // It extracts the Authorization header and validates the bearer token.
 func AuthMiddleware(config AuthConfig) func(http.Handler) http.Handler {
@@ -232,11 +260,7 @@ func AuthMiddleware(config AuthConfig) func(http.Handler) http.Handler {
 	// (internal/auth). HMACWebhookBackend produces a pass-through identity
 	// for signed key-less webhook deliveries; the DB-keys and static-keys
 	// backends validate bearer tokens.
-	backends := []auth.Backend{
-		auth.NewHMACWebhookBackend(),
-		auth.NewDBKeysBackend(config.APIKeyLookup, config.APIKeyToucher),
-		auth.NewStaticKeysBackend(config.StaticAPIKeys),
-	}
+	backends := authBackends(config)
 	// Session cookie backend joins FIRST when configured — the cookie is
 	// unambiguous and cheap to check, and a dead cookie returns
 	// ErrNoCredential so a Bearer on the same request still resolves via

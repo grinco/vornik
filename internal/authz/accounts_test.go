@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"vornik.io/vornik/internal/persistence"
 )
@@ -12,18 +13,33 @@ import (
 // the account service: users, access grants, bindings, revocations.
 type memIdentityRepo struct {
 	persistence.IdentityRepository
-	users     map[string]*persistence.User
-	access    map[string]string // userID → role
-	projects  map[string][]string
-	bindings  map[string]string // channel:ext → userID
-	revoked   map[string]bool   // channel:ext
+	users    map[string]*persistence.User
+	access   map[string]string // userID → role
+	projects map[string][]string
+	bindings map[string]string // channel:ext → userID
+	// boundRows keeps the WHOLE identity row each bind wrote, keyed the same
+	// way as bindings. bindings answers "who holds it"; a test asserting what
+	// was STORED in a column needs the row itself.
+	boundRows map[string]persistence.UserIdentity
+	revoked   map[string]bool // channel:ext
 	disabled  map[string]bool
 	lastAdmin bool // when true, any admin-removing mutation returns ErrLastAdmin
+	// beforeBind, when set, runs at the top of BindIdentity — the seam for
+	// the pre-check/write race.
+	beforeBind func()
+	// accessRevoked stamps users.access_revoked_at WITHOUT disabling them,
+	// so a test can prove no enforcement site reads that column.
+	accessRevoked map[string]*time.Time
+	// calls records lookups so a test can assert the SET of operations a
+	// code path performed, not just its return value. §5.4's
+	// indistinguishability rule is about work done as well as text returned.
+	calls []string
 }
 
 func newMemRepo() *memIdentityRepo {
 	return &memIdentityRepo{users: map[string]*persistence.User{}, access: map[string]string{}, projects: map[string][]string{},
-		bindings: map[string]string{}, revoked: map[string]bool{}, disabled: map[string]bool{}}
+		bindings: map[string]string{}, boundRows: map[string]persistence.UserIdentity{},
+		revoked: map[string]bool{}, disabled: map[string]bool{}}
 }
 
 func (m *memIdentityRepo) CreateUser(_ context.Context, u *persistence.User) error {
@@ -69,6 +85,54 @@ func (m *memIdentityRepo) RevokeIdentity(_ context.Context, channel, ext string)
 	m.revoked[k] = true
 	return nil
 }
+
+// BindIdentity records a channel binding. The real repository's
+// UNIQUE(channel, external_id) and repoint-after-revoke rules are pinned by
+// repotest against both backends; this fixture only needs to make the
+// binding observable to the service tests that exercise link redemption.
+// BindIdentity enforces the real repositories' guard: an ACTIVE binding held
+// by a different user is not overwritten, and the caller is told. See the
+// interface contract — this double used to be looser than production, which
+// is what let AssignKey's false success through every test.
+func (m *memIdentityRepo) BindIdentity(_ context.Context, id *persistence.UserIdentity) (bool, error) {
+	// beforeBind makes the pre-check/write race deterministic: a test lands a
+	// competing bind in the window the service cannot close, rather than
+	// relying on a stochastic reproduction.
+	if m.beforeBind != nil {
+		m.beforeBind()
+	}
+	key := id.Channel + ":" + id.ExternalID
+	if owner, ok := m.bindings[key]; ok && !m.revoked[key] && owner != id.UserID {
+		return false, nil
+	}
+	m.bindings[key] = id.UserID
+	m.boundRows[key] = *id
+	delete(m.revoked, key)
+	return true, nil
+}
+
+// RebindIdentity is the unguarded admin-authority twin.
+func (m *memIdentityRepo) RebindIdentity(_ context.Context, id *persistence.UserIdentity) error {
+	key := id.Channel + ":" + id.ExternalID
+	m.bindings[key] = id.UserID
+	m.boundRows[key] = *id
+	delete(m.revoked, key)
+	return nil
+}
+
+// ResolvePrincipalRows answers the "is this identity already bound, and to
+// whom" question. Empty slice = no active binding, matching the real
+// repository's documented contract.
+func (m *memIdentityRepo) ResolvePrincipalRows(_ context.Context, channel, ext string) ([]persistence.PrincipalRow, error) {
+	m.calls = append(m.calls, "ResolvePrincipalRows:"+channel+":"+ext)
+	key := channel + ":" + ext
+	userID, ok := m.bindings[key]
+	if !ok || m.revoked[key] {
+		return nil, nil
+	}
+	return []persistence.PrincipalRow{{UserID: userID, Disabled: m.disabled[userID]}}, nil
+}
+
 func (m *memIdentityRepo) ListUsers(context.Context) ([]persistence.UserAdminView, error) {
 	var out []persistence.UserAdminView
 	for id, u := range m.users {
@@ -96,9 +160,18 @@ func cut(k string) (string, string, bool) {
 type memAudit struct {
 	rows []*persistence.AdminAuditEntry
 	err  error
+	// failAfter fails the Nth+1 write onward, so a test can fail ONE row in
+	// a multi-row sequence — the attempt/confirmation pair needs the second
+	// to fail while the first stands.
+	failAfter int
+	writes    int
 }
 
 func (a *memAudit) Insert(_ context.Context, e *persistence.AdminAuditEntry) error {
+	a.writes++
+	if a.failAfter > 0 && a.writes > a.failAfter {
+		return errors.New("audit sink unavailable")
+	}
 	if a.err != nil {
 		return a.err
 	}
@@ -212,4 +285,20 @@ func TestAccounts_UnlinkOwnershipAndInvalidRole(t *testing.T) {
 	if v, err := acc.Get(ctx, "a"); err != nil || v.UserID != "a" {
 		t.Fatalf("get: %v %v", v, err)
 	}
+}
+
+// RevokeIdentityOwnedBy mirrors the real repositories: the ownership test is
+// part of the write, so a binding reassigned since the caller last looked is
+// not revoked (audit 2026-09-15 CA-10).
+func (m *memIdentityRepo) RevokeIdentityOwnedBy(_ context.Context, channel, ext, expectedUserID string) error {
+	k := channel + ":" + ext
+	owner, ok := m.bindings[k]
+	if !ok || m.revoked[k] {
+		return persistence.ErrIdentityNotFound
+	}
+	if expectedUserID != "" && owner != expectedUserID {
+		return persistence.ErrIdentityNotFound
+	}
+	m.revoked[k] = true
+	return nil
 }

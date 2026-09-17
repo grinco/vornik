@@ -88,6 +88,36 @@ func TestBuild_AuthorizerHidesSharedFiles(t *testing.T) {
 	}
 }
 
+func TestSnapshot_AddExternalFileUsesVirtualPathAndRealHash(t *testing.T) {
+	root := writeTree(t, map[string]string{"projects/assistant.yaml": "projectId: assistant\n"})
+	sourceDir := t.TempDir()
+	source := filepath.Join(sourceDir, "PROJECT_CONTEXT.md")
+	if err := os.WriteFile(source, []byte("# Context\nsource: public\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Build(root, nil, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.AddExternalFile("projects/assistant/PROJECT_CONTEXT.md", source); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(s.Files["projects/assistant/PROJECT_CONTEXT.md"]); !strings.Contains(got, "source: public") {
+		t.Fatalf("virtual file missing content: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(s.Root, "projects", "assistant", "PROJECT_CONTEXT.md")); err != nil {
+		t.Fatalf("virtual disk file missing: %v", err)
+	}
+	hashes, err := s.BaseHashes([]string{"projects/assistant/PROJECT_CONTEXT.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashes["projects/assistant/PROJECT_CONTEXT.md"] == "" {
+		t.Fatal("external virtual file must carry the real backing-file hash")
+	}
+}
+
 func TestBuild_Limits(t *testing.T) {
 	root := writeTree(t, map[string]string{"projects/a.yaml": strings.Repeat("x", 100), "projects/b.yaml": "y"})
 	if _, err := Build(root, nil, Limits{MaxFiles: 1, MaxFileBytes: 1000, MaxTotalBytes: 1000}); !errors.Is(err, ErrSnapshotTooLarge) {

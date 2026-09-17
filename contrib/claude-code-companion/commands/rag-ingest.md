@@ -37,7 +37,8 @@ now irrelevant to whether the copy lands.
 
 User's arguments: `$ARGUMENTS`
 
-!`ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-ragingest-args.XXXXXX")"
+```!
+ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-ragingest-args.XXXXXX")"
 trap 'rm -f "$ARGS_FILE"' EXIT
 cat >"$ARGS_FILE" <<'VORNIK_RAGINGEST_ARGS_EOF'
 $ARGUMENTS
@@ -328,7 +329,7 @@ hint = inner.get("eta_hint")
 if hint:
     print(f"next:    {hint}")
 PYEOF
-`
+```
 
 ## What just happened
 

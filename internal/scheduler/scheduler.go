@@ -168,8 +168,11 @@ func DefaultConfig() *Config {
 
 // Scheduler selects tasks from the queue for execution.
 type Scheduler struct {
-	config          *Config
-	repo            TaskRepository
+	config *Config
+	repo   TaskRepository
+	// configBlocked refuses dispatch for a project whose config apply is
+	// unresolved (CA-20). Nil = never blocked.
+	configBlocked   func(projectID string) (bool, string)
 	metrics         *Metrics
 	tracer          trace.Tracer
 	runtime         RuntimeManager
@@ -295,6 +298,21 @@ func WithArtifactStore(store *artifacts.Store) Option {
 }
 
 // WithProjectRegistry sets the project registry for per-project concurrency limits.
+// WithConfigBlocked supplies the per-project admission gate the config apply
+// journal's unresolved rows feed (LLD 2026-09-13-config-apply-journal §1.4:
+// external drift "blocks affected execution and waits for an operator").
+//
+// Before this, ApplyEngine.BlockedProjects existed and was unit-tested with
+// NO PRODUCTION CALLER: startup recovery logged that projects may be
+// mid-apply and the scheduler dispatched against that config anyway
+// (re-audit 2026-09-15, CA-20). A set nothing reads blocks nothing.
+//
+// The gate reports (blocked, reason). Nil means never blocked, which is the
+// pre-journal behaviour.
+func WithConfigBlocked(gate func(projectID string) (bool, string)) Option {
+	return func(s *Scheduler) { s.configBlocked = gate }
+}
+
 func WithProjectRegistry(reg ProjectRegistry) Option {
 	return func(s *Scheduler) {
 		s.projectRegistry = reg
@@ -639,6 +657,22 @@ func (s *Scheduler) dispatchTask(task *persistence.Task) {
 	// Record task scheduled metric
 	if s.metrics != nil {
 		s.metrics.RecordTaskScheduled(task.ProjectID)
+	}
+
+	// Config-apply admission (§1.4). A project with an unresolved journal row
+	// — half-applied, or externally drifted — must not execute against config
+	// nobody has resolved. The task goes back to PENDING rather than failing:
+	// the operator resolves the row and the next tick picks it up.
+	if s.configBlocked != nil {
+		if blocked, reason := s.configBlocked(task.ProjectID); blocked {
+			s.logger.Warn().Str("task_id", task.ID).Str("project_id", task.ProjectID).
+				Str("reason", reason).
+				Msg("scheduler: dispatch refused, the project's configuration apply is unresolved")
+			if err := s.releaseExecutorLease(task, dispatchPaused, reason); err != nil {
+				span.RecordError(fmt.Errorf("blocked-project lease release failed: %w", err))
+			}
+			return
+		}
 	}
 
 	if s.executor != nil {

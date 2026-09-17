@@ -20,6 +20,10 @@ type stubAPIKeyRepo struct {
 	err  error
 }
 
+func (s *stubAPIKeyRepo) GetByID(_ context.Context, _ string) (*persistence.APIKey, error) {
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (s *stubAPIKeyRepo) Create(context.Context, *persistence.APIKey) error {
 	panic("unexpected Create call")
 }
@@ -115,4 +119,11 @@ func TestBuildRateLimitPanel_NilSafe(t *testing.T) {
 
 func (*stubAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (*stubAPIKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

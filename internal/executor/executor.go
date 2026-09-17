@@ -334,6 +334,11 @@ type Executor struct {
 	// (LLD 2026-07-07-knowledge-skill-store-design). Nil disables
 	// injection — roles simply don't receive learned skills.
 	skillRepo persistence.SkillRepository
+	// dupeChecker gates the post-task distiller against near-duplicates
+	// (skill_distiller.go). Optional — nil leaves the exact-name dedup as the
+	// only gate, which is what shipped before 2026-09-16 and what produced a
+	// catalogue where two thirds of the auto-proposed skills never fired.
+	dupeChecker SkillDupeChecker
 	// execSkillRepo records which skills were injected into each
 	// execution so a successful task can credit a "worked" maturity
 	// signal to exactly those skills (learning-loop §D.2). Nil-safe.
@@ -1167,6 +1172,19 @@ func WithRecoveryEventRepository(repo persistence.RecoveryEventRepository) Optio
 func WithSkillRepository(repo persistence.SkillRepository) Option {
 	return func(e *Executor) {
 		e.skillRepo = repo
+	}
+}
+
+// SetSkillDupeChecker wires the near-duplicate gate after construction.
+//
+// A SETTER rather than an Option because the checker is backed by the API
+// server, which is built AFTER the executor: an Option would have been nil at
+// construction and silently dead — which is precisely how this gate came to
+// exist on one entrypoint and not the other. There is deliberately no
+// WithSkillDupeChecker; offering one would invite exactly that mistake.
+func (e *Executor) SetSkillDupeChecker(c SkillDupeChecker) {
+	if e != nil {
+		e.dupeChecker = c
 	}
 }
 

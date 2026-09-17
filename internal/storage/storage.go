@@ -103,7 +103,12 @@ type Repositories struct {
 	//
 	// Present on BOTH backends since 2026-09-13, alongside the rest of
 	// the identity core (see Identity above).
-	UISessions           persistence.UISessionRepository
+	UISessions persistence.UISessionRepository
+	// LinkCodes owns the self-service channel-link codes of
+	// oidc-identity-permissions-design §5.2 — the table shipped with the
+	// identity core and had no producer or consumer until Phase 4.
+	// Present on BOTH backends, like the rest of the identity core.
+	LinkCodes            persistence.LinkCodeRepository
 	Webhooks             persistence.WebhookEventRepository
 	Messages             persistence.TaskMessageRepository
 	Scratchpads          persistence.TaskScratchpadRepository
@@ -469,6 +474,7 @@ func withSQLiteAccessStores(r *Repositories, db *sql.DB) {
 	r.APIKeys = sqlite.NewAPIKeyRepository(db)
 	r.Identity = sqlite.NewIdentityRepository(db)
 	r.UISessions = sqlite.NewUISessionRepository(db)
+	r.LinkCodes = sqlite.NewLinkCodeRepository(db)
 }
 
 // withSQLiteForgeStores attaches the forge-domain repositories.
@@ -557,6 +563,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ChatMemoryWriteAudit:           postgres.NewChatMemoryWriteAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),
 		Identity:                       postgres.NewIdentityRepository(dbtx),
+		LinkCodes:                      postgres.NewLinkCodeRepository(dbtx),
 		UISessions:                     postgres.NewUISessionRepository(dbtx),
 		Webhooks:                       postgres.NewWebhookEventRepository(dbtx),
 		Messages:                       postgres.NewTaskMessageRepository(dbtx),

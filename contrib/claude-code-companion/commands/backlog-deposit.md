@@ -49,7 +49,8 @@ printf '%s\n' "<your multi-paragraph body>" | \
 Run it with `--dry-run` first if you want to see the rendered item and the
 insertion point before touching the file.
 
-!`BACKLOG=""; d="$PWD"
+```!
+BACKLOG=""; d="$PWD"
 while [ "$d" != "/" ]; do
   if [ -f "$d/https://docs.vornik.io" ]; then BACKLOG="$d/https://docs.vornik.io"; break;
   elif [ -f "$d/BACKLOG.md" ]; then BACKLOG="$d/BACKLOG.md"; break; fi
@@ -62,7 +63,7 @@ else
   echo "Target backlog: $BACKLOG"
   echo "Open items: $(grep -c '^## \[ \]' "$BACKLOG" 2>/dev/null || echo 0) top-level, $(grep -cE '^\s*[-*]\s+\[ \]' "$BACKLOG" 2>/dev/null || echo 0) bullets"
 fi
-`
+```
 
 The bash above only locates the backlog. Call the script yourself with the body
 on stdin, as shown above.

@@ -26,9 +26,26 @@ This slash command's bash does the read + base64 + POST locally (in this
 shell, not via the model), so the file bytes never appear in your token
 stream. The model only sees the bash output below: a task_id confirmation.
 
-User's arguments: `$ARGUMENTS`
+User's arguments (verbatim, not in a code span — a backtick there would close
+the span): $ARGUMENTS
 
-!`ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-upload-args.XXXXXX")"
+> **Read the LAST line of the output before you believe any of it.** A run that
+> completed prints `VORNIK_UPLOAD_END` as its last line. Output without that
+> marker means the command was TRUNCATED before it ran — nothing was uploaded
+> and no task exists, however much the rest of it looks like a success.
+>
+> Backticks in the prompt used to cause exactly that: the block below was
+> expanded inside a backtick-delimited command, so the first backtick in the
+> prompt closed it, the heredoc was left unterminated, and the echoed remainder
+> still ended with this file's own "What just happened" instructions. It is now
+> a FENCED block, which ends at a closing fence line and not at a backtick, so
+> backticks in a prompt are safe. The marker stays as the second line of
+> defence — a line consisting of three backticks in the prompt would still
+> close the fence.
+
+```!
+printf 'VORNIK_UPLOAD_BEGIN\n'
+ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-upload-args.XXXXXX")"
 trap 'rm -f "$ARGS_FILE"' EXIT
 cat >"$ARGS_FILE" <<'VORNIK_UPLOAD_ARGS_EOF'
 $ARGUMENTS
@@ -269,14 +286,22 @@ hint = inner.get("eta_hint")
 if hint:
     print(f"next:    {hint}")
 PYEOF
-`
+printf 'VORNIK_UPLOAD_END\n'
+```
 
 ## What just happened
 
-The bash above already did the upload + delegate end-to-end. Read the
-output and report back to the user with:
+**First, check the output ends with `VORNIK_UPLOAD_END`.** If it does not, the
+command was truncated before it ran: nothing was uploaded and no task was
+created. The remaining cause is a line of three backticks in the prompt, which
+closes the fenced block. Tell the user plainly, name that as the cause, and
+offer to re-run without it. Do NOT report a task_id, and do NOT invent one from
+the echoed script: there is no task to poll.
 
-- The `task_id` (so they can poll it).
+Then, if the run completed, report back to the user with:
+
+- The `task_id` (so they can poll it). If there is no `task_id:` line, the
+  upload did NOT happen — treat that the same as a missing end marker.
 - A one-line summary of what was queued (workflow ID + file count).
 - The next step (`/status <task_id>` if they want to poll
   themselves, or just walk away — the SessionStart hook will surface

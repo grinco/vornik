@@ -194,14 +194,13 @@ func TestHealingTriggersBulkDismiss_EmptyIDsRejected(t *testing.T) {
 func TestHealingTriggerGenerateCandidate_Happy(t *testing.T) {
 	repo := newAPIStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), apiOpenTrigger("t-1"))
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{ID: "wpr-7", WorkflowID: "wf-a"},
-	}
-	opts := append(adminAuthOpts(),
-		WithHealingTriggerRepository(repo),
-		WithWorkflowArchitect(arch),
-	)
+	opts := append(adminAuthOpts(), WithHealingTriggerRepository(repo))
 	s := NewServer(opts...)
+	rows := &recordingWorkflowProposals{}
+	s.workflowProposals = rows
+	s.SetHealingAssistant(&stubHealingAssistant{
+		proposal: assistantHealingProposal(t, "wf-a", "---\nworkflowId: wf-a\n---\n# healed\n"),
+	})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
@@ -210,10 +209,10 @@ func TestHealingTriggerGenerateCandidate_Happy(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d, body=%s", rec.Code, rec.Body.String())
 	}
-	if arch.lastWorkflowID != "wf-a" {
-		t.Errorf("architect saw workflow %q, want wf-a", arch.lastWorkflowID)
+	if len(rows.rows) != 1 {
+		t.Fatalf("the producer must file a workflow proposal, got %d", len(rows.rows))
 	}
-	if repo.lastMarkGen.id != "t-1" || repo.lastMarkGen.proposalID != "wpr-7" {
+	if repo.lastMarkGen.id != "t-1" || repo.lastMarkGen.proposalID != rows.rows[0].ID {
 		t.Errorf("MarkGenerated args: %+v", repo.lastMarkGen)
 	}
 	var got HealingTriggerJSON
@@ -221,7 +220,7 @@ func TestHealingTriggerGenerateCandidate_Happy(t *testing.T) {
 	if got.Status != string(persistence.HealingTriggerStatusGeneratedCandidate) {
 		t.Errorf("status: %q", got.Status)
 	}
-	if got.ProposalID != "wpr-7" {
+	if got.ProposalID != rows.rows[0].ID {
 		t.Errorf("proposal_id: %q", got.ProposalID)
 	}
 }
@@ -233,14 +232,13 @@ func TestHealingTriggerGenerateCandidate_AlreadyTerminal(t *testing.T) {
 	tr := apiOpenTrigger("t-1")
 	tr.Status = persistence.HealingTriggerStatusDismissed
 	_ = repo.Insert(context.Background(), tr)
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{ID: "wpr-x", WorkflowID: "wf-a"},
-	}
-	opts := append(adminAuthOpts(),
-		WithHealingTriggerRepository(repo),
-		WithWorkflowArchitect(arch),
-	)
+	opts := append(adminAuthOpts(), WithHealingTriggerRepository(repo))
 	s := NewServer(opts...)
+	producer := &stubHealingAssistant{
+		proposal: assistantHealingProposal(t, "wf-a", "---\nworkflowId: wf-a\n---\n# healed\n"),
+	}
+	s.workflowProposals = &recordingWorkflowProposals{}
+	s.SetHealingAssistant(producer)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
@@ -249,32 +247,33 @@ func TestHealingTriggerGenerateCandidate_AlreadyTerminal(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status: %d, want 409 (terminal trigger)", rec.Code)
 	}
-	if arch.lastWorkflowID != "" {
-		t.Error("architect must not be called when trigger is terminal")
+	if producer.calls != 0 {
+		t.Error("the producer must not be called when the trigger is terminal")
 	}
 }
 
-// TestHealingTriggerGenerateCandidate_ArchitectFail — architect
+// TestHealingTriggerGenerateCandidate_ProducerFail — architect
 // returns error; trigger stays open (no MarkGenerated call).
-func TestHealingTriggerGenerateCandidate_ArchitectFail(t *testing.T) {
+func TestHealingTriggerGenerateCandidate_ProducerFail(t *testing.T) {
 	repo := newAPIStubHealingTriggerRepo()
 	_ = repo.Insert(context.Background(), apiOpenTrigger("t-1"))
-	arch := &stubArchitect{err: errors.New("LLM timeout")}
-	opts := append(adminAuthOpts(),
-		WithHealingTriggerRepository(repo),
-		WithWorkflowArchitect(arch),
-	)
+	opts := append(adminAuthOpts(), WithHealingTriggerRepository(repo))
 	s := NewServer(opts...)
+	s.workflowProposals = &recordingWorkflowProposals{}
+	s.SetHealingAssistant(&stubHealingAssistant{err: errors.New("LLM timeout")})
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/t-1/generate-candidate", nil)
 	req = withAdminKeyContext(req, "sk-admin")
 	rec := httptest.NewRecorder()
 	s.AdminHealingTriggerGenerateCandidate(rec, req, "t-1")
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("status: %d, want 500 (default mapping)", rec.Code)
+	// 502, not 500: the producer is an upstream this daemon called and which
+	// failed, not a fault in this handler. The distinction tells an operator
+	// whether to retry or to look at their own logs.
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status: %d, want 502 (the producer ran and failed)", rec.Code)
 	}
 	if repo.lastMarkGen.id != "" {
-		t.Error("MarkGenerated must not be called on architect failure")
+		t.Error("MarkGenerated must not be called when the producer fails")
 	}
 }
 
@@ -299,13 +298,7 @@ func TestHealingTriggerGenerateCandidate_ArchitectMissing(t *testing.T) {
 // → 404.
 func TestHealingTriggerGenerateCandidate_NotFound(t *testing.T) {
 	repo := newAPIStubHealingTriggerRepo()
-	arch := &stubArchitect{
-		result: &persistence.WorkflowProposal{ID: "wpr-x"},
-	}
-	opts := append(adminAuthOpts(),
-		WithHealingTriggerRepository(repo),
-		WithWorkflowArchitect(arch),
-	)
+	opts := append(adminAuthOpts(), WithHealingTriggerRepository(repo))
 	s := NewServer(opts...)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/admin/workflow-healing/triggers/missing/generate-candidate", nil)

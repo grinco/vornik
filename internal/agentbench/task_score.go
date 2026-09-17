@@ -18,16 +18,21 @@ const PinnedCaseValidationMetric = "pinned_case_validation_score"
 // repeat. ExecutionIDs retain the ledger provenance without changing the unit
 // of analysis from task to execution.
 type TaskScore struct {
-	TaskID          string                           `json:"taskId"`
-	Repeat          int                              `json:"repeat"`
-	Kind            quality.ScoreKind                `json:"kind"`
-	Status          quality.ScoreStatus              `json:"status"`
-	Score           float64                          `json:"score"`
-	PassedCaseCount int                              `json:"passedCaseCount"`
-	PinnedCaseCount int                              `json:"pinnedCaseCount"`
-	Diagnostic      string                           `json:"diagnostic,omitempty"`
-	CaseEvidence    []quality.NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
-	ExecutionIDs    []string                         `json:"executionIds"`
+	TaskID          string              `json:"taskId"`
+	Repeat          int                 `json:"repeat"`
+	Kind            quality.ScoreKind   `json:"kind"`
+	Status          quality.ScoreStatus `json:"status"`
+	Score           float64             `json:"score"`
+	PassedCaseCount int                 `json:"passedCaseCount"`
+	PinnedCaseCount int                 `json:"pinnedCaseCount"`
+	// ExtraCaseCount carries quality.ExecutionScore's count of verifier-reported
+	// ids the producer did not pin. Journalled so the slip is visible on the
+	// scoreboard and not only inside the scorer, which is where it hid until
+	// 2026-09-17.
+	ExtraCaseCount int                              `json:"extraCaseCount,omitempty"`
+	Diagnostic     string                           `json:"diagnostic,omitempty"`
+	CaseEvidence   []quality.NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
+	ExecutionIDs   []string                         `json:"executionIds"`
 }
 
 // ScoreTask adapts the shared production scorer to the benchmark's task/repeat
@@ -53,7 +58,8 @@ func ScoreTask(taskID string, repeat int, policy *quality.ScoringPolicy, executi
 	return TaskScore{
 		TaskID: taskID, Repeat: repeat, Kind: verdict.Kind, Status: verdict.Status,
 		Score: *verdict.Score, PassedCaseCount: verdict.PassedCaseCount,
-		PinnedCaseCount: verdict.PinnedCaseCount, Diagnostic: verdict.Diagnostic,
+		PinnedCaseCount: verdict.PinnedCaseCount, ExtraCaseCount: verdict.ExtraCaseCount,
+		Diagnostic:   verdict.Diagnostic,
 		CaseEvidence: verdict.CaseEvidence,
 		ExecutionIDs: append([]string(nil), executionIDs...),
 	}, nil

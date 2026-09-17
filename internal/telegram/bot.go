@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/chatauth"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/idfmt"
@@ -337,16 +338,30 @@ type Bot struct {
 	// turn through it. A nil receiver means the bot has no LLM hop
 	// (degraded boot / minimal tests) — HandleMessage returns a
 	// "dispatcher not configured" reply in that case.
-	receiver        conversation.Receiver
-	memorySearcher  dispatcher.MemorySearcher
-	memoryCorrector dispatcher.MemoryCorrector
-	auditRepo       dispatcher.AuditRepository         // optional; enables audit log for dispatcher tool calls
-	llmUsageRepo    persistence.TaskLLMUsageRepository // optional; enables budget enforcement in create_task
-	pricingTable    *pricing.Table                     // optional; enables cost calculation on dispatcher usage rows
-	rateLimiter     ratelimit.ProjectLimiter           // optional; enables rate-limit enforcement in create_task
-	defaultModel    string                             // VORNIK_LLM_MODEL fallback used by dispatcher cost forecast
-	llmClient       chat.Provider                      // LLM client used for in-bot operations like /summarize
-	compactor       chat.Compactor                     // optional; enables read-path conversation compaction (else legacy truncation)
+	// identityShim applies the Phase-4 OR-matrix (§5.3). Nil = legacy
+	// allowlist only, which is the pre-Phase-4 behaviour.
+	identityShim *chatauth.Shim
+	// configAssistant serves /config — the configuration assistant's chat
+	// entrypoint. Nil leaves /config unrecognised, the pre-feature behaviour.
+	configAssistant ConfigAssistant
+	// configRuns holds the senders with an assistant run in flight — one each
+	// (review-20260915-8717 F5). Guarded by b.mu.
+	configRuns map[int64]struct{}
+	// accountLinker redeems §5.2 link codes on `/link <code>`, tried
+	// BEFORE the operator-profile OTP store — see handler_link_account.go.
+	accountLinker AccountLinker
+	// redemptionLimiter bounds pre-authorization link attempts per speaker.
+	redemptionLimiter *chatauth.RedemptionLimiter
+	receiver          conversation.Receiver
+	memorySearcher    dispatcher.MemorySearcher
+	memoryCorrector   dispatcher.MemoryCorrector
+	auditRepo         dispatcher.AuditRepository         // optional; enables audit log for dispatcher tool calls
+	llmUsageRepo      persistence.TaskLLMUsageRepository // optional; enables budget enforcement in create_task
+	pricingTable      *pricing.Table                     // optional; enables cost calculation on dispatcher usage rows
+	rateLimiter       ratelimit.ProjectLimiter           // optional; enables rate-limit enforcement in create_task
+	defaultModel      string                             // VORNIK_LLM_MODEL fallback used by dispatcher cost forecast
+	llmClient         chat.Provider                      // LLM client used for in-bot operations like /summarize
+	compactor         chat.Compactor                     // optional; enables read-path conversation compaction (else legacy truncation)
 	// intentJudgeRepo persists two-tier judge verdicts. nil
 	// disables the judge entirely (heuristic + LLM both skipped).
 	intentJudgeRepo persistence.IntentVerdictRepository

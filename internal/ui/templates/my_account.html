@@ -1,0 +1,221 @@
+{{define "my_account.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-5xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                {{template "navIconKey"}}
+                <h1 class="text-xl font-semibold text-gray-100">My account</h1>
+            </div>
+
+            {{if .Notice}}<div class="rounded-md border border-dark-700 bg-dark-800 px-3 py-2 text-xs text-gray-300">{{.Notice}}</div>{{end}}
+
+            {{if .IssuedCode}}
+            <div class="rounded-md border border-brand-600 bg-dark-800 px-3 py-3 space-y-1">
+                <div class="text-xs text-gray-400">Your link code — shown once, and not recoverable:</div>
+                <div class="text-lg font-mono tracking-widest text-gray-100">{{.IssuedCode}}</div>
+                <div class="text-xs text-gray-400">
+                    Send this from the channel you want bound, within {{.LinkCodeTTLMinutes}} minutes.
+                    <span class="block mt-1 text-gray-300">Telegram: /link {{.IssuedCode}}</span>
+                    {{range .SlackLinkCommands}}<span class="block text-gray-300">Slack: {{.}} link {{$.IssuedCode}}</span>{{end}}
+                    {{if .SlackLinkCommands}}<span class="block mt-1">{{if gt (len .SlackLinkCommands) 1}}Those are every Slack command
+                    configured on this deployment{{else}}That Slack command is the one configured on this deployment (slack.slash_command){{end}} —
+                    the command is per-app, so another Slack app, even one belonging to you, answers a different one.</span>{{end}}
+                    <span class="block mt-1">The code is minted by THIS Vornik instance and only it can redeem one — a
+                    chat app pointed at another instance will answer "not valid".</span>
+                </div>
+                <div id="link-watch" class="text-xs text-gray-500"
+                     data-code-id="{{.IssuedCodeID}}" data-expires-at="{{.IssuedCodeExpiresAt}}">
+                    Waiting for the code to be redeemed…
+                </div>
+            </div>
+            {{end}}
+
+            {{if not .Available}}
+            <div class="text-sm text-gray-400">The identity core is not wired on this daemon.</div>
+            {{else}}
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/60 p-4 space-y-1">
+                <div class="text-sm text-gray-100">{{if .Display}}{{.Display}}{{else}}(no display name){{end}}</div>
+                <div class="text-xs text-gray-500">
+                    {{if .Role}}{{.Role}}{{else}}awaiting access{{end}}
+                    {{if .Projects}} · {{range $i, $p := .Projects}}{{if $i}}, {{end}}{{$p}}{{end}}{{end}}
+                </div>
+            </section>
+
+            <section class="space-y-3">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-medium text-gray-200">Linked identities</h2>
+                    <form method="POST" action="/ui/account/link-code">
+                        <button type="submit" class="rounded-md bg-brand-600 px-3 py-1.5 text-xs text-white hover:bg-brand-500">
+                            Generate link code
+                        </button>
+                    </form>
+                </div>
+                <p class="text-xs text-gray-500 max-w-2xl">
+                    Everything here resolves to you. Revoking your account revokes every one of
+                    them at once — that is the point of keeping them on one identity rather than
+                    a separate list per channel.
+                </p>
+
+                {{if .Identities}}
+                <div class="overflow-x-auto rounded-lg border border-dark-700">
+                    <table class="min-w-full text-xs">
+                        <thead class="bg-dark-800 text-gray-400">
+                            <tr>
+                                <th class="px-3 py-2 text-left font-medium">Kind</th>
+                                <th class="px-3 py-2 text-left font-medium">Where</th>
+                                <th class="px-3 py-2 text-left font-medium">Identifier</th>
+                                <th class="px-3 py-2"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700">
+                            {{range .Identities}}
+                            <tr>
+                                <td class="px-3 py-2 text-gray-300">{{.Kind}}</td>
+                                <td class="px-3 py-2 text-gray-400">{{.Channel}}</td>
+                                <td class="px-3 py-2 text-gray-400 font-mono">{{if .Display}}{{.Display}}{{else}}{{.ExternalID}}{{end}}</td>
+                                <td class="px-3 py-2 text-right">
+                                    <form method="POST" action="/ui/account/unlink" onsubmit="return confirm('Unlink {{.Channel}} {{.ExternalID}} from your account?')">
+                                        <input type="hidden" name="channel" value="{{.Channel}}">
+                                        <input type="hidden" name="externalId" value="{{.ExternalID}}">
+                                        <button type="submit" class="text-gray-400 hover:text-gray-200">Unlink</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="rounded-lg border border-dashed border-dark-700 px-3 py-4 text-xs text-gray-500">
+                    Nothing is linked to this account yet. Generate a link code to bind a chat
+                    channel, or claim an API key below to attribute its history to you.
+                </div>
+                {{end}}
+            </section>
+
+            <section class="space-y-2">
+                <h2 class="text-sm font-medium text-gray-200">Claim an API key</h2>
+                <p class="text-xs text-gray-500 max-w-2xl">
+                    Claiming a key attributes everything it has already recorded to you — no
+                    backfill, and reversible. Paste the key's id and its secret; the secret is
+                    checked and never stored.
+                </p>
+                <form method="POST" action="/ui/account/claim-key" class="flex flex-wrap items-center gap-2">
+                    <input type="text" name="keyId" placeholder="key id" required
+                           class="rounded-md bg-dark-900 border border-dark-700 px-2 py-1 text-xs text-gray-200 font-mono">
+                    <input type="password" name="keySecret" placeholder="key secret" required autocomplete="off"
+                           class="rounded-md bg-dark-900 border border-dark-700 px-2 py-1 text-xs text-gray-200 font-mono">
+                    <button type="submit" class="rounded-md bg-dark-800 border border-dark-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-dark-700">
+                        Claim
+                    </button>
+                </form>
+            </section>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+
+{{if .IssuedCode}}
+<script>
+// §5.5's redemption-observation contract. Redemption happens in chat and
+// nothing pushes it back to this browser session, so the panel polls — the
+// cheap option the design chose deliberately: no websocket, no server push,
+// and a poll that ends on its own cannot leak a subscription.
+//
+// It watches for THIS code's id to leave the caller's outstanding list, not
+// for the identity list to grow. The design forbids the latter: a second
+// outstanding code, or an admin assigning a key during the window, both add
+// an identity this poller did not cause.
+(function () {
+    var el = document.getElementById('link-watch');
+    if (!el) { return; }
+    var codeID = el.dataset.codeId;
+    var expiresAt = Date.parse(el.dataset.expiresAt);
+    if (!codeID || isNaN(expiresAt)) { el.textContent = ''; return; }
+
+    var timer = setInterval(async function () {
+        if (Date.now() >= expiresAt) {
+            clearInterval(timer);
+            el.textContent = 'This code has expired. Generate another one.';
+            return;
+        }
+        try {
+            var res = await fetch('/api/v1/account/identities', {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+            });
+            if (res.status === 401 || res.status === 403) {
+                // Not transient: the session is gone or forbidden, and no
+                // later poll can recover either on its own. Saying "waiting"
+                // until the TTL would end with "generate another one" on a
+                // page they can no longer reach. 403 joins 401 for the same
+                // reason (review-20260915-ba13, minor).
+                clearInterval(timer);
+                el.textContent = 'Your session is no longer valid. Sign in again to see whether the code was redeemed.';
+                return;
+            }
+            if (!res.ok) { return; }            // transient; the TTL still ends it
+            var body = await res.json();
+            // ABSENT is not EMPTY. The endpoint omits outstandingCodes
+            // entirely when the link-code store errors — deliberately, so a
+            // failing store cannot break the identity list, which is the
+            // answer actually asked for. Reading a missing key as an empty
+            // list made a store blip look exactly like a redemption, and the
+            // page announced "Redeemed" for a code nobody had used
+            // (review-20260915-c6a0 F1). A missing key is transient: keep
+            // polling, and let the TTL below end the loop.
+            if (!Array.isArray(body.outstandingCodes)) { return; }
+            var stillOutstanding = body.outstandingCodes.some(function (c) { return c.id === codeID; });
+            if (!stillOutstanding) {
+                clearInterval(timer);
+                // "No longer outstanding" — NOT "redeemed". The endpoint
+                // returns live codes only, so a code also leaves this list
+                // when the server expires it, and the server's clock is not
+                // this browser's: a client running behind would announce a
+                // redemption for a code that had merely expired. The page we
+                // navigate to shows which actually happened, because a
+                // redemption puts the binding in the identity list — asserted
+                // by TestMyAccount_DestinationPageDistinguishesRedeemedFromExpired,
+                // because deferring an ambiguity to a page that cannot resolve
+                // it would be a relocation rather than a fix.
+                //
+                // ONE WINDOW REMAINS, named because this flow now depends on
+                // it (review-20260915-ba13 F3). Redemption consumes the code
+                // BEFORE it writes the binding, and the two live in different
+                // repositories with no transaction spanning them. A poll that
+                // lands between them sees the code gone and the binding not
+                // yet written, so the page reads as expiry for a redemption
+                // that is about to succeed. The window is one write wide
+                // against a five-second poll, and closing it needs the two
+                // stores in one transaction — a larger change than this
+                // feature.
+                //
+                // The watcher navigates ONCE and stops, so this does not
+                // correct itself in front of the person: they see a wrong
+                // "expired" page until they reload by hand. That is the real
+                // residual cost, stated rather than softened into "the next
+                // page load is correct" (review-20260915-6d99).
+                el.textContent = 'Checking…';
+                // Navigate to the GET page, NOT location.reload(). This page
+                // was rendered from a POST to the issue endpoint (inline, so
+                // the code never enters a URL), so reload() re-submits that
+                // POST and mints a fresh code the person never asked for —
+                // once per redemption observed (review-20260915-80fa F3).
+                window.location.assign('/ui/account');
+            }
+        } catch (e) {
+            // A failed poll is not a failed link. The TTL branch above still
+            // stops this loop, so an offline browser cannot spin forever.
+        }
+    }, 5000);
+})();
+</script>
+{{end}}
+{{end}}

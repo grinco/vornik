@@ -32,7 +32,7 @@ type ExtraTool struct {
 }
 
 // ToolCallRecord is one tool call the loop made — the machine-readable
-// trace an agent-door proposal carries (design test 22) and the audit of
+// trace an agent-entrypoint proposal carries (design test 22) and the audit of
 // every request.
 type ToolCallRecord struct {
 	Name string `json:"name"`
@@ -81,6 +81,15 @@ func ParsePlan(text string) ([]string, bool) {
 // deadline passes. It never touches the deployed tree: env.Workspace is
 // the snapshot.
 //
+// The *LoopResult is returned on EVERY path that reached the provider —
+// alongside a refusal, and alongside an error — because it carries the
+// tokens already spent. Returning a bare nil on the ceiling paths made an
+// expensive failed attempt vanish from the project's usage ledger, exactly
+// when a caller is most likely to retry (audit 2026-09-15 CA-14). Callers
+// must read Model/PromptTokens/CompletionTokens whenever the result is
+// non-nil and treat Summary/ops as meaningful only when refusal and error
+// are both nil.
+//
 //nolint:gocognit,funlen // The model/tool loop is one protocol state machine; splitting it would hide ordering.
 func RunLoop(ctx context.Context, provider chat.Provider, system, intent string, env agentloop.Env, cfg LoopConfig) (*LoopResult, *Refusal, error) {
 	if provider == nil {
@@ -109,11 +118,11 @@ func RunLoop(ctx context.Context, provider chat.Provider, system, intent string,
 	declared := map[string]bool{}
 	for {
 		if ctx.Err() != nil {
-			return nil, &Refusal{Code: RefuseBudget, Message: "request deadline exceeded before the assistant finished"}, nil
+			return res, &Refusal{Code: RefuseBudget, Message: "request deadline exceeded before the assistant finished"}, nil
 		}
 		resp, err := provider.CompleteWithTools(ctx, msgs, tools)
 		if err != nil {
-			return nil, nil, fmt.Errorf("configassist: assistant model: %w", err)
+			return res, nil, fmt.Errorf("configassist: assistant model: %w", err)
 		}
 		res.PromptTokens += resp.Usage.PromptTokens
 		res.CompletionTokens += resp.Usage.CompletionTokens
@@ -121,7 +130,7 @@ func RunLoop(ctx context.Context, provider chat.Provider, system, intent string,
 			res.Model = resp.Model
 		}
 		if len(resp.Choices) == 0 {
-			return nil, &Refusal{Code: RefuseBudget, Message: "the assistant model returned no choices"}, nil
+			return res, &Refusal{Code: RefuseBudget, Message: "the assistant model returned no choices"}, nil
 		}
 		msg := resp.Choices[0].Message
 		if msg.Role == "" {
@@ -141,7 +150,7 @@ func RunLoop(ctx context.Context, provider chat.Provider, system, intent string,
 		}
 		res.Turns++
 		if res.Turns > cfg.MaxToolTurns {
-			return nil, &Refusal{Code: RefuseTurnCap, Message: fmt.Sprintf("the assistant exceeded %d tool turns without finishing", cfg.MaxToolTurns)}, nil
+			return res, &Refusal{Code: RefuseTurnCap, Message: fmt.Sprintf("the assistant exceeded %d tool turns without finishing", cfg.MaxToolTurns)}, nil
 		}
 		msgs = append(msgs, msg)
 		for _, call := range msg.ToolCalls {
@@ -163,7 +172,7 @@ func RunLoop(ctx context.Context, provider chat.Provider, system, intent string,
 				if res.BytesWritten > cfg.MaxOutputBytes {
 					// A completion past the cap is a refusal, never a truncation
 					// (design §8.2, test 17).
-					return nil, &Refusal{Code: RefuseOutputCap, Message: fmt.Sprintf("the assistant wrote more than %d bytes; refusing rather than truncating", cfg.MaxOutputBytes)}, nil
+					return res, &Refusal{Code: RefuseOutputCap, Message: fmt.Sprintf("the assistant wrote more than %d bytes; refusing rather than truncating", cfg.MaxOutputBytes)}, nil
 				}
 				result = Dispatch(env, name, args)
 			}
@@ -196,4 +205,24 @@ func bytesWritten(name string, args json.RawMessage) int {
 		return len(a.NewString)
 	}
 	return 0
+}
+
+// ReadPaths returns the paths the loop opened with file_read, in call order
+// and de-duplicated. These are grounding inputs: they shaped the proposal
+// without appearing in its diff, so they belong in the read set the apply
+// engine re-checks (audit 2026-09-15 CA-05).
+func (r *LoopResult) ReadPaths() []string {
+	if r == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range r.ToolCalls {
+		if c.Name != "file_read" || c.Path == "" || seen[c.Path] {
+			continue
+		}
+		seen[c.Path] = true
+		out = append(out, c.Path)
+	}
+	return out
 }

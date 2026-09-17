@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // Capacity ceilings for result-slice pre-allocation. The `limit`
@@ -34,11 +36,56 @@ type Repository struct {
 	pgvectorOnce  sync.Once
 	pgvectorAvail bool
 	logger        zerolog.Logger
+	// metrics + metricsProject carry the §5.7 recency signals. Optional:
+	// a nil Metrics disables emission without disabling the re-rank, so a
+	// deployment without observability still ranks correctly.
+	// metrics carries the §5.7 recency signals. Optional: a nil Metrics
+	// disables emission without disabling the re-rank, so a deployment
+	// without observability still ranks correctly. The project label comes
+	// from the CALL, not from construction — this Repository serves every
+	// project, so a constructor-time label would attribute every search to
+	// whichever project happened to be wired first.
+	metrics *Metrics
+	// traceSink (optional) persists the §5.7 `recency_rerank` stage row,
+	// mirroring the Searcher's trust_verdict sink. Nil disables the row
+	// without disabling the re-rank or its metrics — three independent
+	// observability channels, none load-bearing for correctness.
+	traceSink persistence.MemorySearchStageRepository
+	// recency governs the freshness + series re-rank applied to every
+	// hybrid search (2026-09-16-retrieval-recency-design.md §5.5). Held
+	// here rather than threaded through each call because it is a
+	// deployment-level policy, not a per-query one, and because the
+	// over-fetch it implies has to reach the SQL.
+	recency RecencyConfig
 }
 
 // NewRepository creates a new Repository.
 func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db, logger: zerolog.Nop()}
+	return &Repository{db: db, logger: zerolog.Nop(), recency: DefaultRecencyConfig()}
+}
+
+// SetMetrics wires the recency observability signals. Nil-safe.
+func (r *Repository) SetMetrics(m *Metrics) {
+	if r != nil {
+		r.metrics = m
+	}
+}
+
+// SetSearchStageSink wires the §5.7 recency_rerank trace. Nil-safe.
+func (r *Repository) SetSearchStageSink(sink persistence.MemorySearchStageRepository) {
+	if r != nil {
+		r.traceSink = sink
+	}
+}
+
+// SetRecencyConfig wires the operator's recency policy. Nil-safe. Setting a
+// config with Enabled=false restores byte-identical pre-change ranking,
+// including the over-fetch — the switch is a true revert, not a partial one
+// (§5.6), and §7 test 5 pins that.
+func (r *Repository) SetRecencyConfig(cfg RecencyConfig) {
+	if r != nil {
+		r.recency = cfg.applyDefaults()
+	}
 }
 
 // SetLogger wires repository-level degraded-search logs. Nil-safe so tests and
@@ -84,8 +131,9 @@ INSERT INTO project_memory_chunks
      embed_input_hash,
      needs_graph_extraction,
      derived_from_extracted_document_id, derived_from_section_id,
-     event_time)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11, $12)
+     event_time,
+     series_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11, $12, $13)
 ON CONFLICT (project_id, content_hash) DO NOTHING`
 
 	for _, c := range chunks {
@@ -109,6 +157,15 @@ ON CONFLICT (project_id, content_hash) DO NOTHING`
 			// non-NULL zero date would satisfy COALESCE and thereby exclude
 			// the chunk from every temporal window (design §4.1).
 			nullableTime(c.EventTime),
+			// Likewise NULL, not "": §5.3's supersession EXISTS is served by
+			// a PARTIAL index on `series_key IS NOT NULL`, so an empty string
+			// would enrol every non-series chunk in that index and make each
+			// one a one-member series. One statement serves both drivers —
+			// the sqlite slim schema carries `series_key` for exactly this
+			// reason (see internal/persistence/sqlite/schema.go), so a column
+			// written here but missing there fails the sqlite lane at insert,
+			// not at query.
+			nullableString(c.SeriesKey),
 		)
 		if err != nil {
 			return fmt.Errorf("upsert chunk %s: %w", c.ID, err)
@@ -1556,7 +1613,7 @@ LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC, c.id LIMIT $3`
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, relaxedQueryText)
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, overFetchLimit(limit, r.recency), vecLit, relaxedQueryText)
 	if err != nil {
 		// Degrade gracefully — pgvector ops may fail if the extension was
 		// removed after startup detection.
@@ -1565,7 +1622,7 @@ ORDER BY score DESC, c.id LIMIT $3`
 	}
 	defer func() { _ = rows.Close() }()
 
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // hybridSearchTemporal is the no-epoch sibling of HybridSearchWithEpochs;
@@ -1618,21 +1675,40 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at, c.event_time
+       c.created_at, c.expires_at, c.event_time,
+       -- Is a NEWER member of this chunk's recurring series present? Derived
+       -- per query, never stored: a stored flag raced under READ COMMITTED and
+       -- could not self-heal (§5.3). The CASE guards the vast majority of
+       -- candidates, which carry no series_key, so they never pay for the
+       -- subquery. The tuple comparison breaks a same-second tie
+       -- deterministically, and EXPLAIN on both drivers shows it served by
+       -- idx_memory_chunks_series.
+       CASE WHEN c.series_key IS NOT NULL THEN EXISTS (
+           SELECT 1 FROM project_memory_chunks n
+            WHERE n.project_id = c.project_id
+              AND n.series_key = c.series_key
+              -- A series MEMBER is an artifact, not a chunk. One ingest
+              -- produces many chunks whose created_at differ by microseconds,
+              -- so without this clause every chunk of the CURRENT digest is
+              -- superseded by its own later siblings and only the last one
+              -- survives at full weight. Found in production, 2026-09-16.
+              AND COALESCE(n.artifact_id, n.source_name) <> COALESCE(c.artifact_id, c.source_name)
+              AND (n.created_at, n.id) > (c.created_at, c.id)
+       ) ELSE false END AS series_superseded
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC, c.id LIMIT $3`, scopeClause)
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, overFetchLimit(limit, r.recency), vecLit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		r.logSearchDegrade(projectID, queryText, err, false, queryVec, "keyword")
 		return r.keywordSearchTemporal(ctx, projectID, queryText, limit, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
 
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // HybridSearchWithEpochs is the Phase-3 epoch-aware search. When
@@ -1716,20 +1792,39 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at, c.event_time
+       c.created_at, c.expires_at, c.event_time,
+       -- Is a NEWER member of this chunk's recurring series present? Derived
+       -- per query, never stored: a stored flag raced under READ COMMITTED and
+       -- could not self-heal (§5.3). The CASE guards the vast majority of
+       -- candidates, which carry no series_key, so they never pay for the
+       -- subquery. The tuple comparison breaks a same-second tie
+       -- deterministically, and EXPLAIN on both drivers shows it served by
+       -- idx_memory_chunks_series.
+       CASE WHEN c.series_key IS NOT NULL THEN EXISTS (
+           SELECT 1 FROM project_memory_chunks n
+            WHERE n.project_id = c.project_id
+              AND n.series_key = c.series_key
+              -- A series MEMBER is an artifact, not a chunk. One ingest
+              -- produces many chunks whose created_at differ by microseconds,
+              -- so without this clause every chunk of the CURRENT digest is
+              -- superseded by its own later siblings and only the last one
+              -- survives at full weight. Found in production, 2026-09-16.
+              AND COALESCE(n.artifact_id, n.source_name) <> COALESCE(c.artifact_id, c.source_name)
+              AND (n.created_at, n.id) > (c.created_at, c.id)
+       ) ELSE false END AS series_superseded
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC, c.id LIMIT $3`, scopeClause)
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, overFetchLimit(limit, r.recency), vecLit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		r.logSearchDegrade(projectID, queryText, err, epochsEnabled, queryVec, "keyword")
 		return r.keywordSearchWithEpochsTemporal(ctx, projectID, queryText, limit, activeEpochs, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // nullableTime returns nil for a zero time.Time so the
@@ -1769,7 +1864,26 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at, c.event_time
+       c.created_at, c.expires_at, c.event_time,
+       -- Is a NEWER member of this chunk's recurring series present? Derived
+       -- per query, never stored: a stored flag raced under READ COMMITTED and
+       -- could not self-heal (§5.3). The CASE guards the vast majority of
+       -- candidates, which carry no series_key, so they never pay for the
+       -- subquery. The tuple comparison breaks a same-second tie
+       -- deterministically, and EXPLAIN on both drivers shows it served by
+       -- idx_memory_chunks_series.
+       CASE WHEN c.series_key IS NOT NULL THEN EXISTS (
+           SELECT 1 FROM project_memory_chunks n
+            WHERE n.project_id = c.project_id
+              AND n.series_key = c.series_key
+              -- A series MEMBER is an artifact, not a chunk. One ingest
+              -- produces many chunks whose created_at differ by microseconds,
+              -- so without this clause every chunk of the CURRENT digest is
+              -- superseded by its own later siblings and only the last one
+              -- survives at full weight. Found in production, 2026-09-16.
+              AND COALESCE(n.artifact_id, n.source_name) <> COALESCE(c.artifact_id, c.source_name)
+              AND (n.created_at, n.id) > (c.created_at, c.id)
+       ) ELSE false END AS series_superseded
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -1782,7 +1896,7 @@ ORDER BY score DESC, c.id LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictSco
 		return r.substringSearchTemporal(ctx, projectID, queryText, limit, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // keywordSearchWithEpochsTemporal extends the FTS fallback with
@@ -1804,7 +1918,26 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at, c.event_time
+       c.created_at, c.expires_at, c.event_time,
+       -- Is a NEWER member of this chunk's recurring series present? Derived
+       -- per query, never stored: a stored flag raced under READ COMMITTED and
+       -- could not self-heal (§5.3). The CASE guards the vast majority of
+       -- candidates, which carry no series_key, so they never pay for the
+       -- subquery. The tuple comparison breaks a same-second tie
+       -- deterministically, and EXPLAIN on both drivers shows it served by
+       -- idx_memory_chunks_series.
+       CASE WHEN c.series_key IS NOT NULL THEN EXISTS (
+           SELECT 1 FROM project_memory_chunks n
+            WHERE n.project_id = c.project_id
+              AND n.series_key = c.series_key
+              -- A series MEMBER is an artifact, not a chunk. One ingest
+              -- produces many chunks whose created_at differ by microseconds,
+              -- so without this clause every chunk of the CURRENT digest is
+              -- superseded by its own later siblings and only the last one
+              -- survives at full weight. Found in production, 2026-09-16.
+              AND COALESCE(n.artifact_id, n.source_name) <> COALESCE(c.artifact_id, c.source_name)
+              AND (n.created_at, n.id) > (c.created_at, c.id)
+       ) ELSE false END AS series_superseded
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND c.lifecycle_state = 'published'
@@ -1820,7 +1953,7 @@ ORDER BY score DESC, c.id LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictSco
 		return r.substringSearchWithEpochsTemporal(ctx, projectID, queryText, limit, activeEpochs, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // pqStringArray adapts []string for the pq driver. nil/empty
@@ -1874,7 +2007,7 @@ ORDER BY score DESC, c.id LIMIT $3`
 	}
 	defer func() { _ = rows.Close() }()
 
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // RecentChunkRow is the projection ListRecentChunks returns. Carries
@@ -2083,7 +2216,7 @@ ORDER BY c.created_at DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictSc
 		return nil, fmt.Errorf("substring search (tier-3 fallback): %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 func (r *Repository) substringSearchTemporal(ctx context.Context, projectID, queryText string, limit int, fromDate, toDate time.Time, repoScope string, strictScope bool) ([]SearchResult, error) {
@@ -2109,7 +2242,7 @@ ORDER BY c.created_at DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictSc
 		return nil, fmt.Errorf("substring search temporal (tier-3 fallback): %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 func (r *Repository) substringSearchWithEpochsTemporal(ctx context.Context, projectID, queryText string, limit int, activeEpochs []string, fromDate, toDate time.Time, repoScope string, strictScope bool) ([]SearchResult, error) {
@@ -2137,7 +2270,7 @@ ORDER BY c.created_at DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictSc
 		return nil, fmt.Errorf("substring search epochs temporal (tier-3 fallback): %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanSearchResults(rows)
+	return r.finishSearch(rows, projectID, limit)
 }
 
 // MemoryState holds snapshot counts used for gauge metrics.
@@ -2484,12 +2617,14 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 	}
 	// Column tiers (each strictly more-permissive than the one
 	// below it; the loop picks the highest that matches):
+	//   16 cols → +series_superseded  (migration 190 — recency re-rank §5.3)
 	//   15 cols → +event_time        (migration 157 — temporal proximity / bucketing)
 	//   14 cols → +trust fields     (confidence/validation_status/created_at/expires_at — P3 routing)
 	//   10 cols → +repo_scope        (post-B-6-followup; UI surface)
 	//    9 cols → +liveness / class
 	//    7 cols → +class only
 	//    6 cols → bare legacy result
+	withSeries := len(cols) >= 16
 	withEventTime := len(cols) >= 15
 	withTrust := len(cols) >= 14
 	withRepoScope := len(cols) >= 10
@@ -2509,6 +2644,9 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 			var createdAt sql.NullTime
 			var expiresAt sql.NullTime
 			var eventTime sql.NullTime
+			var seriesSuperseded sql.NullBool
+			// Each new column is appended LAST, so an older tier scans
+			// strictly fewer destinations and is untouched by the addition.
 			// The event_time column is appended last, so the 15-col tier
 			// scans one extra destination and the 14-col tier is untouched.
 			// Keeps a newer binary working against an older query shape,
@@ -2522,11 +2660,17 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 			if withEventTime {
 				dest = append(dest, &eventTime)
 			}
+			if withSeries {
+				dest = append(dest, &seriesSuperseded)
+			}
 			if err := rows.Scan(dest...); err != nil {
 				return nil, err
 			}
 			if eventTime.Valid {
 				sr.EventTime = eventTime.Time
+			}
+			if seriesSuperseded.Valid {
+				sr.SeriesSuperseded = seriesSuperseded.Bool
 			}
 			if class.Valid {
 				sr.ContentClass = class.String
@@ -2853,4 +2997,85 @@ func (r *Repository) DeleteByArtifact(ctx context.Context, artifactID string) (i
 		return 0, fmt.Errorf("commit artifact chunk delete: %w", err)
 	}
 	return int(n), nil
+}
+
+// finishSearch scans a search result set and applies the recency re-rank
+// (2026-09-16-retrieval-recency-design.md §5.5): rescore by freshness and
+// series supersession, re-sort, then cut to the caller's limit.
+//
+// ONE path for every search return, including the keyword-only fallbacks. Those
+// return a narrower column shape, so they carry no series flag and no
+// timestamps — the re-rank is a no-op on them by construction rather than by a
+// special case, which is what keeps a degraded search from silently ranking by
+// a different rule than a healthy one.
+//
+// The cut happens HERE, after the re-sort, not in the SQL. That is the whole
+// reason the query over-fetches: a LIMIT applied before the new factors exist
+// would choose the result set without them, leaving the re-rank able only to
+// shuffle what was already picked.
+func (r *Repository) finishSearch(rows *sql.Rows, projectID string, limit int) ([]SearchResult, error) {
+	out, err := scanSearchResults(rows)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return out, nil
+	}
+	before := out
+	after := applyRecency(out, r.recency, time.Now().UTC(), limit)
+	r.observeRecency(projectID, before, after, limit)
+	return after, nil
+}
+
+// observeRecency emits the §5.7 signals. Best-effort and silent on failure: the
+// search already succeeded, and an analytics channel must never be able to fail
+// a query it only describes.
+//
+// Nothing is emitted when the feature is disabled — an absent row and a row of
+// zeros mean different things, and collapsing them would lose exactly the
+// distinction §5.7 was added to make ("enabled but inert" vs "off").
+func (r *Repository) observeRecency(projectID string, before, after []SearchResult, limit int) {
+	if r == nil || r.metrics == nil || !r.recency.applyDefaults().Enabled {
+		return
+	}
+	reordered, topShift := countReordered(before, after)
+	if reordered > 0 {
+		r.metrics.RecencyReorderedTotal.WithLabelValues(projectID).Inc()
+	}
+	if overFetchLimit(limit, r.recency) < limit*r.recency.applyDefaults().OverFetchFactor {
+		r.metrics.RecencyPoolClippedTotal.WithLabelValues(projectID).Inc()
+	}
+	for i := range before {
+		if before[i].SeriesSuperseded {
+			r.metrics.RecencyDemotedTotal.WithLabelValues(projectID, "series").Inc()
+		}
+	}
+	r.writeRecencyTrace(projectID, reordered, topShift, limit)
+}
+
+// writeRecencyTrace persists the §5.7 stage row. Best-effort and never fatal:
+// the search already returned, and an analytics channel must not be able to
+// fail the query it only describes — the same contract the trust_verdict trace
+// keeps.
+func (r *Repository) writeRecencyTrace(projectID string, reordered, topShift, limit int) {
+	if r.traceSink == nil {
+		return
+	}
+	clipped := overFetchLimit(limit, r.recency) < limit*r.recency.applyDefaults().OverFetchFactor
+	blob, err := json.Marshal(recencyTraceParams(r.recency, limit, reordered, topShift, clipped))
+	if err != nil {
+		return
+	}
+	// Detached: the caller's context may already be cancelled by the time a
+	// result set is drained, and losing a trace must not be worth a log line
+	// on every cancelled search.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if werr := r.traceSink.RecordStage(ctx, &persistence.MemorySearchStage{
+		ProjectID:  projectID,
+		Stage:      "recency_rerank",
+		Parameters: blob,
+	}); werr != nil {
+		r.logger.Debug().Err(werr).Msg("memory: recency_rerank trace write failed (search itself succeeded)")
+	}
 }

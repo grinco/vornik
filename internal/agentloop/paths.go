@@ -62,13 +62,40 @@ func resolvePath(workspace, raw string) (string, error) {
 			candidate = filepath.Join(ws, strings.TrimLeft(raw, string(os.PathSeparator)))
 		}
 	} else {
-		candidate = filepath.Join(ws, raw)
+		candidate = filepath.Join(ws, deSlashedWorkspacePath(ws, raw))
 	}
 	resolved := realpath(filepath.Clean(candidate))
 	if resolved != ws && !strings.HasPrefix(resolved, ws+string(os.PathSeparator)) {
 		return "", errEscape{raw: raw}
 	}
 	return resolved, nil
+}
+
+// deSlashedWorkspacePath recovers an absolute container path whose leading
+// slash the model dropped. "app/workspace/artifacts/in/x.md" with a workspace
+// of "/app/workspace" is not a relative path INTO the workspace — it is the
+// workspace's own absolute path, respelled. Joining it produces
+// /app/workspace/app/workspace/artifacts/in/x.md, which never exists, and the
+// entrypoint's repeat-miss guard then kills the step blaming an upstream role
+// (incident 2026-09-16, exec_20260916164618_4c53e9deafd4e8e6: the same model
+// spelled the same file three ways in one step and only this one missed).
+//
+// Returns raw unchanged unless it restates the workspace root on a COMPONENT
+// boundary, so "app/workspace-other/x" is still an ordinary relative path.
+// Confinement is not affected either way: the caller joins the result under
+// the workspace and re-checks containment.
+func deSlashedWorkspacePath(ws, raw string) string {
+	deslashed := strings.TrimPrefix(filepath.Clean(ws), string(os.PathSeparator))
+	if deslashed == "" || deslashed == "." {
+		return raw
+	}
+	if raw == deslashed {
+		return ""
+	}
+	if strings.HasPrefix(raw, deslashed+string(os.PathSeparator)) {
+		return strings.TrimPrefix(raw, deslashed)
+	}
+	return raw
 }
 
 // isRegularFile is `[ -f path ]` / os.path.isfile: follows symlinks.

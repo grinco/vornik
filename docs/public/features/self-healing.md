@@ -3,7 +3,7 @@ sources:
     - path: internal/enterprise/blackbox/engine/detector.go
       sha256: 05d47800b4dc20c956b4c324e1829ee066a977692036fdace2741eddfb928e45
     - path: internal/workflowhealing/promoter.go
-      sha256: d5051c869ee61b27d015e9d3111ffdf98b93e3383fbe309a0498eb6d0eea9c2e
+      sha256: d486c00a4fbb96d7d1bfdf0582372893d5cdc4872100297a5c0728d0b68c5dd4
 ---
 # Self-healing workflow genome
 
@@ -119,6 +119,14 @@ evidence links, and the scorecard. Promotion:
 - refuses any candidate that hasn't reached a passing trial;
 - **requires a replay-gated pass** — a static-only pass is deliberately not
   promotable;
+- **refuses a candidate whose workflow has changed since the candidate was
+  generated.** A candidate carries a whole new version of the workflow file, so
+  promoting an old one would quietly undo every edit made in the meantime.
+  Vornik records the fingerprint of the workflow each candidate was built
+  against and compares it before applying anything; if they differ you are told
+  so and asked to regenerate the candidate against the current file. A
+  candidate with no recorded fingerprint is refused for the same reason — it
+  cannot be shown to be current;
 - applies the change through the normal workflow path (write the workflow
   definition, validate it, commit it, hot-reload it), stamping who promoted it
   and when.

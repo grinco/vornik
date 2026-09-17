@@ -1,0 +1,1705 @@
+{
+  "manifest": {
+    "runId": "2026.9.4-rc-c0-tb5-1789665179",
+    "arm": {
+      "harnessVersion": "6",
+      "name": "2026.9.4-rc",
+      "binarySha256": "3cd04deb9571f279961f003ead12daed4cb2476f14be5938edc205c68a4051a2",
+      "configSha256": "1549f6558e73b80f91cb1c77061b9c37a04049ef86c9186e1d5b310592fed0cf",
+      "models": {
+        "analyst": "vllm/qwen3.8:27b",
+        "coder": "vllm/qwen3.8:27b",
+        "reviewer": "vllm/qwen3.8:27b",
+        "task_narrator": "vllm/qwen3.8:27b",
+        "tester": "vllm/qwen3.8:27b"
+      },
+      "agentImages": {
+        "analyst": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241",
+        "coder": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241",
+        "reviewer": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241",
+        "tester": "sha256:b06ab73a7a25403db60100448f803b44b5a301f1ef0ff501ebae80898ef25241"
+      },
+      "contextPolicy": "tool_budget=enabled(0.25/0.5/1.0/2.0,max2.0);guidance=failure_playbooks+architect_priors+memory_hygiene+tool_budget+application_feedback+lift_eval",
+      "taskSetSha256": "9b6fffe10fe0fdb6ead82e94bea62a48a9511a38ef2ef7cefe24a97797c98df9",
+      "goldSha256": "fca33a53c26b8c2b904eb62ca597515c9018fcf676bd2c89db7748a0d8ac48a3",
+      "scoringPolicySha256": "ed6071c42ceabda351f049d11e976dbf1e9cf54061a305b3dc49b4335a3af29a",
+      "tierPolicySha256": "d4d6cd7df48387d64631bd9ddd4d9a3297f754e12a1ecc1d1a3b1f8c1353b80d",
+      "probes": [
+        "schema-following",
+        "tool-use",
+        "tool-grant"
+      ]
+    },
+    "armKey": "7031821545f88c0bfebd40b4242aa782a994c798ada967dffe7bb74fd22a66f3",
+    "armPartial": false,
+    "harnessBuild": "cf39b5d37053",
+    "daemonBuild": "61634a06305d",
+    "taskTiers": {
+      "dp-06-idempotent-merge": "gate",
+      "dp-07-bounded-cache": "gate",
+      "dp-08-error-wrapping": "gate"
+    },
+    "preRegistrationHash": "4d4dc5b14ffaeb187695d94b3750b02c531a6db251ef672d718363967749897f",
+    "preRegistration": {
+      "arms": [
+        "2026.9.4-rc",
+        "2026.9.4-baseline-successor"
+      ],
+      "metric": "pinned_case_validation_score",
+      "targetDelta": 0.05,
+      "sigmaD": 0.0604,
+      "sigmaN": 10,
+      "computedPairs": 12,
+      "rationale": "Full 30-task scored arm on 2026.9.4-207-g61634a063 — the binary installed in production 2026-09-17 — to produce performance data for the release. LIMITS, registered BEFORE the run rather than explained after. FIRST AND LARGEST: this pass yields ABSOLUTE figures and NO DELTA. No scored arm journal has ever existed on this host; agentbench-runs/ holds gold passes only, and the 2026.9.0 arm that v6 pre-registered never ran because the model endpoint was believed down from 2026-09-04 (it was not down — the hostname resolved to loopback, corrected 2026-09-17). Nothing from this pass may be reported as a comparison, a regression, or a release verdict. The second arm named here is the successor this becomes the baseline FOR, named now because that is the comparison these figures are being collected for. SECOND: sigmaD 0.0604 is INHERITED, not measured on this task set — it comes from the 2026-08-14 n=10 noise floor over a 3-task subset of simple-workflow + dev-swarm, while this set is 30 tasks. It is carried so computedPairs derives from a real measurement rather than a guess, and it is wrong in an unknown direction for this set. THIRD, and new to this release: the arm reaches the model through LiteLLM over a local tunnel rather than the direct vLLM endpoint. /model/info confirms the backend is hosted_vllm/Qwen/Qwen3.8-27B-FP8, the same model the direct arm used, so this is intended to be a transport change only — but it is an UNMEASURED change on the serving path, and it is named here so a later difference cannot be attributed to code without first excluding it. FOURTH: the agent image was rebuilt for this pass (2e615f728fc5); prior gold under agentbench-runs/ ran ff3985ac4dbc and is not comparable, which is why this pass recorded fresh gold. FIFTH: gold for this arm was produced by the same harness run that will score against it. The script states that gold is operator-reviewed before it gates anything; the operator directed the scored arm to start as soon as gold landed, so at journal time that review has NOT occurred. The figures are therefore uncertified ground truth unless and until the operator reviews the gold manifest. Context policy under test: tool_budget enabled (factors trivial 0.25 / standard 0.5 / complex 1.0 / open_ended 2.0, max_factor 2.0) with the dev-swarm injected-guidance set (failure_playbooks, architect_priors, memory_hygiene, tool_budget, application_feedback, lift_eval) all on.",
+      "independentAxes": [
+        "binary_sha256",
+        "agent_images"
+      ]
+    },
+    "power": {
+      "sigmaD": 0.0604,
+      "sigmaN": 10,
+      "targetDelta": 0.05,
+      "requiredPairs": 12,
+      "availablePairs": 3,
+      "resolvableDelta": 0.09769688330750373,
+      "adequate": false
+    }
+  },
+  "records": [
+    {
+      "taskId": "dp-06-idempotent-merge",
+      "executionId": "exec_20260917191259_81f43b9d2da593dd",
+      "succeeded": true,
+      "costUsd": 0.7951014000000001,
+      "promptTokens": 703707,
+      "completionTokens": 11492,
+      "durationMs": 283270,
+      "toolCalls": 71,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "tester": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "calls": 14,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.28,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 9,
+            "byRole": {
+              "": {
+                "calls": 14,
+                "attributable": 14,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "calls": 16,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.128,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 11,
+            "byRole": {
+              "": {
+                "calls": 16,
+                "attributable": 16,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "calls": 20,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.4,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 18,
+            "byRole": {
+              "": {
+                "calls": 20,
+                "attributable": 20,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "calls": 7,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.35,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 4,
+            "byRole": {
+              "": {
+                "calls": 7,
+                "attributable": 7,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191259_81f43b9d2da593dd",
+          "taskId": "dp-06-idempotent-merge",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191259_81f43b9d2da593dd",
+            "taskId": "dp-06-idempotent-merge",
+            "calls": 14,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.56,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 10,
+            "byRole": {
+              "": {
+                "calls": 14,
+                "attributable": 14,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "taskId": "dp-07-bounded-cache",
+      "executionId": "exec_20260917191800_a4e635551e24010c",
+      "succeeded": true,
+      "costUsd": 0.43450520000000004,
+      "promptTokens": 390730,
+      "completionTokens": 4060,
+      "durationMs": 106594,
+      "toolCalls": 34,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191800_a4e635551e24010c",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191800_a4e635551e24010c",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 0,
+            "noOutput": 1,
+            "noOutputByOutcome": {
+              "degenerate_loop": 1
+            },
+            "noOutputByErrorClass": {
+              "degenerate_loop": 1
+            },
+            "schemaConformance": 0,
+            "schemaConformanceDefined": false,
+            "firstEmissionConformance": 0,
+            "firstEmissionConformanceDefined": false,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {}
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191800_a4e635551e24010c",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191800_a4e635551e24010c",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 34,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.68,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 27,
+            "byRole": {
+              "": {
+                "calls": 34,
+                "attributable": 34,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "taskId": "dp-07-bounded-cache",
+      "executionId": "exec_20260917191948_dbbc03a0b2417908",
+      "succeeded": true,
+      "costUsd": 0.6843206000000001,
+      "promptTokens": 603536,
+      "completionTokens": 10229,
+      "durationMs": 296127,
+      "toolCalls": 62,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "tester": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 13,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.26,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 9,
+            "byRole": {
+              "": {
+                "calls": 13,
+                "attributable": 13,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 18,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.144,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 15,
+            "byRole": {
+              "": {
+                "calls": 18,
+                "attributable": 18,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 10,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.2,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 8,
+            "byRole": {
+              "": {
+                "calls": 10,
+                "attributable": 10,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 9,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.45,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 5,
+            "byRole": {
+              "": {
+                "calls": 9,
+                "attributable": 9,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917191948_dbbc03a0b2417908",
+          "taskId": "dp-07-bounded-cache",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917191948_dbbc03a0b2417908",
+            "taskId": "dp-07-bounded-cache",
+            "calls": 12,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.48,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 8,
+            "byRole": {
+              "": {
+                "calls": 12,
+                "attributable": 12,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "taskId": "dp-08-error-wrapping",
+      "executionId": "exec_20260917192500_1fafe83530780ec1",
+      "succeeded": true,
+      "costUsd": 0.6090248,
+      "promptTokens": 535814,
+      "completionTokens": 9978,
+      "durationMs": 249920,
+      "toolCalls": 52,
+      "verdicts": [
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "tester": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "reviewer": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "analyst": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "schema-following",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "schema": {
+            "probe": "schema-following",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "terminal": 1,
+            "judged": 1,
+            "noOutput": 0,
+            "schemaConformance": 1,
+            "schemaConformanceDefined": true,
+            "firstEmissionConformance": 1,
+            "firstEmissionConformanceDefined": true,
+            "retriesToValid": 0,
+            "parseErrors": 0,
+            "schemaViolations": 0,
+            "downstreamRejected": 0,
+            "gateFailed": 0,
+            "byRole": {
+              "coder": {
+                "terminal": 1,
+                "conforming": 1,
+                "conformance": 1,
+                "parseErrors": 0,
+                "schemaViolations": 0
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "calls": 9,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.18,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 7,
+            "byRole": {
+              "": {
+                "calls": 9,
+                "attributable": 9,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "calls": 8,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.4,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 5,
+            "byRole": {
+              "": {
+                "calls": 8,
+                "attributable": 8,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "calls": 13,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.52,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 9,
+            "byRole": {
+              "": {
+                "calls": 13,
+                "attributable": 13,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "calls": 17,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.34,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 13,
+            "byRole": {
+              "": {
+                "calls": 17,
+                "attributable": 17,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        },
+        {
+          "probe": "tool-use",
+          "executionId": "exec_20260917192500_1fafe83530780ec1",
+          "taskId": "dp-08-error-wrapping",
+          "pathCoverage": 0,
+          "coreMiss": false,
+          "grantPrecision": 0,
+          "grantPrecisionDefined": false,
+          "requestPrecision": 0,
+          "requestPrecisionDefined": false,
+          "escalations": 0,
+          "refusalRate": 0,
+          "refusalRateDefined": false,
+          "stalled": false,
+          "toolUse": {
+            "probe": "tool-use",
+            "executionId": "exec_20260917192500_1fafe83530780ec1",
+            "taskId": "dp-08-error-wrapping",
+            "calls": 5,
+            "failed": 0,
+            "unknownTool": 0,
+            "argumentError": 0,
+            "otherFailure": 0,
+            "callValidity": 1,
+            "callValidityDefined": true,
+            "budgetUtilisation": 0.04,
+            "budgetUtilisationDefined": true,
+            "budgetExhausted": false,
+            "repeatedCalls": 2,
+            "byRole": {
+              "": {
+                "calls": 5,
+                "attributable": 5,
+                "invalid": 0,
+                "validity": 1,
+                "validityDefined": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "taskScores": [
+    {
+      "taskId": "dp-06-idempotent-merge",
+      "repeat": 1,
+      "kind": "pinned_case_validation",
+      "status": "scored",
+      "score": 0.42105263157894735,
+      "passedCaseCount": 8,
+      "pinnedCaseCount": 19,
+      "caseEvidence": [
+        {
+          "id": "s1_case_1",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_2",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_3",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_4",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_5",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_6",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_7",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_8",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_1",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_2",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_3",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_4",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_5",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_6",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_7",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_8",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s3_case_1",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s3_case_2",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s3_case_3",
+          "status": "absent",
+          "credited": false
+        }
+      ],
+      "executionIds": [
+        "exec_20260917191259_81f43b9d2da593dd"
+      ]
+    },
+    {
+      "taskId": "dp-07-bounded-cache",
+      "repeat": 1,
+      "kind": "pinned_case_validation",
+      "status": "scored",
+      "score": 0.25,
+      "passedCaseCount": 3,
+      "pinnedCaseCount": 12,
+      "caseEvidence": [
+        {
+          "id": "s1_case_1",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_2",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_3",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s1_case_4",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_1",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_2",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_3",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_4",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s2_case_5",
+          "status": "absent",
+          "credited": false
+        },
+        {
+          "id": "s3_case_1",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s3_case_2",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s3_case_3",
+          "status": "passed",
+          "credited": true
+        }
+      ],
+      "executionIds": [
+        "exec_20260917191800_a4e635551e24010c",
+        "exec_20260917191948_dbbc03a0b2417908"
+      ]
+    },
+    {
+      "taskId": "dp-08-error-wrapping",
+      "repeat": 1,
+      "kind": "pinned_case_validation",
+      "status": "scored",
+      "score": 1,
+      "passedCaseCount": 13,
+      "pinnedCaseCount": 13,
+      "caseEvidence": [
+        {
+          "id": "s1_case_1",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s1_case_2",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s1_case_3",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s1_case_4",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s1_case_5",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_1",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_2",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_3",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_4",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_5",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_6",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_7",
+          "status": "passed",
+          "credited": true
+        },
+        {
+          "id": "s2_case_8",
+          "status": "passed",
+          "credited": true
+        }
+      ],
+      "executionIds": [
+        "exec_20260917192500_1fafe83530780ec1"
+      ]
+    }
+  ],
+  "taskRuns": [
+    {
+      "taskId": "dp-06-idempotent-merge",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917191259_81f43b9d2da593dd"
+      ]
+    },
+    {
+      "taskId": "dp-07-bounded-cache",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917191800_a4e635551e24010c",
+        "exec_20260917191948_dbbc03a0b2417908"
+      ]
+    },
+    {
+      "taskId": "dp-08-error-wrapping",
+      "repeat": 1,
+      "succeeded": true,
+      "executionIds": [
+        "exec_20260917192500_1fafe83530780ec1"
+      ]
+    }
+  ]
+}

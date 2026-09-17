@@ -598,6 +598,23 @@ func TestIdentityRepository_PostgresContract(t *testing.T) {
 	repotest.RunIdentityRepositorySuite(t, NewIdentityRepository(db.DB))
 }
 
+// TestOperatorIdentityLinkRepository_PostgresContract runs the shared
+// cross-channel link suite. It exists because the two drivers were found to
+// disagree TWICE on this repository in one night — on linked_at and on
+// ListForOperator's ordering — after the SQLite half had been a no-op stub
+// for months. Each divergence was internally consistent, so neither driver's
+// own tests could see it; only a suite both run can.
+// TestAPIKeyAttributable_PostgresContract — see the sqlite twin.
+func TestAPIKeyAttributable_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunAPIKeyAttributableSuite(t, NewAPIKeyRepository(db.DB))
+}
+
+func TestOperatorIdentityLinkRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunOperatorIdentityLinkSuite(t, NewOperatorIdentityLinkRepository(db.DB))
+}
+
 // TestIdentityAdminSuite_PostgresContract — the admin half of the identity
 // contract (ListUsers, SetUserAccess/RemoveUserAccess, last-admin guard,
 // session revocation in-tx). Same suite the SQLite backend runs since the
@@ -614,6 +631,12 @@ func TestIdentityAdminSuite_PostgresContract(t *testing.T) {
 func TestUISessionRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunUISessionSuite(t, NewUISessionRepository(db.DB), NewIdentityRepository(db.DB))
+}
+
+// TestLinkCodeRepository_Contract — §5.2 link codes on the pgvector lane.
+func TestLinkCodeRepository_Contract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunLinkCodeSuite(t, NewLinkCodeRepository(db.DB), NewIdentityRepository(db.DB))
 }
 
 // TestIdentityRepository_AccessRevokedMarker_Postgres pins the R3 marker on

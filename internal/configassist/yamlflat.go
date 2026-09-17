@@ -25,6 +25,28 @@ func Flatten(data []byte) map[string]string { return flatten(data, true) }
 // two feeds sharing a slug into one key).
 func FlattenPositional(data []byte) map[string]string { return flatten(data, false) }
 
+// Expansion bounds (audit 2026-09-15 CA-02). A YAML document is a GRAPH, not
+// a tree: `&loop [*loop]` is a finite document whose expansion never ends,
+// and the "billion laughs" shape expands exponentially with no cycle at all.
+// Unbounded recursion here was a fatal stack overflow — which Go does not let
+// a recover() handler contain, and which the class ceiling (applied AFTER
+// flattening) never got the chance to refuse. Both a cycle check and a size
+// bound are needed; neither alone is sufficient.
+const (
+	maxFlattenKeys  = 5000
+	maxFlattenDepth = 100
+)
+
+// Sentinel keys. Every one begins with "<", which classifyOne refuses as E —
+// a document the flattener could not expand must be DENIED, never silently
+// read as an empty (and therefore changeless) document.
+const (
+	keyUnparseable   = "<unparseable>"
+	keyCyclicAlias   = "<cyclic-alias>"
+	keyTooManyKeys   = "<expansion-too-large>"
+	keyTooDeeplyNest = "<nesting-too-deep>"
+)
+
 func flatten(data []byte, byIdentity bool) map[string]string {
 	out := map[string]string{}
 	if len(bytes.TrimSpace(data)) == 0 {
@@ -32,17 +54,51 @@ func flatten(data []byte, byIdentity bool) map[string]string {
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		out["<unparseable>"] = err.Error()
+		out[keyUnparseable] = err.Error()
 		return out
 	}
 	if len(root.Content) == 0 {
 		return out
 	}
-	flattenNode("", root.Content[0], out, byIdentity)
+	f := &flattener{out: out, byIdentity: byIdentity, onPath: map[*yaml.Node]bool{}}
+	f.node("", root.Content[0], 0)
 	return out
 }
 
-func flattenNode(prefix string, n *yaml.Node, out map[string]string, byIdentity bool) {
+// flattener carries the traversal state the bounds need. onPath holds the
+// alias targets currently being expanded on THIS branch (not every node ever
+// visited): the same anchor referenced twice as siblings is legitimate reuse,
+// while an anchor that contains a reference to itself is the cycle.
+type flattener struct {
+	out        map[string]string
+	byIdentity bool
+	onPath     map[*yaml.Node]bool
+	stopped    bool
+}
+
+// budget reports whether traversal may continue, recording the reason it may
+// not. Once stopped, the sentinel is already in out and every caller unwinds.
+func (f *flattener) budget(depth int) bool {
+	if f.stopped {
+		return false
+	}
+	if depth > maxFlattenDepth {
+		f.out[keyTooDeeplyNest] = fmt.Sprintf("document nests deeper than %d levels", maxFlattenDepth)
+		f.stopped = true
+		return false
+	}
+	if len(f.out) > maxFlattenKeys {
+		f.out[keyTooManyKeys] = fmt.Sprintf("document expands past %d keys", maxFlattenKeys)
+		f.stopped = true
+		return false
+	}
+	return true
+}
+
+func (f *flattener) node(prefix string, n *yaml.Node, depth int) {
+	if n == nil || !f.budget(depth) {
+		return
+	}
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
@@ -51,34 +107,42 @@ func flattenNode(prefix string, n *yaml.Node, out map[string]string, byIdentity 
 			if prefix != "" {
 				key = prefix + "." + k
 			}
-			flattenNode(key, n.Content[i+1], out, byIdentity)
+			f.node(key, n.Content[i+1], depth+1)
 		}
 		if len(n.Content) == 0 && prefix != "" {
-			out[prefix] = "{}"
+			f.out[prefix] = "{}"
 		}
 	case yaml.SequenceNode:
 		if len(n.Content) == 0 && prefix != "" {
-			out[prefix] = "[]"
+			f.out[prefix] = "[]"
 			return
 		}
 		for i, item := range n.Content {
 			idx := strconv.Itoa(i)
-			if byIdentity && item.Kind == yaml.MappingNode {
+			if f.byIdentity && item != nil && item.Kind == yaml.MappingNode {
 				if id := mappingIdentity(item); id != "" {
 					idx = id
 				}
 			}
-			flattenNode(prefix+"."+idx, item, out, byIdentity)
+			f.node(prefix+"."+idx, item, depth+1)
 		}
 	case yaml.ScalarNode:
-		out[prefix] = n.Value
+		f.out[prefix] = n.Value
 	case yaml.AliasNode:
-		if n.Alias != nil {
-			flattenNode(prefix, n.Alias, out, byIdentity)
+		if n.Alias == nil {
+			return
 		}
+		if f.onPath[n.Alias] {
+			f.out[keyCyclicAlias] = "alias expands into itself at " + prefix
+			f.stopped = true
+			return
+		}
+		f.onPath[n.Alias] = true
+		f.node(prefix, n.Alias, depth+1)
+		delete(f.onPath, n.Alias)
 	case yaml.DocumentNode:
 		for _, c := range n.Content {
-			flattenNode(prefix, c, out, byIdentity)
+			f.node(prefix, c, depth+1)
 		}
 	}
 }

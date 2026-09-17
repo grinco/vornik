@@ -138,11 +138,32 @@ func (s *Service) ResolveUser(ctx context.Context, userID string) (*Principal, e
 // caller as an unknown sender and fall back to an allowlist.
 var ErrResolverUnavailable = errors.New("authz: identity resolver unavailable")
 
+// UserDisabled is THE predicate for "may this principal act right now".
+//
+// It reads `users.disabled_at` (surfaced as PrincipalRow.Disabled) and
+// nothing else — notably NOT `users.access_revoked_at`, which answers a
+// different question at a different time: whether a bootstrap login may
+// silently re-grant access (oidc-identity-permissions-design §5.0's
+// two-column table).
+//
+// It is exported and pure on purpose. The disabled invariant has two
+// enforcement sites — this resolver, and the API-key door of §5.4 — and the
+// design requires them not to drift (round-4 finding F4-2). A shared pure
+// function is a stronger guarantee than the injectable seam that finding
+// asked for: an injected double proves the sites CALL something, whereas one
+// function they both call cannot diverge at all. See §5.0.
+//
+// No rows is NOT disabled: that is "unknown identity", which the caller
+// distinguishes, and collapsing the two would deny where it should ask.
+func UserDisabled(rows []persistence.PrincipalRow) bool {
+	return len(rows) > 0 && rows[0].Disabled
+}
+
 func principalFromRows(rows []persistence.PrincipalRow) (*Principal, error) {
 	if len(rows) == 0 {
 		return nil, ErrUnknownIdentity
 	}
-	if rows[0].Disabled {
+	if UserDisabled(rows) {
 		return nil, ErrUserDisabled
 	}
 	p := &Principal{

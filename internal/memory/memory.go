@@ -125,10 +125,15 @@ func (m *Manager) Repository() *Repository {
 }
 
 // SetMetrics wires a Metrics instance into all sub-components.
+//
+// The repository is included because the recency re-rank emits from there
+// (§5.7) — it is the only component that sees both the pre- and post-rerank
+// ordering, which is what "did this change anything" is measured from.
 func (m *Manager) SetMetrics(metrics *Metrics) {
 	m.Indexer.setMetrics(metrics)
 	m.worker.setMetrics(metrics)
 	m.Searcher.setMetrics(metrics)
+	m.repo.SetMetrics(metrics)
 }
 
 // SetSecrets wires the secret-leak detector into the indexer so

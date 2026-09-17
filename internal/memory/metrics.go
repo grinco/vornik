@@ -27,6 +27,24 @@ type Metrics struct {
 	SearchResultsTotal   *prometheus.CounterVec
 	SearchDuration       *prometheus.HistogramVec
 	SearchRerankDuration prometheus.Histogram
+	// Recency re-rank (2026-09-16-retrieval-recency-design.md §5.7).
+	// RecencyDemotedTotal counts result chunks whose score the re-rank
+	// reduced, labelled by which leg did it — the two are different
+	// operator stories. "series" means a newer member of the same
+	// recurring series exists and the contract is that this one loses;
+	// "age" means the chunk's own retention window has run down.
+	RecencyDemotedTotal *prometheus.CounterVec
+	// RecencyReorderedTotal counts searches where the re-rank actually
+	// CHANGED the returned order. A feature that is enabled but never
+	// reorders anything is indistinguishable from one that is off, and
+	// this is the metric that tells those apart.
+	RecencyReorderedTotal *prometheus.CounterVec
+	// RecencyPoolClippedTotal counts searches whose over-fetch was cut
+	// short by the per-arm candidate cap. §5.5: the EFFECTIVE over-fetch
+	// is min(L x factor, poolCap)/L, which is 1.0 at L >= cap — a pure
+	// re-sort that can rescue nothing. Without this an operator reads the
+	// configured factor and believes recency reaches further than it does.
+	RecencyPoolClippedTotal *prometheus.CounterVec
 
 	// State gauges (updated periodically by the Manager)
 	ChunksTotal *prometheus.GaugeVec
@@ -186,6 +204,33 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Help:      "Latency of one embedding batch API call.",
 				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
 			},
+		),
+		RecencyDemotedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: memNamespace,
+				Subsystem: memSubsystem,
+				Name:      "recency_demoted_total",
+				Help:      "Result chunks demoted by the recency re-rank, by leg (series | age).",
+			},
+			[]string{"project_id", "leg"},
+		),
+		RecencyReorderedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: memNamespace,
+				Subsystem: memSubsystem,
+				Name:      "recency_reordered_total",
+				Help:      "Searches where the recency re-rank changed the returned order.",
+			},
+			[]string{"project_id"},
+		),
+		RecencyPoolClippedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: memNamespace,
+				Subsystem: memSubsystem,
+				Name:      "recency_pool_clipped_total",
+				Help:      "Searches whose over-fetch was truncated by the per-arm candidate cap.",
+			},
+			[]string{"project_id"},
 		),
 		SearchesTotal: promauto.With(registerer).NewCounterVec(
 			prometheus.CounterOpts{

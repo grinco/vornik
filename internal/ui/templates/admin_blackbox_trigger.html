@@ -170,10 +170,10 @@
                 {{if .CanGenerate}}
                 <form method="post" action="/ui/admin/blackbox/triggers/{{.Trigger.ID}}/generate-candidate"
                       class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3"
-                      onsubmit="return confirm('Generate a workflow candidate? Calls the architect synchronously — this can take 10-30s while the LLM runs.');">
+                      onsubmit="return confirm('Generate a workflow candidate from this trigger? Runs synchronously — this can take 10-30s if the assistant is called.');">
                     <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Generate candidate</h2>
                     <p class="text-xs text-gray-500">
-                        Hands the workflow ID off to the memetic architect. On success the trigger transitions to <code class="font-mono text-gray-400">generated_candidate</code> with the proposal ID stamped, and you're redirected to the proposal page to approve / reject.
+                        One click — nothing to type. The project, the workflow, the evidence executions and the intent (which metric regressed, against which baseline and threshold) all come off this trigger. A deterministic structural recipe is tried first; the config assistant handles what recipes cannot. On success the trigger transitions to <code class="font-mono text-gray-400">generated_candidate</code> with the proposal ID stamped, and you're taken to the proposal to approve / reject.
                     </p>
                     <button type="submit"
                             class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-md">
@@ -183,7 +183,7 @@
                 {{else if not .HasArchitect}}
                 <div class="glass rounded-xl border border-dark-700 px-5 py-4 text-xs text-gray-500 space-y-1">
                     <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Generate candidate</h2>
-                    <p>Workflow architect not wired on this deployment. Dismiss the trigger or pipe the evidence into <code class="font-mono">/api/v1/admin/workflow-architect/propose</code> manually.</p>
+                    <p>No healing candidate producer is wired on this deployment, so there is nothing to generate with. Dismiss the trigger, or wire the config assistant.</p>
                 </div>
                 {{end}}
             </div>

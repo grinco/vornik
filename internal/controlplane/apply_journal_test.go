@@ -412,9 +412,24 @@ func TestJournal_ConcurrentOverlappingApply_Refused(t *testing.T) {
 	}
 }
 
-// §7.9 — stale writer epoch discovered before write #3 → REVERTING →
-// REVERTED, every pre-image back, proposal APPROVED.
-func TestJournal_StaleEpochBeforeThirdWrite_Reverted(t *testing.T) {
+// §7.9 — stale writer epoch discovered before write #3 → the apply STOPS and
+// the row is left open for the current leader's recovery.
+//
+// AMENDED 2026-09-15 (re-audit CA-22). This test used to assert REVERTING →
+// REVERTED with every pre-image restored in-process, which contradicted the
+// design's own §1.2 invariant: "the lease epoch is ... re-verified before each
+// file write and before the terminal transition. A stale epoch ABORTS INTO
+// RECOVERY." Both readings were in the design (§3's state diagram and this
+// test row said revert; §1.2 said recover), and the implementation followed
+// the wrong one.
+//
+// §1.2 is right, and the reason is the whole point of the fence: a revert is
+// itself a WRITE of three files, performed by a process that has just been
+// told it is no longer the writer. Restoring pre-images could overwrite what
+// the NEW leader has already written. The pre-images are durably in the
+// journal row, so the leader that actually holds the lease restores them on
+// Reconcile — strictly safer than the old writer racing it.
+func TestJournal_StaleEpochBeforeThirdWrite_StopsForRecovery(t *testing.T) {
 	env := newJournalEnv(t)
 	id := env.seed(t, "")
 	gate := &fakeEpochGate{failAt: 3} // checks: write #1, #2, #3
@@ -424,13 +439,20 @@ func TestJournal_StaleEpochBeforeThirdWrite_Reverted(t *testing.T) {
 	if !errors.Is(err, ErrWriterFenced) {
 		t.Fatalf("expected ErrWriterFenced, got %v", err)
 	}
-	if gate.calls != 3 {
-		t.Errorf("fence must be checked before each write, calls = %d", gate.calls)
-	}
-	env.assertPreImages(t)
 	j := env.latestJournal(t, id)
-	if j.State != persistence.JournalStateReverted || j.WriterEpoch != 1 || !strings.Contains(j.Failure, "fence before write #3") {
-		t.Fatalf("journal must be REVERTED carrying the PREPARE epoch and the fence reason: %+v", j)
+	if j.TerminalAt != nil {
+		t.Fatalf("the row must stay OPEN so the current leader recovers it: %+v", j)
+	}
+	if j.WriterEpoch != 1 {
+		t.Errorf("row must carry the PREPARE epoch, got %d", j.WriterEpoch)
+	}
+	if !strings.Contains(j.Failure, "fence") {
+		t.Errorf("row must record the fence reason for the current leader: %q", j.Failure)
+	}
+	// The two completed writes stay on disk: undoing them is a write, and
+	// this process may no longer write. Recovery owns that decision.
+	if !env.exists("projects/a.yaml") || !env.exists("projects/b.yaml") {
+		t.Error("a fenced-out writer must not undo its own writes; recovery does")
 	}
 	if st := env.proposalStatus(t, id); st != persistence.ProposalStatusApproved {
 		t.Errorf("proposal must stay APPROVED, got %s", st)

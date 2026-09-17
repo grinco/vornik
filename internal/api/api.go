@@ -221,17 +221,6 @@ type WorkflowTelemetry interface {
 	ForWorkflow(ctx context.Context, workflowID string, since time.Time) (any, error)
 }
 
-// WorkflowArchitect drives POST /api/v1/admin/workflow-architect/
-// propose — runs one architect turn and persists a pending
-// proposal. Narrow interface so the api package doesn't import
-// internal/memetic directly; *memetic.Architect satisfies it via
-// a one-line service-layer adapter. Returns the inserted
-// proposal as an opaque shape (json-marshallable) so the api
-// package isn't entangled with persistence.WorkflowProposal.
-type WorkflowArchitect interface {
-	Propose(ctx context.Context, workflowID string) (any, error)
-}
-
 // WorkflowApplier drives POST /api/v1/admin/workflow-proposals/
 // {id}/apply — runs the apply path (filesystem write + git
 // commit + config reload + status transition). Narrow interface
@@ -300,6 +289,21 @@ type MemorySearchResult struct {
 	// LastCheckedAt is the RFC3339 timestamp of the most recent
 	// recheck. nil = never checked.
 	LastCheckedAt *string `json:"last_checked_at,omitempty"`
+	// EventTime is when the chunk's content PERTAINS TO (RFC3339), empty
+	// when unknown. CreatedAt is when the chunk was WRITTEN.
+	//
+	// Both, and deliberately not collapsed into one: the memory-benchmark
+	// design (§4.0) is explicit that a NULL event time means "we don't
+	// know", which is not the same as "now" — so a caller must be able to
+	// tell "this content is about 5 September" from "we ingested this on 5
+	// September". Event time is also nullable with no backfill, so
+	// CreatedAt is what gives EVERY chunk an age rather than only the
+	// dated ones.
+	//
+	// Every wire shape above memory.SearchResult dropped both, so callers
+	// received content with no age at all — see recallHit for the incident.
+	EventTime string `json:"event_time,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 	// RepoScope is the chunk's repo-scope token (migration 75).
 	// Empty string = NULL-scoped (the migration-grace bucket — these
 	// chunks match every scope-filtered query under the default
@@ -923,6 +927,10 @@ type Server struct {
 	// POST /api/v1/operator/assist (2026-09-13). Nil → 503. Built by
 	// EnableConfigAssistant once the server's own wiring exists.
 	configAssist *configassist.Engine
+	// healingComparison runs the assistant alongside the architect for a
+	// healing trigger and records whether they agree, acting on neither.
+	// Nil — the default — leaves healing exactly as it was.
+	healingAssistant healingAssistant
 	// accounts backs the CE operator shell's account-management routes
 	// (/api/v1/operator/accounts*, 2026-09-13 review R1). Nil → 503.
 	accounts *authz.Accounts
@@ -1042,11 +1050,6 @@ type Server struct {
 	// Production wires *workflowtelemetry.Service; nil makes the
 	// endpoint 503.
 	workflowTelemetry WorkflowTelemetry
-	// workflowArchitect powers POST /api/v1/admin/workflow-
-	// architect/propose — runs the memetic-workflows architect
-	// agent. Production wires *memetic.Architect via a service-
-	// layer adapter; nil makes the endpoint 503.
-	workflowArchitect WorkflowArchitect
 	// workflowProposals backs the GET / GET / POST-decide trio
 	// at /api/v1/admin/workflow-proposals. Same admin gate matrix.
 	// nil makes the endpoints 503. Production wires the postgres
@@ -2603,16 +2606,6 @@ func WithWorkflowTelemetry(t WorkflowTelemetry) ServerOption {
 	}
 }
 
-// WithWorkflowArchitect wires the driver behind POST
-// /api/v1/admin/workflow-architect/propose. nil makes the
-// endpoint return 503. Production wires *memetic.Architect via
-// a service-layer adapter.
-func WithWorkflowArchitect(a WorkflowArchitect) ServerOption {
-	return func(s *Server) {
-		s.workflowArchitect = a
-	}
-}
-
 // WithWorkflowProposals wires the persistence repo behind the
 // admin workflow-proposal review endpoints (list / show / decide).
 // nil makes the endpoints return 503.
@@ -2832,6 +2825,9 @@ func NewServer(opts ...ServerOption) *Server {
 		// nil buffer would make every MCP outcome fall back to the agent's own
 		// report — silently reintroducing the untyped path this replaces.
 		toolOutcomes: newToolOutcomeBuffer(),
+		// Always present, for the same reason: a claim path whose limiter
+		// was nil would be unbounded, and §5.4's bound is a security
+		// control, not an optimisation.
 	}
 	for _, opt := range opts {
 		opt(s)

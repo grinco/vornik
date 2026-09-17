@@ -24,7 +24,7 @@ const proposalColumns = `id, project_id, kind, blast_radius, title, diff, ration
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
 	apply_target, apply_content, apply_ops, applied_by, live_apply,
 	created_at, decided_at, applied_at,
-	request_id, idempotency_key, door, actor_kind, actor_account_id, actor_credential_id`
+	request_id, idempotency_key, entrypoint, actor_kind, actor_account_id, actor_credential_id`
 
 // Create inserts a new proposal, rejecting an oversized text field.
 func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlPlaneProposal) error {
@@ -44,7 +44,7 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
 		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		sqliteTime(p.CreatedAt), sqliteTimePtr(p.DecidedAt), sqliteTimePtr(p.AppliedAt),
-		nullStr(p.RequestID), nullStr(p.IdempotencyKey), nullStr(p.Door),
+		nullStr(p.RequestID), nullStr(p.IdempotencyKey), nullStr(p.Entrypoint),
 		nullStr(p.ActorKind), nullStr(p.ActorAccountID), nullStr(p.ActorCredentialID),
 	)
 	// An idempotency_key collision (uq_cp_proposals_idempotency_key) — or an
@@ -112,6 +112,22 @@ func (r *ProposalRepository) List(ctx context.Context, f persistence.ProposalLis
 		for _, s := range f.Statuses {
 			args = append(args, s)
 		}
+	}
+	if f.ProposedBy != "" {
+		b.WriteString(` AND proposed_by = ?`)
+		args = append(args, f.ProposedBy)
+	}
+	if f.ActorCredentialID != "" {
+		b.WriteString(` AND actor_credential_id = ?`)
+		args = append(args, f.ActorCredentialID)
+	}
+	if !f.CreatedFrom.IsZero() {
+		b.WriteString(` AND created_at >= ?`)
+		args = append(args, sqliteTime(f.CreatedFrom.UTC()))
+	}
+	if !f.CreatedTo.IsZero() {
+		b.WriteString(` AND created_at < ?`)
+		args = append(args, sqliteTime(f.CreatedTo.UTC()))
 	}
 	b.WriteString(` ORDER BY created_at DESC`)
 	if f.Limit > 0 {
@@ -298,7 +314,7 @@ func scanProposal(sc skillScanner) (*persistence.ControlPlaneProposal, error) {
 		return nil, err
 	}
 	p.ProjectID = projectID.String
-	p.RequestID, p.IdempotencyKey, p.Door = ids[0].String, ids[1].String, ids[2].String
+	p.RequestID, p.IdempotencyKey, p.Entrypoint = ids[0].String, ids[1].String, ids[2].String
 	p.ActorKind, p.ActorAccountID, p.ActorCredentialID = ids[3].String, ids[4].String, ids[5].String
 	p.CreatedAt = createdAt.Time
 	if decidedAt.Valid && decidedAt.String != "" {

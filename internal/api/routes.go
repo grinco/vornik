@@ -289,11 +289,14 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// agent (Slice 2) will consume. Daemon-wide rollup; same admin
 		// gate matrix as /admin/audit.
 		mux.HandleFunc("/api/v1/admin/workflow-stats", server.AdminWorkflowStats)
-		// Workflow architect propose — Slice 2c of the memetic-workflows
-		// arc. POST runs one architect turn; the inserted pending
-		// proposal returns as JSON for the operator approval UI. Same
-		// admin gate matrix as /admin/audit.
-		mux.HandleFunc("/api/v1/admin/workflow-architect/propose", server.AdminWorkflowArchitectPropose)
+		// /admin/workflow-architect/propose is GONE (WP9 step 3, 2026-09-16).
+		// The memetic architect was the healing candidate producer; the
+		// config assistant replaced it, and the route that ran one architect
+		// turn on demand has no implementation behind it. Healing candidates
+		// are produced through
+		// /admin/workflow-healing/triggers/{id}/generate-candidate, which is
+		// where the evidence and the trial gate already live. §6.3.4b records
+		// why the comparison window was skipped and how to roll this back.
 		// Workflow proposals review — Slice 3a of the memetic-workflows
 		// arc. List + show + decide (approve/reject). The exact-path
 		// handler covers list; the trailing-slash handler routes
@@ -374,6 +377,11 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// CE operator shell — account management (2026-09-13 identity work,
 		// review R1/R2). Community: NOT under /api/v1/admin/. Gated on
 		// requireOperatorCapability (operator scope + explicit capability).
+		// Self-service account routes (§5.5): the caller acts on their OWN
+		// account, identified by the session, so they carry no operator
+		// capability — and refuse outright without a session, since there is
+		// then no "own account" to act on.
+		mux.HandleFunc("/api/v1/account/", server.AccountSelf)
 		mux.HandleFunc("/api/v1/operator/accounts", server.OperatorAccounts)
 		mux.HandleFunc("/api/v1/operator/accounts/", server.OperatorAccountItem)
 
@@ -1244,6 +1252,15 @@ func WithAPIKeyLookup(lookup APIKeyLookup) AuthConfigOption {
 // WithAPIKeyToucher fires async last_used_at updates on every
 // successful DB-backed auth. Same nil-safe contract as
 // WithAPIKeyLookup.
+// WithOwnerAccessCheck wires the §5.0 API-key door and R2's grant
+// narrowing: after a key
+// authenticates, the request is refused when that key's MAPPED account is
+// disabled. Without it the invariant "revoking the account revokes every door
+// that authorizes" holds for web and chat and silently fails for keys.
+func WithOwnerAccessCheck(check auth.OwnerAccessCheck) AuthConfigOption {
+	return func(c *AuthConfig) { c.OwnerAccess = check }
+}
+
 func WithAPIKeyToucher(toucher APIKeyToucher) AuthConfigOption {
 	return func(c *AuthConfig) {
 		c.APIKeyToucher = toucher
@@ -1362,7 +1379,13 @@ func BuildAuthConfig(cfg *config.Config, opts ...AuthConfigOption) AuthConfig {
 // The supplied Server's apiKeyRepo (when non-nil) is wired into
 // the auth config so DB-backed bearer tokens take precedence over
 // the static-keys map.
-func applyMiddleware(handler http.Handler, cfg *config.Config, server *Server) http.Handler {
+// serverAuthOptions derives the auth-chain options a Server contributes.
+//
+// Extracted from applyMiddleware so a test can assert what the PRODUCTION
+// chain receives. While this lived inline, the only reachable assertion was
+// on an AuthConfig the test built itself — which is how the owner-disabled
+// door stayed unwired with green tests.
+func serverAuthOptions(server *Server) []AuthConfigOption {
 	var opts []AuthConfigOption
 	if server != nil && server.apiKeyRepo != nil {
 		opts = append(
@@ -1370,6 +1393,17 @@ func applyMiddleware(handler http.Handler, cfg *config.Config, server *Server) h
 			WithAPIKeyLookup(server.apiKeyRepo),
 			WithAPIKeyToucher(server.apiKeyRepo),
 		)
+	}
+	// The §5.0 API-key door. Derived from the accounts service because that
+	// is where the key→account mapping lives; joined HERE, once, so the
+	// invariant does not depend on each call site remembering it.
+	//
+	// This join was missing when the door was first written: both halves
+	// existed and nothing connected them, so a disabled owner's key kept
+	// authenticating while the unit tests passed by injecting the check
+	// directly.
+	if server != nil && server.accounts != nil {
+		opts = append(opts, WithOwnerAccessCheck(server.accounts.KeyOwnerAccess))
 	}
 	if server != nil && server.apiKeyLimiter != nil {
 		opts = append(opts, WithAuthAPIKeyLimiter(server.apiKeyLimiter))
@@ -1393,7 +1427,11 @@ func applyMiddleware(handler http.Handler, cfg *config.Config, server *Server) h
 	if server != nil && server.sessionBackend != nil {
 		opts = append(opts, WithSessionBackend(server.sessionBackend))
 	}
-	authConfig := BuildAuthConfig(cfg, opts...)
+	return opts
+}
+
+func applyMiddleware(handler http.Handler, cfg *config.Config, server *Server) http.Handler {
+	authConfig := BuildAuthConfig(cfg, serverAuthOptions(server)...)
 
 	// Apply middleware in reverse order (last applied = first executed)
 	// 1. Project authorization

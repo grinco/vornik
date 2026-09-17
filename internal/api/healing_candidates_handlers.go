@@ -94,6 +94,11 @@ var (
 	// ErrHealingCandidateNotPromotable → 409 (not trial_passed). This is
 	// the gate that enforces "nothing promotes without trial_passed".
 	ErrHealingCandidateNotPromotable = errors.New("healing candidate is not promotable (requires trial_passed)")
+	// ErrHealingCandidateStale is the currency refusal — the candidate DID
+	// clear a trial, but the workflow changed after the genome was generated.
+	// Separate from NotPromotable so the operator is not told to re-run a
+	// trial that cannot fix it (2026-09-16).
+	ErrHealingCandidateStale = errors.New("healing candidate is stale: the workflow changed after the genome was generated")
 	// ErrHealingTrialMode → 400 (unsupported trial mode).
 	ErrHealingTrialMode = errors.New("unsupported trial mode")
 	// ErrHealingTrialRunning → 409 (a trial is already in flight for
@@ -388,6 +393,13 @@ func (s *Server) AdminHealingCandidatePromote(w http.ResponseWriter, r *http.Req
 		switch {
 		case errors.Is(err, ErrHealingCandidateNotFound):
 			respondError(w, http.StatusNotFound, "NOT_FOUND", "no candidate with id "+id)
+		case errors.Is(err, ErrHealingCandidateStale):
+			// A DIFFERENT refusal from "has not cleared a trial" — this one
+			// HAS. Collapsing the two would tell the operator the trial
+			// failed when the real problem is that the workflow moved on
+			// under a passed candidate (2026-09-16). The wrapped message
+			// carries both hashes and the remedy.
+			respondError(w, http.StatusConflict, "CANDIDATE_STALE", err.Error())
 		case errors.Is(err, ErrHealingCandidateNotPromotable):
 			respondError(w, http.StatusConflict, "CANDIDATE_NOT_PROMOTABLE",
 				"candidate has not cleared a trial; promotion requires status trial_passed")

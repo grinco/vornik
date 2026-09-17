@@ -66,6 +66,15 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.6,
 		TTL:                  90 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 365d — long, not zero (§5.1.1). The class is overloaded
+		// (durable surveys AND daily news digests), and the short
+		// half-life that would tame the digests annihilates the
+		// surveys: 0.5^(90/7) ≈ 0.0001. The digests are carved out by
+		// series demotion (§5.3) instead, which is what frees this
+		// knob to do the only job it is good at — ageing out
+		// year-old surveys. Stated plainly so nobody expects more of
+		// it: at day-scale ages 365d is near-inert (0.5^(11/365) =
+		// 0.979) and rescues no recent incident by itself.
 	},
 	// Specs from analyst role + design docs. High confidence
 	// because they're the authoritative product description. No
@@ -75,6 +84,10 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.8,
 		TTL:                  0,
 		RoleOfRecordEligible: true,
+		// No decay. A two-year-old design doc is still the design
+		// record; it is replaced by a newer document, not by the
+		// passage of time (§4). Demoting specs is the worse
+		// regression this design could cause.
 	},
 	// Decisions from architect/reviewer rulings. Highest
 	// confidence; never expire.
@@ -82,6 +95,9 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.9,
 		TTL:                  0,
 		RoleOfRecordEligible: true,
+		// No decay, same grounds as spec and slightly stronger: a
+		// ruling has no fresher equivalent unless someone issues one,
+		// so age carries no evidence that it is less true.
 	},
 	// Commit messages from coder. Low confidence (often terse,
 	// often wrong about scope). 30-day TTL because their
@@ -91,6 +107,8 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.4,
 		TTL:                  30 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 14d — the class comment above already says it: "what
+		// mattered last week is usually superseded by this week".
 	},
 	// Diagnostic dumps from failed steps. Low confidence + 7-day
 	// TTL: useful for debugging the last week's failures, not
@@ -99,6 +117,10 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.2,
 		TTL:                  7 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 3d — the shortest half-life shipped, matching "last week's
+		// failures" against a 7-day TTL: by the time a dump is about
+		// to age out of the store it has long stopped being the
+		// answer to a question.
 	},
 	// External fetches from scraper/web_fetch tools. Low
 	// confidence (we don't control the source) + 14-day TTL.
@@ -106,6 +128,9 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.3,
 		TTL:                  14 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 7d — half the TTL. We do not control the source, so a
+		// week-old copy of a page that has since changed is the
+		// likeliest kind of wrong answer in the store.
 	},
 	// Summaries — autonomy-lead-generated digests. Mid confidence;
 	// 30-day TTL.
@@ -113,6 +138,9 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.5,
 		TTL:                  30 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 14d — autonomy digests. A month-old rollup is rarely what
+		// was asked for, and two rollups of the same thing are
+		// exactly the shape series demotion (§5.3) also targets.
 	},
 	// Catch-all when classification fails or producer role is
 	// unrecognised. Mid-low confidence + 30-day TTL — short enough
@@ -123,6 +151,11 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.3,
 		TTL:                  30 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 14d, matching summary: a bad classification should lose its
+		// ranking pull WELL before it ages out of the store, because
+		// the store still holds it for an operator to reclass. This
+		// is also the fallback half-life for classes with no policy
+		// entry at all (`incident`, `reference` — see
 	},
 	// Companion-deposited notes (LLD 22). Low default confidence
 	// because companion content lacks the upstream claim audit a
@@ -135,6 +168,9 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.3,
 		TTL:                  30 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 14d — same shape as summary. A note a human typed through a
+		// companion client is a thought at a moment; a fresher one on
+		// the same subject is usually the one they meant.
 	},
 	// Chat-deposited memory (chat memory-write design §5.5,
 	// operator-signed-off 2026-07-30). Low confidence (0.3): a chat
@@ -149,6 +185,10 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		DefaultConfidence:    0.3,
 		TTL:                  90 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
+		// 14d against a 90-day TTL — the widest TTL/half-life spread
+		// in the table, and deliberate: a chat aside stays findable
+		// for a quarter but stops competing for the top slot after a
+		// fortnight.
 	},
 }
 

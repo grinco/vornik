@@ -175,8 +175,35 @@ func TestAPIKeyRepository_Contract(t *testing.T) {
 func TestIdentityRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunIdentityRepositorySuite(t, sqlite.NewIdentityRepository(db.DB))
+}
+
+// TestOperatorIdentityLinkRepository_Contract runs the shared suite. It exists
+// because the two drivers disagreed twice on this repository in one night —
+// on linked_at and on ListForOperator's ordering — after its SQLite half had
+// been a no-op stub for months.
+// TestAPIKeyAttributable_Contract — the per-task filter that makes the §5.4
+// attribution picker usable, pinned on both drivers.
+func TestAPIKeyAttributable_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunAPIKeyAttributableSuite(t, sqlite.NewAPIKeyRepository(db.DB))
+}
+
+func TestOperatorIdentityLinkRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunOperatorIdentityLinkSuite(t, sqlite.NewOperatorIdentityLinkRepository(db.DB))
 	adminDB := newTestDB(t)
 	repotest.RunIdentityAdminSuite(t, sqlite.NewIdentityRepository(adminDB.DB), sqlite.NewUISessionRepository(adminDB.DB))
+}
+
+// TestLinkCodeRepository_Contract — the self-service channel-link codes of
+// oidc-identity-permissions-design §5.2. The table shipped with the identity
+// core and had no producer or consumer until Phase 4. Same suite the Postgres
+// lane runs, because single-use consumption is a security property and a
+// repository that got it right on one backend only would be worse than
+// useless.
+func TestLinkCodeRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunLinkCodeSuite(t, sqlite.NewLinkCodeRepository(db.DB), sqlite.NewIdentityRepository(db.DB))
 }
 
 // TestUISessionRepository_Contract — browser login sessions (migration 91;

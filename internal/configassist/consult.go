@@ -160,7 +160,7 @@ func (c *Consultant) Handle(ctx context.Context, args json.RawMessage) string {
 	c.record.QuestionSHA = hex.EncodeToString(sum[:])
 	if err := c.audit(ctx, ConsultActionAttempt, map[string]any{
 		"request_id": c.Req.RequestID, "project_id": c.Req.ProjectID, "peer": c.Cfg.PeerName,
-		"question_sha256": c.record.QuestionSHA, "question_bytes": len(q), "door": c.Req.Door,
+		"question_sha256": c.record.QuestionSHA, "question_bytes": len(q), "entrypoint": c.Req.Entrypoint,
 	}); err != nil {
 		c.record.Outcome = ConsultOutcomeRefused
 		c.record.Error = "audit unavailable: " + err.Error()

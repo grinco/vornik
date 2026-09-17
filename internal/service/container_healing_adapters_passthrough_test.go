@@ -142,16 +142,24 @@ func TestHealingTrialRunnerAdapter_ProjectsResult(t *testing.T) {
 	}
 }
 
-// The UI adapter drops the result and returns only the error — a
-// successful (FAILED-verdict) RunTrial yields nil.
+// The UI adapter carries the VERDICT out alongside the error. It used to
+// return the error only; a static trial then looked identical to the UI
+// whether it passed or failed, because both leave the candidate at draft
+// (report 2026-09-16). Here the seeded genome is not a workflow, so the
+// static check fails cleanly: no error, verdict "failed".
 func TestHealingTrialRunnerUIAdapter_PassesThroughNilError(t *testing.T) {
 	cands := &fakeHealCandRepo{}
 	seedDraftCandidate(cands, "cand1", "not a workflow")
 	runner := workflowhealing.NewTrialRunner(cands, &fakeHealTrialRepo{}, nil, workflowhealing.GateThresholds{}, 0, zerolog.Nop())
 
 	adapter := newHealingTrialRunnerUIAdapter(runner)
-	if err := adapter.RunTrial(context.Background(), "cand1", "static", nil); err != nil {
+	verdict, err := adapter.RunTrial(context.Background(), "cand1", "static", nil)
+	if err != nil {
 		t.Errorf("UI RunTrial returned error on a successful trial: %v", err)
+	}
+	if verdict != string(persistence.HealingTrialFailed) {
+		t.Errorf("verdict = %q, want %q — a trial that ran and failed must not reach the UI as an "+
+			"unlabelled success", verdict, persistence.HealingTrialFailed)
 	}
 }
 

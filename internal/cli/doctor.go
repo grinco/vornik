@@ -78,6 +78,7 @@ Models:
 
 Cost & budget:
   pricing_coverage      Models in swarm configs missing from pricing.yaml
+  pricing_drift         Prices disagreeing with the pinned upstream snapshot
   autonomy_budget_guard Autonomy-enabled projects with no hard $ cap
   budget_utilisation    Projects at ≥80%% of daily or monthly hard cap
   dispatcher_role       When telegram.dispatcher_project_id is set,

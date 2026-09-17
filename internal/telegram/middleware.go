@@ -1,8 +1,60 @@
 package telegram
 
 import (
+	"context"
+	"strconv"
 	"time"
+
+	"vornik.io/vornik/internal/chatauth"
 )
+
+// SetIdentityShim wires the Phase-4 compatibility shim
+// (oidc-identity-permissions-design §5.1/§5.3). Nil — the default — leaves
+// every authorization question answered by the legacy allowlist alone, which
+// is the pre-Phase-4 behaviour exactly.
+//
+// Wired, a LINKED identity is authorized by the resolver and carries its own
+// project scope; an unlinked one keeps working off the allowlist for the
+// migration window, and lands on the worklist while it does.
+func (b *Bot) SetIdentityShim(s *chatauth.Shim) { b.identityShim = s }
+
+// legacyAccess reads what the hand-maintained list says about a user, in the
+// shape the shim consumes. Kept separate from IsAllowed so the legacy rule —
+// including "an empty list DENIES unless allow_unlisted_users" — stays in one
+// place and is not re-derived per call site.
+func (b *Bot) legacyAccess(userID int64) chatauth.Legacy {
+	l := chatauth.Legacy{ConfigKey: "telegram.allowed_users"}
+	if len(b.config.AllowedUsers) == 0 {
+		l.Allowed = b.config.AllowUnlistedUsers
+		return l
+	}
+	ua, ok := b.config.AllowedUsers[userID]
+	if !ok || !ua.Allowed {
+		return l
+	}
+	l.Allowed = true
+	if !ua.Wildcard() {
+		l.Projects = ua.Projects
+	}
+	return l
+}
+
+// authorize runs the OR-matrix for one Telegram user.
+func (b *Bot) authorize(userID int64) chatauth.Decision {
+	return b.authorizeCtx(context.Background(), userID)
+}
+
+// authorizeCtx is authorize with a caller-supplied deadline. See the Slack
+// twin: the configuration assistant's chat entrypoint needs a HANGING resolver
+// to produce the same refusal a failing one does, rather than blocking the
+// handler indefinitely (review-20260915-8717 F3).
+func (b *Bot) authorizeCtx(ctx context.Context, userID int64) chatauth.Decision {
+	legacy := b.legacyAccess(userID)
+	if b.identityShim == nil {
+		return chatauth.Decision{Allowed: legacy.Allowed, Projects: legacy.Projects}
+	}
+	return b.identityShim.Authorize(ctx, "telegram", strconv.FormatInt(userID, 10), legacy)
+}
 
 // IsAllowed reports whether the user may interact with the bot at
 // all. Project scoping (which projects they can /project into) is a
@@ -15,10 +67,7 @@ import (
 // dev-mode behaviour deliberately. Explicit Allowed:false entries are
 // treated the same as missing (unauthorized).
 func (b *Bot) IsAllowed(userID int64) bool {
-	if len(b.config.AllowedUsers) == 0 {
-		return b.config.AllowUnlistedUsers
-	}
-	return b.config.AllowedUsers[userID].Allowed
+	return b.authorize(userID).Allowed
 }
 
 // UserCanAccessProject reports whether the given user may /project
@@ -28,14 +77,23 @@ func (b *Bot) IsAllowed(userID int64) bool {
 // When no allowlist is configured at all, this follows IsAllowed: denied
 // unless allow_unlisted_users opts the deployment back into dev mode.
 func (b *Bot) UserCanAccessProject(userID int64, projectID string) bool {
-	if len(b.config.AllowedUsers) == 0 {
-		return b.config.AllowUnlistedUsers
-	}
-	ua, ok := b.config.AllowedUsers[userID]
-	if !ok {
+	d := b.authorize(userID)
+	if !d.Allowed {
 		return false
 	}
-	return ua.CanAccessProject(projectID)
+	// Nil scope means unrestricted — a wildcard legacy entry, an admin
+	// principal, or dev mode. Otherwise the scope is whichever authority
+	// granted: the principal's when the resolver did, the allowlist's when it
+	// was the legacy list.
+	if d.Projects == nil {
+		return true
+	}
+	for _, p := range d.Projects {
+		if p == "*" || p == projectID {
+			return true
+		}
+	}
+	return false
 }
 
 // OperatorChatIDsForProject returns the Telegram chat IDs (a DM chat_id
@@ -68,6 +126,13 @@ func (b *Bot) OperatorChatIDsForProject(projectID string) []int64 {
 // the common case, rather than pay for an "is it in this list of 1"
 // lookup on every tool call.
 func (b *Bot) AllowedProjectsForUser(userID int64) []string {
+	if b.identityShim != nil {
+		d := b.authorize(userID)
+		if !d.Allowed {
+			return []string{}
+		}
+		return d.Projects
+	}
 	if len(b.config.AllowedUsers) == 0 {
 		return nil
 	}

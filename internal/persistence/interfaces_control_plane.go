@@ -24,6 +24,10 @@ const (
 	// instinct-lift-measurement-design.md §4.5): applying it retires an
 	// instinct via InstinctRepository rather than rewriting a config file.
 	ProposalKindInstinctRetire = "instinct_retire"
+	// ProposalKindWorkspaceContext is a KindApplier-managed config-assistant
+	// proposal that rewrites only a project's canonical workspace
+	// .autonomy/PROJECT_CONTEXT.md file.
+	ProposalKindWorkspaceContext = "workspace_context"
 	// ProposalKindObservation is a detector finding with NO applyable change —
 	// "p95 latency is high on this project; investigate". It is browsable and
 	// auditable like any other row, but it is NOT decidable: there is nothing to
@@ -48,7 +52,9 @@ func IsObservationKind(kind string) bool { return kind == ProposalKindObservatio
 // state-mutating KindApplier (internal/controlplane) rather than the
 // file-based apply path — such proposals are applyable even with empty
 // ApplyTarget/ApplyOps.
-func KindApplierManaged(kind string) bool { return kind == ProposalKindInstinctRetire }
+func KindApplierManaged(kind string) bool {
+	return kind == ProposalKindInstinctRetire || kind == ProposalKindWorkspaceContext
+}
 
 // Proposal blast-radius levels (model ⊂ project ⊂ swarm ⊂ daemon). A
 // daemon-scope change needs an explicit second operator acknowledgement at
@@ -205,16 +211,28 @@ type ControlPlaneProposal struct {
 	// RequestID links the proposal to the assistant request that produced it.
 	// IdempotencyKey is UNIQUE where not null: a client retry carrying the
 	// same key gets ErrDuplicateKey from Create instead of filing a second
-	// proposal (GetByIdempotencyKey then returns the first). Door names the
+	// proposal (GetByIdempotencyKey then returns the first). Entrypoint names the
 	// surface the proposal came through (operator | console | chat | agent);
 	// ActorKind/ActorAccountID/ActorCredentialID record WHO, resolved to an
 	// account where §5's key mapping allows and to the credential otherwise.
 	RequestID         string
 	IdempotencyKey    string
-	Door              string
+	Entrypoint        string
 	ActorKind         string
 	ActorAccountID    string
 	ActorCredentialID string
+
+	// Shadow marks a proposal that exists only to be COMPARED — the healing
+	// comparison window's second opinion (§6.3.4 step 1). It is built in
+	// memory and never persisted, so a reader that finds Shadow set on a
+	// ledger row is looking at a bug.
+	//
+	// It is an in-memory field with no column, deliberately: the comparison
+	// path used to file real, actionable proposals that the operator's inbox
+	// could not tell from trialled ones (audit 2026-09-15 CA-15), and the
+	// fix is that they never reach the ledger — not a column saying they
+	// should be ignored once there.
+	Shadow bool
 
 	CreatedAt time.Time
 	DecidedAt *time.Time
@@ -229,6 +247,23 @@ type ProposalListFilter struct {
 	ProjectID string
 	// Statuses restricts to these lifecycle states; empty = any.
 	Statuses []string
+	// ProposedBy restricts to one proposer identity ("" = any) — e.g.
+	// configassist.ProposedBy for the assistant's own rows.
+	ProposedBy string
+	// ActorCredentialID restricts to the credential that filed the row
+	// ("" = any).
+	ActorCredentialID string
+	// CreatedFrom and CreatedTo bound created_at, inclusive of From and
+	// exclusive of To. Zero values mean unbounded on that side.
+	//
+	// These three exist so a quota can be counted EXHAUSTIVELY without
+	// paging: the class-E daily cap used to read one 1000-row page of the
+	// whole ledger and filter it in Go, so on a busy deployment the rows it
+	// needed to count had already fallen out of the window and the cap
+	// stopped binding (audit 2026-09-15 CA-17). A narrow filter with no
+	// Limit is the whole set, by construction.
+	CreatedFrom time.Time
+	CreatedTo   time.Time
 	// Limit caps the result count; <= 0 = unbounded.
 	Limit int
 }

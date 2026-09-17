@@ -33,9 +33,18 @@ const (
 	// step ahead of the reviewer — the recipe for a verifier or
 	// hallucination regression.
 	HealingCandidateVerifierInsertion HealingCandidateClass = "verifier_insertion"
-	// HealingCandidateArchitect marks a candidate sourced from the
-	// memetic architect rather than a deterministic recipe.
+	// HealingCandidateArchitect marks a candidate sourced from the memetic
+	// architect rather than a deterministic recipe.
+	//
+	// HISTORICAL as of 2026-09-16: the architect was deleted and the config
+	// assistant replaced it (config-assistant design §6.3.4b). Existing rows
+	// keep this class — it records what actually produced them — and nothing
+	// writes it any more. The column is descriptive free text, not
+	// CHECK-constrained, so the successor needed no migration.
 	HealingCandidateArchitect HealingCandidateClass = "architect"
+	// HealingCandidateAssistant marks a candidate the config assistant
+	// produced: a single-workflow edit bridged into a genome.
+	HealingCandidateAssistant HealingCandidateClass = "assistant"
 )
 
 // HealingRiskLevel is the operator-facing blast-radius banner on a

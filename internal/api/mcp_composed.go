@@ -20,10 +20,25 @@ import (
 // ComposedMCPExecutor implements MCPExecutor by stacking daemon-side synthetic
 // providers (document_* tools, A2A consult tools) on top of the external
 // mcp.Manager. Any field may be nil — Tools/Execute degrade gracefully.
+// BuiltinToolProvider is the shape every daemon-side tool provider already
+// has — Tools/Owns/Execute. Named here because the assistant's agent
+// entrypoint is the first one wired as an interface rather than a concrete
+// type, so the composed executor does not import configassist.
+type BuiltinToolProvider interface {
+	Tools(projectID string) []chat.Tool
+	Owns(qualifiedName string) bool
+	Execute(ctx context.Context, projectID, qualifiedName, argsJSON string) (string, error)
+}
+
 type ComposedMCPExecutor struct {
 	External MCPExecutor // typically *mcp.Manager
 	Builtin  *DocumentToolProvider
 	Consult  *consult.Provider // A2A domain-expert consult tools (mcp__consult__<peer>)
+	// Assistant serves mcp__vornik__propose_config — the configuration
+	// assistant's AGENT entrypoint (config-assistant design §6.3.2a). Nil, the
+	// default, leaves agents unable to reach it at all, which is the state
+	// every deployment is in until an operator opens it.
+	Assistant BuiltinToolProvider
 	// Grants serves mcp__vornik__grant_step_tools — the lead narrowing which tools a
 	// step is advertised (registry design §10.1). Nil leaves the ceiling as the only
 	// narrowing, which is the pre-feature behaviour.
@@ -51,6 +66,9 @@ func (c *ComposedMCPExecutor) Tools(projectID string) []chat.Tool {
 	if c.Consult != nil {
 		out = append(out, c.Consult.Tools(projectID)...)
 	}
+	if c.Assistant != nil {
+		out = append(out, c.Assistant.Tools(projectID)...)
+	}
 	if c.Grants != nil {
 		out = append(out, c.Grants.Tools(projectID)...)
 	}
@@ -68,6 +86,10 @@ func (c *ComposedMCPExecutor) Execute(ctx context.Context, projectID, qualifiedN
 	}
 	if c.Consult != nil && c.Consult.Owns(qualifiedName) {
 		body, err := c.Consult.Execute(ctx, projectID, qualifiedName, argsJSON)
+		return c.scanned(qualifiedName, body, err)
+	}
+	if c.Assistant != nil && c.Assistant.Owns(qualifiedName) {
+		body, err := c.Assistant.Execute(ctx, projectID, qualifiedName, argsJSON)
 		return c.scanned(qualifiedName, body, err)
 	}
 	if c.Grants != nil && c.Grants.Owns(qualifiedName) {

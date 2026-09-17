@@ -236,13 +236,38 @@ func (r *IdentityRepository) RemoveGroupMember(ctx context.Context, groupID, use
 // BindIdentity inserts a channel binding or reactivates a REVOKED one. An
 // active conflicting binding is never repointed (the DO UPDATE ... WHERE
 // guard), so concurrent first-contact provisioners converge on one user.
-func (r *IdentityRepository) BindIdentity(ctx context.Context, id *persistence.UserIdentity) error {
-	_, err := r.db.ExecContext(ctx,
+// BindIdentity — the DO UPDATE fires for a revoked row (repoint) and for a
+// row already held by the SAME user (idempotent re-bind, which also keeps
+// display fresh). An active row held by someone else matches neither, so
+// zero rows are affected and bound is false. See the interface contract:
+// that case used to be indistinguishable from success.
+func (r *IdentityRepository) BindIdentity(ctx context.Context, id *persistence.UserIdentity) (bool, error) {
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO user_identities (id, user_id, channel, external_id, display, created_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (channel, external_id)
 DO UPDATE SET user_id = excluded.user_id, display = excluded.display, revoked_at = NULL
-WHERE user_identities.revoked_at IS NOT NULL`,
+WHERE user_identities.revoked_at IS NOT NULL
+   OR user_identities.user_id = excluded.user_id`,
+		id.ID, id.UserID, id.Channel, id.ExternalID, nullStr(id.Display), sqliteTime(id.CreatedAt))
+	if err != nil {
+		return false, mapIdentityDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, mapIdentityDBError(err)
+	}
+	return n > 0, nil
+}
+
+// RebindIdentity is BindIdentity without the guard: admin authority repoints
+// an active binding held by another user.
+func (r *IdentityRepository) RebindIdentity(ctx context.Context, id *persistence.UserIdentity) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO user_identities (id, user_id, channel, external_id, display, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (channel, external_id)
+DO UPDATE SET user_id = excluded.user_id, display = excluded.display, revoked_at = NULL`,
 		id.ID, id.UserID, id.Channel, id.ExternalID, nullStr(id.Display), sqliteTime(id.CreatedAt))
 	return mapIdentityDBError(err)
 }
@@ -273,6 +298,27 @@ WHERE channel = ?1 AND external_id = ?2 AND revoked_at IS NULL
 WHERE channel = ? AND external_id = ? AND revoked_at IS NULL`,
 		nowText(), channel, oldExternalID)
 	return mapIdentityDBError(err)
+}
+
+// RevokeIdentityOwnedBy is RevokeIdentity with the expected owner in the
+// UPDATE's WHERE clause, making the ownership test and the write atomic
+// (audit 2026-09-15 CA-10).
+func (r *IdentityRepository) RevokeIdentityOwnedBy(ctx context.Context, channel, externalID, expectedUserID string) error {
+	return r.withTx(ctx, func(exec DBTX) error {
+		var userID string
+		err := exec.QueryRowContext(ctx,
+			`UPDATE user_identities SET revoked_at = ?
+			 WHERE channel = ? AND external_id = ? AND revoked_at IS NULL AND user_id = ?
+			 RETURNING user_id`,
+			nowText(), channel, externalID, expectedUserID).Scan(&userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return persistence.ErrIdentityNotFound
+		}
+		if err != nil {
+			return mapIdentityDBError(err)
+		}
+		return revokeSessionsForUserWithExec(ctx, exec, userID)
+	})
 }
 
 // RevokeIdentity soft-deletes an ACTIVE binding and revokes the owning

@@ -90,37 +90,44 @@ var Contract = map[string]MissBehavior{
 	"FixItSessionRepository.Get":                     MissErrNotFound, // *FixItSession
 	"HealingTriggerOverrideRepository.Get":           MissErrNotFound, // *HealingTriggerOverride
 	"IdentityRepository.GetGroupByName":              MissErrNotFound, // *Group
-	"InstallationOnboardingSessionRepository.Get":    MissErrNotFound, // *InstallationOnboardingSession
-	"InstinctRepository.Get":                         MissErrNotFound, // *Instinct
-	"KnowledgeEdgeRepository.Get":                    MissErrNotFound, // *KnowledgeEdge
-	"KnowledgeEntityRepository.GetByCanonical":       MissErrNotFound, // *KnowledgeEntity
-	"KnowledgeEntityRepository.Get":                  MissErrNotFound, // *KnowledgeEntity
-	"MCPOAuthTokenRepository.Get":                    MissErrNotFound, // *MCPOAuthToken
-	"MemoryQuarantineRepository.Get":                 MissErrNotFound, // *MemoryQuarantineItem
-	"OperatorIdentityLinkRepository.Get":             MissErrNotFound, // *OperatorIdentityLink
-	"OperatorProfileRepository.Get":                  MissErrNotFound, // *OperatorProfile
-	"ProjectSpawnRepository.GetBySpawnedProject":     MissErrNotFound, // *ProjectSpawn
-	"ProjectWizardSessionRepository.Get":             MissErrNotFound, // *ProjectWizardSession
-	"ProposalRepository.GetByID":                     MissErrNotFound, // *ControlPlaneProposal
-	"ProposalRepository.GetByIdempotencyKey":         MissErrNotFound, // *ControlPlaneProposal — "" never matches (legacy NULL)
-	"ReminderRepository.Get":                         MissErrNotFound, // *Reminder
-	"SkillRepository.GetByID":                        MissErrNotFound, // *Skill
-	"SkillRepository.Get":                            MissErrNotFound, // *Skill
-	"TaskJudgeVerdictRepository.GetByTask":           MissErrNotFound, // *TaskJudgeVerdict
-	"TaskMessageRepository.GetOpenCheckpoint":        MissErrNotFound, // *TaskMessage
-	"TaskPostMortemRepository.Get":                   MissErrNotFound, // *TaskPostMortem
-	"TaskRepository.GetByIdempotencyKey":             MissErrNotFound, // *Task
-	"TaskRepository.Get":                             MissErrNotFound, // *Task
-	"TaskScratchpadRepository.Get":                   MissErrNotFound, // *TaskScratchpad
-	"TelegramPollerStateRepository.Get":              MissErrNotFound, // *TelegramPollerState
-	"TelegramThreadRepository.GetByTask":             MissErrNotFound, // *TelegramTaskThread
-	"TelegramThreadRepository.GetByThread":           MissErrNotFound, // *TelegramTaskThread
-	"UISessionRepository.GetActiveByTokenHash":       MissErrNotFound, // *UISession
-	"WebWriteRepo.Get":                               MissErrNotFound, // *WebWriteAction
-	"WorkflowHealingCandidateRepository.Get":         MissErrNotFound, // *HealingCandidate
-	"WorkflowHealingTrialRepository.Get":             MissErrNotFound, // *HealingTrial
-	"WorkflowHealingTriggerRepository.Get":           MissErrNotFound, // *HealingTrigger
-	"WorkflowProposalRepository.Get":                 MissErrNotFound, // *WorkflowProposal
+	// §5.2 link codes. ConsumeLinkCode is listed because "absent, already
+	// used, or expired" all answer ErrNotFound deliberately — the caller
+	// must not be able to tell them apart (no oracle on whether a code
+	// ever existed), so a MissNilNil here would be a security regression,
+	// not a style choice.
+	"LinkCodeRepository.GetLinkCode":              MissErrNotFound, // *LinkCode
+	"LinkCodeRepository.ConsumeLinkCode":          MissErrNotFound, // *LinkCode
+	"InstallationOnboardingSessionRepository.Get": MissErrNotFound, // *InstallationOnboardingSession
+	"InstinctRepository.Get":                      MissErrNotFound, // *Instinct
+	"KnowledgeEdgeRepository.Get":                 MissErrNotFound, // *KnowledgeEdge
+	"KnowledgeEntityRepository.GetByCanonical":    MissErrNotFound, // *KnowledgeEntity
+	"KnowledgeEntityRepository.Get":               MissErrNotFound, // *KnowledgeEntity
+	"MCPOAuthTokenRepository.Get":                 MissErrNotFound, // *MCPOAuthToken
+	"MemoryQuarantineRepository.Get":              MissErrNotFound, // *MemoryQuarantineItem
+	"OperatorIdentityLinkRepository.Get":          MissErrNotFound, // *OperatorIdentityLink
+	"OperatorProfileRepository.Get":               MissErrNotFound, // *OperatorProfile
+	"ProjectSpawnRepository.GetBySpawnedProject":  MissErrNotFound, // *ProjectSpawn
+	"ProjectWizardSessionRepository.Get":          MissErrNotFound, // *ProjectWizardSession
+	"ProposalRepository.GetByID":                  MissErrNotFound, // *ControlPlaneProposal
+	"ProposalRepository.GetByIdempotencyKey":      MissErrNotFound, // *ControlPlaneProposal — "" never matches (legacy NULL)
+	"ReminderRepository.Get":                      MissErrNotFound, // *Reminder
+	"SkillRepository.GetByID":                     MissErrNotFound, // *Skill
+	"SkillRepository.Get":                         MissErrNotFound, // *Skill
+	"TaskJudgeVerdictRepository.GetByTask":        MissErrNotFound, // *TaskJudgeVerdict
+	"TaskMessageRepository.GetOpenCheckpoint":     MissErrNotFound, // *TaskMessage
+	"TaskPostMortemRepository.Get":                MissErrNotFound, // *TaskPostMortem
+	"TaskRepository.GetByIdempotencyKey":          MissErrNotFound, // *Task
+	"TaskRepository.Get":                          MissErrNotFound, // *Task
+	"TaskScratchpadRepository.Get":                MissErrNotFound, // *TaskScratchpad
+	"TelegramPollerStateRepository.Get":           MissErrNotFound, // *TelegramPollerState
+	"TelegramThreadRepository.GetByTask":          MissErrNotFound, // *TelegramTaskThread
+	"TelegramThreadRepository.GetByThread":        MissErrNotFound, // *TelegramTaskThread
+	"UISessionRepository.GetActiveByTokenHash":    MissErrNotFound, // *UISession
+	"WebWriteRepo.Get":                            MissErrNotFound, // *WebWriteAction
+	"WorkflowHealingCandidateRepository.Get":      MissErrNotFound, // *HealingCandidate
+	"WorkflowHealingTrialRepository.Get":          MissErrNotFound, // *HealingTrial
+	"WorkflowHealingTriggerRepository.Get":        MissErrNotFound, // *HealingTrigger
+	"WorkflowProposalRepository.Get":              MissErrNotFound, // *WorkflowProposal
 }
 
 // Excluded names methods that match a lookup's shape — (*T, error) — but are
@@ -132,6 +139,15 @@ var Excluded = map[string]string{
 	"MemoryRetrievalAuditRepository.FeedbackStats": "aggregate over a set; always produces a value",
 	"SkillRepository.Upsert":                       "a write that returns the stored row, not a lookup",
 	"TaskRepository.LeaseTask":                     "a queue poll: an empty queue is the common case, not a miss",
+	// APIKeyRepository answers with its own ErrAPIKeyNotFound sentinel, which
+	// is a standalone errors.New and NOT persistence.ErrNotFound — so this
+	// two-value vocabulary cannot describe it. GetByID matches its sibling
+	// LookupActiveByHash rather than inventing a third convention, and the
+	// suite asserts that sentinel directly. See the P3 backlog item "The miss
+	// contract declares a behaviour APIKeyRepository does not have": the
+	// LookupActiveByHash row above has the same problem and is NOT excluded,
+	// which is the inconsistency this exclusion deliberately does not copy.
+	"APIKeyRepository.GetByID": "returns ErrAPIKeyNotFound, a sentinel this vocabulary cannot express; asserted directly in RunAPIKeyRepositorySuite",
 }
 
 // Behavior returns the declared behaviour for key.

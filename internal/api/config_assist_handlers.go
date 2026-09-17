@@ -17,8 +17,8 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
-// The configuration assistant's operator REST door (2026-09-13 design
-// §6.3, door 1; plan §7f). COMMUNITY: /api/v1/operator/assist, gated by
+// The configuration assistant's operator REST entrypoint (2026-09-13 design
+// §6.3, entrypoint 1; plan §7f). COMMUNITY: /api/v1/operator/assist, gated by
 // requireOperatorCapability (operator scope + explicit capability, review
 // R2), never under /api/v1/admin/. One request = one intent = one
 // proposal or one named refusal (design §3).
@@ -33,6 +33,9 @@ type ConfigAssistDeps struct {
 	ApplyPrefix string
 	// ConfigPath is config.yaml, for the fresh hygiene evaluation.
 	ConfigPath string
+	// WorkspaceRoot is runtime.project_workspace_path for the virtual
+	// PROJECT_CONTEXT.md bridge.
+	WorkspaceRoot string
 	// SecretSnapshot is the doctor's boot-time secret-field snapshot.
 	SecretSnapshot func() map[string]string
 	// Usage records model spend (assistant + judge) to the ledger.
@@ -41,7 +44,7 @@ type ConfigAssistDeps struct {
 
 // EnableConfigAssistant constructs the engine over the server's own
 // wiring. Called by the container once the API server exists; a missing
-// registry, ledger or chat provider leaves the door at 503.
+// registry, ledger or chat provider leaves the entrypoint at 503.
 func (s *Server) EnableConfigAssistant(deps ConfigAssistDeps) {
 	if s.projectRegistry == nil || s.proposalStore == nil || s.chatProvider == nil {
 		s.logger.Warn().Bool("registry", s.projectRegistry != nil).Bool("ledger", s.proposalStore != nil).Bool("chat", s.chatProvider != nil).
@@ -50,11 +53,11 @@ func (s *Server) EnableConfigAssistant(deps ConfigAssistDeps) {
 	}
 	store, ok := s.proposalStore.(configassist.ProposalStore)
 	if !ok {
-		s.logger.Warn().Msg("config-assistant: proposal repository lacks the identifier columns (GetByIdempotencyKey); door stays closed")
+		s.logger.Warn().Msg("config-assistant: proposal repository lacks the identifier columns (GetByIdempotencyKey); entrypoint stays closed")
 		return
 	}
 	e := &configassist.Engine{
-		TreeRoot: deps.TreeRoot, ApplyPrefix: deps.ApplyPrefix, ConfigPath: deps.ConfigPath, SecretSnapshot: deps.SecretSnapshot,
+		TreeRoot: deps.TreeRoot, ApplyPrefix: deps.ApplyPrefix, ConfigPath: deps.ConfigPath, WorkspaceRoot: deps.WorkspaceRoot, SecretSnapshot: deps.SecretSnapshot,
 		Config: func() config.AssistantConfig {
 			if s.config == nil {
 				return config.AssistantConfig{}
@@ -112,8 +115,8 @@ func (p *a2aPeer) Ask(ctx context.Context, question string) (string, error) {
 	return res.Answer, nil
 }
 
-// ConfigAssistant returns the wired engine (nil when the door is closed)
-// so the UI console door can share it.
+// ConfigAssistant returns the wired engine (nil when the entrypoint is closed)
+// so the UI console entrypoint can share it.
 func (s *Server) ConfigAssistant() *configassist.Engine { return s.configAssist }
 
 // assistEvidence adapts the server's existing measurement surfaces to the
@@ -173,7 +176,7 @@ func (a assistEvidence) JudgeVerdicts(ctx context.Context, projectID string) (an
 	return map[string]any{"window": "last 50 verdicts", "counts": counts, "by_role": byRole, "note": "abstain is not a pass"}, true, nil
 }
 
-// assistRequest is the door's body.
+// assistRequest is the entrypoint's body.
 type assistRequest struct {
 	ProjectID      string `json:"projectId"`
 	Intent         string `json:"intent"`
@@ -204,12 +207,12 @@ func (s *Server) OperatorAssist(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "projectId and intent are required")
 		return
 	}
-	door := configassist.DoorREST
+	entrypoint := configassist.EntrypointREST
 	if r.Header.Get("X-Vornik-Client") == "vornikctl" {
-		door = configassist.DoorCLI
+		entrypoint = configassist.EntrypointCLI
 	}
 	req := configassist.Request{
-		ProjectID: body.ProjectID, Intent: body.Intent, Door: door, IdempotencyKey: body.IdempotencyKey,
+		ProjectID: body.ProjectID, Intent: body.Intent, Entrypoint: entrypoint, IdempotencyKey: body.IdempotencyKey,
 		RequestID: persistence.GenerateID("careq"), Actor: assistActor(r),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)

@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 93a24329bca8b8f277c788abab9ba26fa5111c43014c3eb256232c28c78f372c
+      sha256: b84b07d3f0019438e2e2cf8cb118fa1134da1cc3c0a1d0f15945b09532e82eb1
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: 3f9e5dd3e508ba9712e960b2ad876d49edf99ad659ceb7269037a639283166a7
+      sha256: 0d39489a1381fedcd8934b197cfa0c4731d1efc3ae067494aa41f0e58da79363
     - path: contrib/codex-companion/.codex-plugin/plugin.json
       sha256: f1bb30238d2b5ed5f19e03fba87859fcdea4d232d6e56aecbc8f8ad13e41f1b8
 ---
@@ -39,7 +39,7 @@ The companion exposes these MCP tools:
 | `recent_memory` | the most recently learned chunks, newest first |
 | `list_scopes` | list the repo scopes the project's memory is partitioned into |
 | `memory_correct` | soft-refute a wrong or stale memory chunk, optionally storing the correction |
-| `whoami` | show this key's project, the repo scope your calls resolve to right now, the database this daemon writes (so a destructive tool can verify its target instead of trusting a name you typed), and this project's embedding readiness — how much of its memory is semantically searchable, plus the embed-queue depth, so a caller can wait for ingest to finish instead of querying a half-indexed corpus |
+| `whoami` | show this key's project, the repo scope your calls resolve to right now, the database this daemon writes (so a destructive tool can verify its target instead of trusting a name you typed), and this project's embedding readiness — how much of its memory is semantically searchable, plus the embed-queue depth, so a caller can wait for ingest to finish instead of querying a half-indexed corpus. Also reports the daemon's build revision and its resolved embedding model, which a benchmark needs to attribute a run to a release and to an embedding space. |
 | `report_problem` | build an anonymized problem report + prefilled issue URL for you to review and submit |
 | `delegate` | queue an async task on vornik; returns a task id and a poll hint |
 | `status` | check a delegated task's status |
@@ -252,6 +252,14 @@ the target workflow declares `require_input_artifacts`, the daemon stages your
 upload as a raw file rather than extracting it into project memory first — so
 the agent reads exactly the bytes you sent, and no client has to opt into that
 behaviour.
+
+One note on `/upload`'s output, because its failure used to be quiet. A run that
+completed prints `VORNIK_UPLOAD_END` as its last line; output without that
+marker means the command was cut before it ran and there is no task to poll,
+however much the rest of it looks like a success. Backticks in a prompt used to
+cause exactly that and no longer do (bundle 0.24.0) — the commands' shell blocks
+are fenced, so a backtick is ordinary text. A line consisting of three backticks
+still closes a fence, which is what the marker is there to catch.
 
 The shipped delegation workflows include:
 

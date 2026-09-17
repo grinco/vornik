@@ -78,13 +78,20 @@ type NormalizedCaseEvidence struct {
 // ExecutionScore is the deterministic result of scoring one execution state
 // snapshot. Score is nil only when the workflow has no scoring policy.
 type ExecutionScore struct {
-	Kind            ScoreKind                `json:"kind,omitempty"`
-	Status          ScoreStatus              `json:"status"`
-	Score           *float64                 `json:"score,omitempty"`
-	PassedCaseCount int                      `json:"passedCaseCount"`
-	PinnedCaseCount int                      `json:"pinnedCaseCount"`
-	Diagnostic      string                   `json:"diagnostic,omitempty"`
-	CaseEvidence    []NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
+	Kind            ScoreKind   `json:"kind,omitempty"`
+	Status          ScoreStatus `json:"status"`
+	Score           *float64    `json:"score,omitempty"`
+	PassedCaseCount int         `json:"passedCaseCount"`
+	PinnedCaseCount int         `json:"pinnedCaseCount"`
+	// ExtraCaseCount is how many ids the verifier reported that the producer
+	// did not pin. Ignored by the score and kept VISIBLE, because the two
+	// readings differ: a report covering every pinned case plus three of its
+	// own is a bookkeeping slip, and one covering none of them under its own
+	// numbering is a verifier that validated nothing. Until 2026-09-17 a single
+	// extra id voided the whole report and both scored a measured zero.
+	ExtraCaseCount int                      `json:"extraCaseCount,omitempty"`
+	Diagnostic     string                   `json:"diagnostic,omitempty"`
+	CaseEvidence   []NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
 	// ObligationEvidence is the contract_satisfaction analogue of
 	// CaseEvidence: one entry per declared obligation. Empty for every other
 	// scoring kind.
@@ -183,15 +190,20 @@ func ScoreExecution(policy *ScoringPolicy, stateSnapshot []byte) (ExecutionScore
 	if diagnostic != "" {
 		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, diagnostic, pinned), nil
 	}
-	reported, diagnostic := decodeVerifierCases(verifierRaw, known)
-	if diagnostic != "" {
-		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, diagnostic, pinned), nil
+	reported, extraCases, diagnostic := decodeVerifierCases(verifierRaw, known)
+	verifierFatal, verifierSoft := splitDiagnostic(diagnostic)
+	if verifierFatal != "" {
+		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, verifierFatal, pinned), nil
+	}
+	if softDiag == "" {
+		softDiag = verifierSoft
 	}
 
 	result := ExecutionScore{
 		Kind:            policy.Kind,
 		Status:          ScoreStatusScored,
 		PinnedCaseCount: pinned,
+		ExtraCaseCount:  extraCases,
 		Diagnostic:      softDiag,
 		CaseEvidence:    make([]NormalizedCaseEvidence, 0, pinned),
 	}
@@ -272,28 +284,36 @@ func validatePinnedIDs(ids []string) (map[string]struct{}, string) {
 	return known, ""
 }
 
-func decodeVerifierCases(raw json.RawMessage, known map[string]struct{}) (map[string]string, string) {
+func decodeVerifierCases(raw json.RawMessage, known map[string]struct{}) (map[string]string, int, string) {
 	var verifier verifierEnvelope
 	if err := json.Unmarshal(raw, &verifier); err != nil || verifier.Testing == nil || verifier.Testing.Cases == nil {
-		return nil, DiagnosticMalformedEvidence
+		return nil, 0, DiagnosticMalformedEvidence
 	}
+	var extra int
+	var soft string
 	reported := make(map[string]string, len(verifier.Testing.Cases))
 	for _, c := range verifier.Testing.Cases {
 		if strings.TrimSpace(c.ID) == "" {
-			return nil, DiagnosticEmptyCaseID
+			return nil, 0, DiagnosticEmptyCaseID
 		}
 		if _, ok := known[c.ID]; !ok {
-			return nil, DiagnosticUnknownCaseID
+			// Not fatal. Skip it for scoring, count it, and carry a SOFT
+			// diagnostic so the operator still sees the verifier strayed from
+			// the pinned set — evidence for the pinned cases is not made
+			// unusable by the presence of evidence for other ones.
+			extra++
+			soft = softDiagnostic(DiagnosticUnknownCaseID)
+			continue
 		}
 		if !knownCaseStatus(c.Status) {
-			return nil, DiagnosticUnknownCaseStatus
+			return nil, 0, DiagnosticUnknownCaseStatus
 		}
 		if prior, duplicate := reported[c.ID]; duplicate && prior != c.Status {
-			return nil, DiagnosticConflictingCaseStatus
+			return nil, 0, DiagnosticConflictingCaseStatus
 		}
 		reported[c.ID] = c.Status
 	}
-	return reported, ""
+	return reported, extra, soft
 }
 
 func scoreZero(kind ScoreKind, status ScoreStatus, diagnostic string, pinned int) ExecutionScore {

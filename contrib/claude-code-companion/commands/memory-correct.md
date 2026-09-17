@@ -33,7 +33,8 @@ Provide a `wrong_claim` OR at least one `--chunk-id`. Requires a
 
 User's arguments: `$ARGUMENTS`
 
-!`ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-correct-args.XXXXXX")"
+```!
+ARGS_FILE="$(mktemp "${TMPDIR:-/tmp}/vornik-correct-args.XXXXXX")"
 trap 'rm -f "$ARGS_FILE"' EXIT
 cat >"$ARGS_FILE" <<'VORNIK_CORRECT_ARGS_EOF'
 $ARGUMENTS
@@ -172,7 +173,7 @@ elif correction:
 if inner.get("note"):
     print(f"note: {inner['note']}")
 PYEOF
-`
+```
 
 Report the outcome to the user: how many chunks were refuted (with their
 previews so the user can confirm the right ones were demoted), and whether a

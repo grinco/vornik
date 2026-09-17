@@ -20,6 +20,10 @@ type fakeKeyRepo struct {
 func (f fakeKeyRepo) LookupActiveByHash(_ context.Context, _ string) (*persistence.APIKey, error) {
 	return f.key, f.err
 }
+func (f fakeKeyRepo) GetByID(_ context.Context, _ string) (*persistence.APIKey, error) {
+	return nil, persistence.ErrAPIKeyNotFound
+}
+
 func (f fakeKeyRepo) Create(_ context.Context, _ *persistence.APIKey) error {
 	panic("fakeKeyRepo: Create not implemented")
 }
@@ -262,4 +266,11 @@ func TestGitHTTPAuth_Read(t *testing.T) {
 
 func (fakeKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
 	return nil
+}
+
+// ListAttributable satisfies the widened APIKeyRepository. These doubles back
+// surfaces that do not attribute keys, so an empty list is the honest
+// answer rather than a silent partial one.
+func (fakeKeyRepo) ListAttributable(context.Context) ([]*persistence.APIKey, error) {
+	return nil, nil
 }

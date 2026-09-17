@@ -203,6 +203,7 @@ vornikctl bench agent rescore <journal> [flags]
 | `--database` |  | the benchmark database to READ traces from |
 | `--gold` |  | gold manifest the grant probe scores against |
 | `--out` |  | where to write the re-scored journal (required) |
+| `--tasks` |  | the task set whose scoring policies the journal's TASK SCORES were computed under. Required when the journal carries task scores: a score's policy (producer step, verifier step, kind) lives in the task spec, not in the journal, so without it the release metric could only be copied forward unverified under a new harness stamp |
 
 ## vornikctl bench agent rollup
 
@@ -596,6 +597,7 @@ Models:
 
 Cost & budget:
   pricing_coverage      Models in swarm configs missing from pricing.yaml
+  pricing_drift         Prices disagreeing with the pinned upstream snapshot
   autonomy_budget_guard Autonomy-enabled projects with no hard $ cap
   budget_utilisation    Projects at ≥80%% of daily or monthly hard cap
   dispatcher_role       When telegram.dispatcher_project_id is set,

@@ -848,6 +848,39 @@ CREATE TABLE IF NOT EXISTS project_memory_chunks (
     validation_status                  TEXT NOT NULL DEFAULT 'unverified',
     superseded_in_epoch                TEXT,
     pre_supersede_status               TEXT,
+    -- Recurring-series membership: the feed slug a digest belongs to, so
+    -- "a newer one of these exists" is answerable at query time. NULL =
+    -- not part of a series, which is what every pre-existing row is.
+    -- Mirrors postgres migration 190; see
+    -- 2026-09-16-retrieval-recency-design.md §6. Carried here because the
+    -- recency re-rank's EXISTS runs on BOTH drivers and a column the
+    -- sqlite lane lacks is a query that only fails in the pgvector lane.
+    -- NOTE: also registered in sqliteAdditiveColumns — the index below
+    -- references it, so on an existing database the column must land
+    -- before schemaSQL runs or CREATE INDEX fails and the daemon will not
+    -- start at all.
+    series_key                         TEXT,
+    -- MEMBER IDENTITY for the recency re-rank's series predicate, which
+    -- compares COALESCE(artifact_id, source_name) rather than chunk ids.
+    -- Carried here for the same reason series_key is, and the reason is not
+    -- hypothetical: a series member is an ARTIFACT, and one ingest emits many
+    -- chunks whose created_at differ by microseconds, so a predicate that
+    -- cannot name the artifact supersedes the current digest with its own
+    -- siblings (production, 2026-09-16). Without these two columns the
+    -- cross-driver suite that pins that bug has no sqlite half, and a
+    -- sqlite-only half is the shape of failure the pgvector lane exists to
+    -- catch. Both nullable: artifact_id is NULL on rows that predate the
+    -- column, which is exactly what the COALESCE covers.
+    source_name                        TEXT,
+    artifact_id                        TEXT,
+    -- The chunk's TTL expiry, and the recency curve's ONLY half-life input:
+    -- the half-life is expires_at - created_at, read per row. NULL means no
+    -- TTL, which means NO DECAY — the property that keeps 51.5% of the store
+    -- (specs, rulings, designs) un-demoted. Carried here so the shared suite
+    -- reads that NULL back through a real driver instead of trusting a
+    -- fixture: "absent TTL" and "zero time" are the same bits to a careless
+    -- scanner, and they mean opposite things to the curve.
+    expires_at                         TEXT,
     -- A recorded supersession epoch only makes sense on a superseded
     -- chunk (the restore pass keys on both). The reverse is NOT an
     -- invariant: a chunk superseded with no tracked epoch (empty epochID,
@@ -858,6 +891,14 @@ CREATE TABLE IF NOT EXISTS project_memory_chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_project_needs ON project_memory_chunks(project_id, needs_graph_extraction);
 CREATE INDEX IF NOT EXISTS idx_chunks_project_time ON project_memory_chunks(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chunks_project_scope ON project_memory_chunks(project_id, repo_scope, created_at DESC);
+-- Partial, and carrying id as its last key, because the recency re-rank's
+-- EXISTS compares the row-value tuple (created_at, id) so that two members
+-- ingested in the same second still order deterministically. Postgres
+-- migration 190 creates the identical shape; keeping them byte-comparable is
+-- what makes the EXPLAIN assertions on the two drivers mean the same thing.
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_series
+    ON project_memory_chunks(project_id, series_key, created_at DESC, id DESC)
+    WHERE series_key IS NOT NULL;
 
 -- ============================================================
 -- extracted_documents — Phase 0 of document-extraction pipeline.
@@ -1469,7 +1510,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_versions_skill
 CREATE TABLE IF NOT EXISTS control_plane_proposals (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT,
-    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold','instinct_retire','observation')),
+    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold','instinct_retire','workspace_context','observation')),
     blast_radius       TEXT NOT NULL CHECK (blast_radius IN ('model','project','swarm','daemon')),
     title              TEXT NOT NULL,
     diff               TEXT NOT NULL DEFAULT '',
@@ -1492,7 +1533,7 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
     -- plan §7g). Nullable, no backfill; also in sqliteAdditiveColumns.
     request_id          TEXT,
     idempotency_key     TEXT,
-    door                TEXT,
+    entrypoint          TEXT,
     actor_kind          TEXT,
     actor_account_id    TEXT,
     actor_credential_id TEXT
@@ -1742,6 +1783,34 @@ CREATE INDEX IF NOT EXISTS idx_operator_profile_updated
     ON operator_profile (updated_at DESC);
 
 -- ============================================================
+-- operator_identity_link — TABLE parity with Postgres migrations 60/117.
+-- (Table parity, not migration-number parity: SQLite re-applies this whole
+-- idempotent schema on every start and tracks no migration numbers, so there
+-- is nothing here to keep in step with a Postgres migration id.)
+--
+-- Added 2026-09-15. The SQLite repository was a STUB: every Upsert returned
+-- nil and stored nothing, every Get returned ErrNotFound. Its stated reason
+-- was "single-process deployments don't need cross-process persistence",
+-- which confuses two different things — a link must survive a RESTART, and
+-- nothing about one process makes that unnecessary. The table beside it
+-- (operator_profile) carries the note that acknowledging and discarding
+-- writes creates false memory; this is the same defect one table over.
+--
+-- It silently broke two flows on every SQLite deployment: /link chat-to-chat
+-- profile merging (which reported success and consolidated nothing), and the
+-- Phase-4 link-code redemption, which repoints the profile onto the account
+-- and would have audited profile_repoint:"merged" having moved nothing.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS operator_identity_link (
+    channel_speaker_id TEXT PRIMARY KEY,
+    operator_id        TEXT NOT NULL,
+    linked_by          TEXT NOT NULL DEFAULT 'self',
+    linked_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operator_identity_link_operator
+    ON operator_identity_link (operator_id);
+
+-- ============================================================
 -- instinct_lift (migration 128) — latest true-lift snapshot per
 -- instinct (2026-07-19-instinct-lift-measurement-design.md §4.3).
 -- Snapshot, not event log — upserted each lift_eval pass. No
@@ -1954,4 +2023,5 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_ui_sessions_hash ON ui_sessions (token_hash) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ui_sessions_user ON ui_sessions (user_id);
+
 `

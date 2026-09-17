@@ -523,3 +523,65 @@ func TestSessionBackend_AuthDisabledRejectedSessionUnstamped(t *testing.T) {
 		t.Fatalf("identity = %+v, want nil for a rejected session", got)
 	}
 }
+
+// TestCSRFGate_CoversEveryIdentityMutationByName — §5.7 requires the identity
+// surfaces' mutating routes to be asserted BY NAME rather than inferred from
+// the middleware being shared. The reason is in the ledger: the Phase-3 CSRF
+// test names the routes that existed when it was written, so a route added
+// later fails no existing test, and "it goes through the same middleware" is
+// an argument rather than a check.
+//
+// These are every cookie-authed mutation the identity work added — the
+// self-service panel's three, and the operator page's key actions, which
+// arrived later still and would have been the second instance of exactly this
+// gap.
+func TestCSRFGate_CoversEveryIdentityMutationByName(t *testing.T) {
+	routes := []string{
+		// Self-service (§5.5).
+		"/api/v1/account/link-codes",
+		"/api/v1/account/keys/claim",
+		"/api/v1/account/identities/telegram/42",
+		"/ui/account/link-code",
+		"/ui/account/claim-key",
+		"/ui/account/unlink",
+		// Operator shell (§5.5's "Keys & access").
+		"/ui/operator/accounts/user_1/assign-key",
+		"/ui/operator/accounts/user_1/unassign-key",
+		"/ui/operator/accounts/user_1/link-code",
+		"/api/v1/operator/accounts/user_1",
+		"/api/v1/operator/accounts/user_1/link-code",
+	}
+	for _, path := range routes {
+		t.Run(path, func(t *testing.T) {
+			sb := &stubSessionBackend{token: "good", projects: []string{"proj-a"}, role: "admin", sessID: "s", userID: "u1"}
+			reached := false
+			h := AuthMiddleware(sessionCfg(sb))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			req.AddCookie(&http.Cookie{Name: "vornik_session", Value: "good"})
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("cross-site POST status = %d, want 403 — this mutation is outside the CSRF ladder", rec.Code)
+			}
+			if reached {
+				t.Error("the handler ran on a cross-site mutating request")
+			}
+
+			// And the gate must not block the legitimate same-origin form
+			// post, or the surface is unusable rather than protected.
+			req = httptest.NewRequest(http.MethodPost, path, nil)
+			req.AddCookie(&http.Cookie{Name: "vornik_session", Value: "good"})
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("same-origin POST status = %d, want 200", rec.Code)
+			}
+		})
+	}
+}

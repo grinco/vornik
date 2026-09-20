@@ -381,6 +381,33 @@ vornikctl bench memory verify-determinism <run-dir-a> <run-dir-b>
 
 Inspect and control daemon configuration
 
+## vornikctl config keys
+
+List the project config keys this binary accepts, and which release introduced each
+
+Print every project config key THIS BINARY accepts.
+
+This answers two different upgrade questions, and they are not the same:
+
+  "would my config load under this binary?"  — the full list, always correct,
+      because it is derived from the schema rather than maintained by hand.
+
+  "what is new since the release I am running?" — pass --since <release>. Keys
+      that predate per-key provenance are reported as older than tracking
+      rather than guessed at.
+
+A key your config uses that is NOT in this list is why a project went dark:
+deploy the binary that knows the key first, then the config.
+
+```
+vornikctl config keys [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | JSON output instead of the table |
+| `--since` |  | Only keys introduced after this release (e.g. 2026.9.4) |
+
 ## vornikctl config reload
 
 Trigger a configuration reload
@@ -2217,6 +2244,66 @@ vornikctl models list [flags]
 | `--json` | `false` | Output in JSON format |
 | `--provider` |  | Filter to one sub-provider (e.g. vertex, http, claude-subscription) |
 | `--unpriced` | `false` | Only show models without a pricing.yaml entry |
+
+## vornikctl package
+
+Install, list and uninstall Vornik extension packages
+
+A package is a manifest plus a payload tree — workflows and roles in
+this release — that an operator can hand someone and install in one step.
+
+It is NOT a marketplace and NOT a plugin API: nothing here loads code,
+and every contribution is data the daemon already knows how to validate.
+Trust is the operator's, exactly as it is for a workflow YAML today.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--configs-dir` |  | Deployed configs directory (default: VORNIK_CONFIGS_DIR or ~/.config/vornik/configs) |
+
+## vornikctl package install
+
+Install a package into the deployed configs tree
+
+Validate a package, write its contributions into the DEPLOYED configs
+tree, and record provenance for each one with its content hash.
+
+A conflict is a refusal, not a merge: two packages contributing the same
+workflow id is an operator decision, not something an installer resolves
+by ordering. Every conflict is reported in one pass.
+
+The daemon picks the new config up on its next reload.
+
+```
+vornikctl package install <dir-or-tarball> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Print the would-be writes without touching disk or the provenance store |
+
+## vornikctl package list
+
+List installed packages and what each contributed
+
+```
+vornikctl package list
+```
+
+## vornikctl package uninstall
+
+Remove a package's contributions
+
+Remove every row a package installed, provided each is still
+byte-for-byte what the package wrote.
+
+A file the operator EDITED stops the uninstall and is named: an operator
+who tuned a contributed workflow must not lose the tuning to a package
+lifecycle. A file the operator DELETED is not an error — its provenance
+row is simply cleared.
+
+```
+vornikctl package uninstall <package>
+```
 
 ## vornikctl project
 

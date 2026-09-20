@@ -373,7 +373,7 @@ func (e *ApplyEngine) verifyAndCommit(ctx context.Context, row *persistence.Conf
 		return fmt.Errorf("apply reload rejected (reverted): %w", rerr)
 	}
 	if e.VerifyGeneration != nil {
-		if gerr := e.VerifyGeneration(ctx, journaledOps(resolved)); gerr != nil {
+		if gerr := e.VerifyGeneration(ctx, journaledOps(resolved), row.GenerationBefore); gerr != nil {
 			if verr := e.revertJournaled(ctx, row, resolved, "generation not confirmed: "+gerr.Error()); verr != nil {
 				return verr
 			}

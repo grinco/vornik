@@ -1833,9 +1833,17 @@ func (s *Server) roleToolAllowlistReason(ctx context.Context, taskID string) ([]
 	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
 		return nil, mcpGapNoExecution
 	}
-	project, workflow, err := s.projectRegistry.GetProjectWithWorkflow(exec.ProjectID)
-	if err != nil || project == nil || workflow == nil {
+	project, defaultWorkflow, err := s.projectRegistry.GetProjectWithWorkflow(exec.ProjectID)
+	if err != nil || project == nil {
 		return nil, mcpGapNoWorkflow
+	}
+	defaultID := ""
+	if defaultWorkflow != nil {
+		defaultID = defaultWorkflow.ID
+	}
+	workflow, reason := workflowForGate(s.projectRegistry, exec, defaultID)
+	if reason != mcpGapNone {
+		return nil, reason
 	}
 	step, reason := stepForGate(workflow, *exec.CurrentStepID)
 	if reason != mcpGapNone {
@@ -2882,6 +2890,55 @@ func (s *Server) stepToolGrant(ctx context.Context, taskID string) []string {
 // fail-opens in the census were the first case, while the bucket the container
 // could actually enforce against (role_declares_none) was empty. One reason
 // covering all three made that read as twelve unresolved roles.
+// gateWorkflowLookup is the narrow registry slice workflowForGate needs.
+type gateWorkflowLookup interface {
+	GetWorkflow(id string) *registry.Workflow
+}
+
+// workflowForGate resolves the workflow whose steps this execution's
+// current_step_id must be looked up in.
+//
+// THE EXECUTION'S OWN WORKFLOW, not the project's default — and that
+// distinction is the whole of this function. `GetProjectWithWorkflow` returns
+// `project.DefaultWorkflowID`, so for any execution running something else
+// (`ingest` on a project that defaults to `adaptive`, `companion-rag-ingest`,
+// `research`) every step id was unknown, every resolution reported
+// step_not_found, and every MCP call the agent made resolved with NO role
+// allowlist.
+//
+// Measured on the reference deployment 2026-09-19: step_not_found was the WHOLE
+// fail-open distribution over 41 hours — 105 advertise, 223 call — and the
+// executions behind it were all running a non-default workflow. The project
+// gate held throughout, so this was a role-scoping gap rather than a boundary
+// breach; the role's allowlist simply was not applied for an entire class of
+// execution.
+//
+// A MISSING workflow does not fall back to the default. Falling back would
+// resolve a role from a workflow this execution is not running, which is worse
+// than failing open: it applies the wrong grants rather than none, and nothing
+// in the census would say so.
+//
+// An execution recording NO workflow id is the one legitimate fallback, because
+// there is nothing else to go on — that is a row from before the field, or from
+// a path that does not set it.
+func workflowForGate(lookup gateWorkflowLookup, exec *persistence.Execution, defaultWorkflowID string) (*registry.Workflow, mcpGapReason) {
+	if lookup == nil || exec == nil {
+		return nil, mcpGapNoWorkflow
+	}
+	id := strings.TrimSpace(exec.WorkflowID)
+	if id == "" {
+		id = defaultWorkflowID
+	}
+	if id == "" {
+		return nil, mcpGapNoWorkflow
+	}
+	wf := lookup.GetWorkflow(id)
+	if wf == nil {
+		return nil, mcpGapNoWorkflow
+	}
+	return wf, mcpGapNone
+}
+
 func stepForGate(workflow *registry.Workflow, currentStepID string) (registry.WorkflowStep, mcpGapReason) {
 	step, ok := workflow.Steps[currentStepID]
 	if !ok {

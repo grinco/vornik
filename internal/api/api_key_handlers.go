@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/apikey"
+	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -286,8 +288,8 @@ func (s *Server) RotateAPIKey(w http.ResponseWriter, r *http.Request, keyID stri
 	// New row is live; now revoke the old. If this step errors the
 	// old key is still around (acceptable: caller has the new one
 	// and can retry the revoke). Idempotent on the repo side.
-	if err := s.apiKeyRepo.Revoke(r.Context(), prior.ID); err != nil {
-		s.logger.Warn().Err(err).Str("project", projectID).Str("key", prior.ID).
+	if swept, err := s.revokeKeyAndSessions(r.Context(), prior.ID, operatorActor(r)); err != nil {
+		s.logger.Warn().Err(err).Str("project", projectID).Str("key", prior.ID).Bool("swept_sessions", swept).
 			Msg("api-key: rotate-revoke failed (new key already issued)")
 	}
 	respondJSON(w, http.StatusCreated, createAPIKeyResponse{
@@ -341,8 +343,8 @@ func (s *Server) RevokeAPIKey(w http.ResponseWriter, r *http.Request, keyID stri
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "api key not found in this project")
 		return
 	}
-	if err := s.apiKeyRepo.Revoke(r.Context(), keyID); err != nil {
-		s.logger.Warn().Err(err).Str("project", projectID).Str("key", keyID).
+	if swept, err := s.revokeKeyAndSessions(r.Context(), keyID, operatorActor(r)); err != nil {
+		s.logger.Warn().Err(err).Str("project", projectID).Str("key", keyID).Bool("swept_sessions", swept).
 			Msg("api-key: revoke failed")
 		respondError(w, http.StatusInternalServerError, "DB_ERROR",
 			"failed to revoke api key")
@@ -600,4 +602,19 @@ func splitKeyActionPath(remaining string) (keyID, action string, ok bool) {
 		return parts[0], parts[1], true
 	}
 	return "", "", false
+}
+
+// revokeKeyAndSessions revokes an API key through the one verb that also ends
+// the browser sessions that key minted (ce-human-login-design §5.1).
+//
+// It falls back to the bare repository revoke when no accounts service is
+// wired — a deployment with no identity core has no sessions to end, and
+// refusing to revoke a key there would be a regression dressed as a safety
+// check. The fallback is NOT silent: the caller logs which path it took, so
+// "sessions were not swept" is visible rather than assumed.
+func (s *Server) revokeKeyAndSessions(ctx context.Context, keyID string, actor authz.Actor) (sweptSessions bool, err error) {
+	if s.accounts == nil {
+		return false, s.apiKeyRepo.Revoke(ctx, keyID)
+	}
+	return true, s.accounts.RevokeCredential(ctx, keyID, actor)
 }

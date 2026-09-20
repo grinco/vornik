@@ -143,6 +143,35 @@ func revokeSessionsForUserWithExec(ctx context.Context, exec DBTX, userID string
 	return mapIdentityDBError(err)
 }
 
+// RevokeSessionsForCredential revokes every active ui_sessions row minted by
+// keyID. Zero active sessions is not an error.
+//
+// The key-revocation path calls this so a revoked key does not leave a live
+// browser session behind. It cannot share a TRANSACTION with the api_keys
+// update — the two tables live in two repositories, both of which hold a
+// DBTX with no BeginTx — so the ordering is what bounds the gap: revoke the
+// KEY first, then the sessions. A crash between them leaves session rows that
+// the per-request capping rule kills on their next use; the reverse order
+// would leave a live key, which nothing else catches.
+func (r *IdentityRepository) RevokeSessionsForCredential(ctx context.Context, keyID string) error {
+	return revokeSessionsForCredentialWithExec(ctx, r.db, keyID)
+}
+
+func revokeSessionsForCredentialWithExec(ctx context.Context, exec DBTX, keyID string) error {
+	if keyID == "" {
+		// An empty id would match every OIDC session, since those store
+		// NULL — except SQL never matches NULL with =, so it would in fact
+		// match nothing and silently succeed. Refusing is louder than
+		// either behaviour and costs nothing.
+		return fmt.Errorf("revoke sessions: credential id is required")
+	}
+	_, err := exec.ExecContext(ctx,
+		`UPDATE ui_sessions SET revoked_at = ?
+		 WHERE origin_credential_id = ? AND revoked_at IS NULL`,
+		nowText(), keyID)
+	return mapIdentityDBError(err)
+}
+
 // revokeSessionsForGroupWithExec revokes every active session of a member
 // of groupID — a narrowed project set must take effect now, not at the
 // principal-cache TTL.

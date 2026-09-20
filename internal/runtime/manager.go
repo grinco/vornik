@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/projectdeps"
 )
 
 // maxPodmanArgs is a hard ceiling on the pre-allocated capacity of a
@@ -303,7 +304,7 @@ func (m *Manager) buildPreImageArgs(config *ContainerConfig) []string {
 	// Environment variables. For NetworkDaemonOnly the container has no
 	// network device, so the daemon + LLM endpoints (both target the
 	// daemon) are rewritten to the bind-mounted unix socket.
-	for k, v := range daemonOnlyEnv(config.EnvVars, effectiveNetwork, m.daemonSocketPath) {
+	for k, v := range daemonOnlyEnv(withDependencyEnv(config), effectiveNetwork, m.daemonSocketPath) {
 		args = append(args, "--env", fmt.Sprintf("%s=%s", k, v))
 	}
 
@@ -337,6 +338,13 @@ func (m *Manager) buildPreImageArgs(config *ContainerConfig) []string {
 		// across containers for the same project. :Z would relabel it
 		// with a private MCS category that blocks subsequent containers.
 		args = append(args, "--volume", fmt.Sprintf("%s:/app/workspace/project:rw,z", config.ProjectDir))
+	}
+	for _, dep := range config.DependencyMounts {
+		// Read-only, shared label. The tree is content-addressed, so one
+		// materialisation is mounted by every container that needs it;
+		// :Z would relabel it with a private MCS category that blocks
+		// the next container (same reason the project dir uses :z).
+		args = append(args, "--volume", dep.VolumeSpec())
 	}
 	if config.ProjectGitDir != "" {
 		// Bind-mount the project's .git at its original host path.
@@ -403,6 +411,33 @@ func (m *Manager) buildPreImageArgs(config *ContainerConfig) []string {
 	}
 
 	return args
+}
+
+// withDependencyEnv adds PYTHONPATH and a PATH prefix for the project's
+// materialised dependency trees, leaving the config's own env untouched.
+//
+// A project with no manifest produces no mounts and therefore NO injection at
+// all — not an empty variable, not a path that does not exist. An env var
+// pointing at a missing directory is the kind of thing that works until an
+// ecosystem decides it is an error, and the common case must not depend on
+// that (design §5.4).
+//
+// The caller's own PATH wins the tail: the mount's bin dir is PREPENDED so a
+// project's pinned tool beats a same-named one baked into the image, but the
+// image's PATH is preserved behind it.
+func withDependencyEnv(config *ContainerConfig) map[string]string {
+	extra := projectdeps.InjectEnv(config.DependencyMounts, config.EnvVars["PATH"])
+	if len(extra) == 0 {
+		return config.EnvVars
+	}
+	merged := make(map[string]string, len(config.EnvVars)+len(extra))
+	for k, v := range config.EnvVars {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return merged
 }
 
 // daemonOnlyEnv returns the env map to inject. For NetworkDaemonOnly
@@ -1023,7 +1058,20 @@ func contextWithOptionalTimeout(parent context.Context, timeout time.Duration) (
 	return context.WithTimeout(parent, timeout)
 }
 
-// PullImage pulls a container image.
+// PullImage pulls a container image by reference.
+//
+// NOT THE OBTAIN PATH, and this comment is the whole point of keeping the
+// function. Deciding WHETHER to pull belongs to `imagemanifest.Decide`, which
+// `cmd/vornik-images -obtain` calls — one rule, reached by both the updater and
+// the doctor, because a rule duplicated between bash and Go is a rule with two
+// answers (packaged-image-provenance design §S2.3). A caller that pulls through
+// here without consulting that decision would be the second obtain path, and
+// the one that is wrong is always the one nobody exercises.
+//
+// It stays because the runtime manager is where image lifecycle lives and a
+// future caller (a warm-pull on first dispatch, say) belongs here rather than
+// shelling out beside it — but it is DELIBERATELY unreferenced today, which is
+// a fact worth stating rather than a gap worth closing by inventing a caller.
 func (m *Manager) PullImage(ctx context.Context, image string) error {
 	args := []string{"pull", image}
 

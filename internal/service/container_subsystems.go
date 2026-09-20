@@ -781,6 +781,11 @@ func (c *Container) initTelegram() error {
 	if acc := c.accountsService(); acc != nil {
 		bot.SetAccountLinker(acc)
 	}
+	// §5.2b: scrub a pasted link code out of any text about to reach a model,
+	// and burn it. Wired unconditionally — the scrub half needs no store, and a
+	// deployment without identity wiring must not be the one that forwards a
+	// credential to an LLM.
+	bot.SetLinkCodeExposureGuard(c.linkCodeExposureGuard())
 
 	// Wire the scraper-block → Telegram notify hook (design 2026-07-19). Inert
 	// unless enabled with at least one curated portal. Runs on a daemon-lifetime

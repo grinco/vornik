@@ -58,9 +58,15 @@ type Repositories struct {
 	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D).
 	CostTuningCanaries persistence.CostTuningCanaryRepository
 	AdminAudit         persistence.AdminAuditRepository
-	SecretRedaction    persistence.SecretRedactionAuditRepository
-	TaskCredentials    persistence.TaskCredentialRepository
-	ChatAudit          persistence.ChatAuditRepository
+	ClassESlots        persistence.ClassESlotRepository
+	KeyClaimAttempts   persistence.KeyClaimAttemptRepository
+	// PackageContributions is the extension-package provenance store:
+	// one row per contributed config row, with the content hash at
+	// install time so uninstall can refuse an operator-edited file.
+	PackageContributions persistence.PackageContributionRepository
+	SecretRedaction      persistence.SecretRedactionAuditRepository
+	TaskCredentials      persistence.TaskCredentialRepository
+	ChatAudit            persistence.ChatAuditRepository
 	// ChannelDisclosure is the EU AI Act Art 50 disclosure record —
 	// per-session state AND the Art 99 evidence trail.
 	ChannelDisclosure persistence.ChannelDisclosureRepository
@@ -399,6 +405,9 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		Proposals:                      sqlite.NewProposalRepository(db),
 		CostTuningCanaries:             sqlite.NewCostTuningCanaryRepository(db),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
+		ClassESlots:                    sqlite.NewClassESlotRepository(db),
+		KeyClaimAttempts:               sqlite.NewKeyClaimAttemptRepository(db),
+		PackageContributions:           sqlite.NewPackageContributionRepository(db),
 		SecretRedaction:                sqlite.NewSecretRedactionAuditRepository(db),
 		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
@@ -553,6 +562,9 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Proposals:                      postgres.NewProposalRepository(dbtx),
 		CostTuningCanaries:             postgres.NewCostTuningCanaryRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
+		ClassESlots:                    postgres.NewClassESlotRepository(dbtx),
+		KeyClaimAttempts:               postgres.NewKeyClaimAttemptRepository(dbtx),
+		PackageContributions:           postgres.NewPackageContributionRepository(dbtx),
 		SecretRedaction:                postgres.NewSecretRedactionAuditRepository(dbtx),
 		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),

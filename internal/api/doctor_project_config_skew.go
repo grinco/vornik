@@ -39,7 +39,7 @@ import (
 
 // checkProjectConfigSkew reports deployed project files the running binary
 // would refuse to load.
-func (h *DoctorHandlers) checkProjectConfigSkew() DoctorCheck {
+func (h *DoctorHandlers) checkProjectConfigSkew(fix bool) DoctorCheck {
 	name := "project_config_skew"
 
 	if h.configDir == "" {
@@ -67,11 +67,78 @@ func (h *DoctorHandlers) checkProjectConfigSkew() DoctorCheck {
 		}
 	}
 
-	var (
-		examined int
-		items    []string
-		skew     int
-	)
+	examined, items, healed, skew := h.scanProjectFiles(projectsDir, entries, fix)
+	sort.Strings(items)
+
+	if len(items) == 0 {
+		msg := fmt.Sprintf("%d project file(s) examined; all load under this binary's schema", examined)
+		if len(healed) > 0 {
+			// Say what was CHANGED, always. A repair an operator cannot see is
+			// a repair they cannot review or undo.
+			msg += fmt.Sprintf(" (%d misspelt key(s) repaired by --fix)", len(healed))
+		}
+		return DoctorCheck{Name: name, Status: "OK", Message: msg, Items: healed}
+	}
+	if len(healed) > 0 {
+		items = append(items, healed...)
+		sort.Strings(items)
+	}
+
+	// ERROR, not WARNING. Each of these is a project that does not exist right
+	// now — this is an outage being reported, not a risk.
+	msg := fmt.Sprintf("%d of %d project file(s) would NOT load; those projects do not exist in the running registry", len(items), examined)
+	if skew > 0 {
+		msg += fmt.Sprintf(" (%d look like config written for a NEWER release than this binary — deploy the binary first)", skew)
+	}
+	return DoctorCheck{Name: name, Status: "ERROR", Message: msg, Items: items}
+}
+
+// joinRepairs renders the per-key repairs for the operator-facing item.
+func joinRepairs(changes []registry.KeyRepair) string {
+	parts := make([]string, 0, len(changes))
+	for _, c := range changes {
+		parts = append(parts, c.String())
+	}
+	return strings.Join(parts, "; ")
+}
+
+// repairSpelling applies §13.4's narrow repair to one file and reports what
+// happened: the operator-facing note, the diagnosis of the REPAIRED bytes when
+// the file is still rejected, and whether it now loads.
+//
+// Split out because the branching belongs to the repair, not to the walk — and
+// because a check that both edits files and classifies them wants the edit in
+// one readable place.
+func (h *DoctorHandlers) repairSpelling(path, fname string, data []byte, diag registry.SkewDiagnosis) (note string, redone registry.SkewDiagnosis, clean bool) {
+	repaired, changes, healErr := registry.HealMisspelledKeys(data, diag)
+	if healErr != nil || len(changes) == 0 {
+		return "", registry.SkewDiagnosis{}, false
+	}
+	if writeErr := os.WriteFile(path, repaired, 0o600); writeErr != nil {
+		return fmt.Sprintf("%s: could not write the repair (%v)", fname, writeErr), registry.SkewDiagnosis{}, false
+	}
+	note = fmt.Sprintf("%s: %s", fname, joinRepairs(changes))
+
+	// Re-decode the REPAIRED bytes. A file carrying a convention error AND a
+	// key unknown under every spelling is not fixed, and reporting it as fixed
+	// would be the worse half of this feature.
+	again := registry.DecodeProjectStrict(repaired)
+	if again == nil {
+		return note, registry.SkewDiagnosis{}, true
+	}
+	return note, registry.DiagnoseProjectDecodeError(fname, repaired, again), false
+}
+
+// scanProjectFiles decodes every project file with the DAEMON'S decoder and
+// classifies what it finds — optionally repairing a convention error on the way
+// (§13.4).
+//
+// Extracted from checkProjectConfigSkew because the walk and the verdict are
+// two jobs: the verdict is three lines, and burying it under the walk is what
+// pushed the function past the complexity bound. The decoder is still the
+// daemon's own — a check that re-implements the rule it checks drifts from it,
+// and then certifies a compatibility that does not hold.
+func (h *DoctorHandlers) scanProjectFiles(projectsDir string, entries []os.DirEntry, fix bool) (examined int, items, healed []string, skew int) {
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -98,23 +165,33 @@ func (h *DoctorHandlers) checkProjectConfigSkew() DoctorCheck {
 		if diag.LikelyVersionSkew {
 			skew++
 		}
+		// §13.4: --fix repairs a key whose ONLY defect is spelling, because
+		// that is the one class with an unambiguous correct end state — the
+		// operator's intent is legible in the key they typed. A key unknown
+		// under every spelling is a deploy-ordering problem and is left alone;
+		// "fixing" it would mean deleting it, which restores the project by
+		// silently disabling what the operator was configuring.
+		//
+		// Opt-in, never at startup: a path that edits a customer's config
+		// without being asked is very hard to reason about afterwards, and the
+		// recovery it buys is minutes.
+		if fix {
+			note, redone, clean := h.repairSpelling(path, fname, data, diag)
+			if note != "" {
+				if clean || redone.File != "" {
+					healed = append(healed, note)
+				} else {
+					items = append(items, note)
+				}
+			}
+			if clean {
+				continue
+			}
+			if redone.File != "" {
+				diag = redone
+			}
+		}
 		items = append(items, diag.Detail())
 	}
-	sort.Strings(items)
-
-	if len(items) == 0 {
-		return DoctorCheck{
-			Name:    name,
-			Status:  "OK",
-			Message: fmt.Sprintf("%d project file(s) examined; all load under this binary's schema", examined),
-		}
-	}
-
-	// ERROR, not WARNING. Each of these is a project that does not exist right
-	// now — this is an outage being reported, not a risk.
-	msg := fmt.Sprintf("%d of %d project file(s) would NOT load; those projects do not exist in the running registry", len(items), examined)
-	if skew > 0 {
-		msg += fmt.Sprintf(" (%d look like config written for a NEWER release than this binary — deploy the binary first)", skew)
-	}
-	return DoctorCheck{Name: name, Status: "ERROR", Message: msg, Items: items}
+	return examined, items, healed, skew
 }

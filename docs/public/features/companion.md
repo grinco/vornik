@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: b84b07d3f0019438e2e2cf8cb118fa1134da1cc3c0a1d0f15945b09532e82eb1
+      sha256: b72c1afac25f117532a345ba6f5f0b8e4eea9cb8ab6b2d70debf79ca07b3d42d
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: 0d39489a1381fedcd8934b197cfa0c4731d1efc3ae067494aa41f0e58da79363
     - path: contrib/codex-companion/.codex-plugin/plugin.json
@@ -252,6 +252,21 @@ the target workflow declares `require_input_artifacts`, the daemon stages your
 upload as a raw file rather than extracting it into project memory first — so
 the agent reads exactly the bytes you sent, and no client has to opt into that
 behaviour.
+
+An upload that cannot fit the reviewing agent's context is refused at delegate
+time rather than part-way through the run. The refusal says how much you sent,
+how many prompt tokens that is, and what the budget was:
+
+```
+ARTIFACTS_EXCEED_CONTEXT: 248 KB of staged artifacts is about 84718 prompt
+tokens, against a usable budget of 41808 of the reviewer's 100000-token context
+```
+
+The remedy is to split the upload — one delegation per subsystem or per file —
+and to quote what the agent needs from a large document inline in the prompt
+instead of attaching the whole thing. This is worth refusing early because the
+alternative is what used to happen: the agent runs, spends its budget, and then
+fails on its output contract, so you pay for a review you do not get.
 
 One note on `/upload`'s output, because its failure used to be quiet. A run that
 completed prints `VORNIK_UPLOAD_END` as its last line; output without that

@@ -90,5 +90,36 @@ STEP_PROMPT_WRITTEN=0 OUTPUT_FILE="/nonexistent/dir/result.json" write_step_prom
 want_eq "$rc" "0" \
     "an unwritable output dir does not fail the step" "write_step_prompt_file failed on an unwritable dir"
 
+# --- 7. A part at or above MAX_ARG_STRLEN is still persisted. ---
+# Incident 2026-09-18: every part was passed to jq as a command-line ARGUMENT
+# (--arg). Linux caps a SINGLE argument at MAX_ARG_STRLEN = 131072 bytes,
+# independently of the much larger total ARG_MAX, so any part at or above that
+# failed the jq call with E2BIG and the prompt was silently never recorded.
+# Measured to the byte: 131071 persisted, 131072 was lost. It hit the roles
+# whose prompts carry a document — 173 of 286 companion reviewer steps and 259
+# of 501 ingestor steps had a prompt, the rest were this.
+#
+# The fixture is built with --rawfile precisely because --arg cannot carry a
+# value this size: a fixture using --arg would fail before reaching the code
+# under test and report a false pass.
+big="$tmp/big.txt"
+head -c 131072 /dev/zero | tr '\0' 'x' > "$big"
+big_bytes=$(wc -c < "$big" | tr -d ' ')
+want_eq "$big_bytes" "131072" "fixture is exactly MAX_ARG_STRLEN bytes" "fixture is the wrong size"
+jq -n --rawfile u "$big" '[{"role":"system","content":"sys"},{"role":"user","content":$u}]' > "$msgs"
+bigout="$tmp/bigout"; mkdir -p "$bigout"
+STEP_PROMPT_WRITTEN=0 OUTPUT_FILE="$bigout/result.json" write_step_prompt_file "$msgs" "$tools"
+if [ -s "$bigout/step_prompt.json" ]; then
+    ok "a prompt part at MAX_ARG_STRLEN is persisted"
+    # Round-trip: the stored body must be the bytes that were sent, or the
+    # sha256 the daemon stores stops describing what the model was told.
+    got_len=$(jq -r '.user.body' "$bigout/step_prompt.json" | head -c 200000 | wc -c | tr -d ' ')
+    want_eq "$got_len" "$((big_bytes + 1))" \
+        "the large part round-trips byte for byte (plus jq's trailing newline on read)" \
+        "the large part was truncated or padded"
+else
+    bad "a prompt part at MAX_ARG_STRLEN was dropped (E2BIG from jq --arg)"
+fi
+
 echo "================================"; echo "PASSED: $pass"; echo "FAILED: $fail"
 [ "$fail" -eq 0 ]

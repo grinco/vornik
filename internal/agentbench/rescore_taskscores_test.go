@@ -35,7 +35,10 @@ func TestRescore_RefusesJournalCarryingTaskScores(t *testing.T) {
 		t.Fatal("rescored a journal carrying task scores: the result would be stamped " +
 			"with the current harness while its release metric was computed under the old one")
 	}
-	if !strings.Contains(err.Error(), "task score") {
+	// Case-insensitive: the refusal that fires here since D3' emphasises
+	// "TASK SCORES", and the assertion is about the refusal NAMING them,
+	// not about its typography.
+	if !strings.Contains(strings.ToLower(err.Error()), "task score") {
 		t.Errorf("refusal should name task scores, got: %v", err)
 	}
 }

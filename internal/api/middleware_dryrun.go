@@ -31,6 +31,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog/log"
 	"vornik.io/vornik/internal/apikey"
+	"vornik.io/vornik/internal/authsession"
 )
 
 const (
@@ -160,7 +161,7 @@ func dryRunVerdict(r *http.Request, cfg *AuthConfig, apiKey string) string {
 	// The disabled-branch resolution ran first; if the cookie failed
 	// (no identity stamped, checked in step 2 above), it's dead.
 	if cfg.SessionBackend != nil {
-		if _, err := r.Cookie("vornik_session"); err == nil {
+		if _, err := r.Cookie(authsession.SessionCookieName); err == nil {
 			// Cookie present but identity was nil (step 2 returned no "").
 			return dryRunVerdictDeadSession
 		}

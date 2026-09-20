@@ -337,10 +337,18 @@ func (h *DoctorHandlers) legacyFreshness(ctx context.Context, daemonRev string) 
 		readRevision = realImageRevision
 	}
 
+	// ONE budget covering every registry lookup, not one per image. See
+	// freshnessBudget: a host with DNS but no route to the registry is what
+	// makes a per-image timeout feel like a hang.
+	budgetCtx, cancelBudget := context.WithTimeout(ctx, freshnessBudget)
+	defer cancelBudget()
+
 	var (
-		stale      []string
-		unlabelled []string
-		unreadable []string
+		stale         []string
+		unlabelled    []string
+		unreadable    []string
+		notVerified   []string
+		indeterminate []string
 	)
 	for _, img := range imagemanifest.Deployable(prober) {
 		rev, labelled, err := readRevision(ctx, img.Tag)
@@ -351,6 +359,26 @@ func (h *DoctorHandlers) legacyFreshness(ctx context.Context, daemonRev string) 
 			continue
 		case err != nil:
 			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", img.Tag, err))
+			continue
+		}
+
+		// THE TAG RULE (amendment 2026-09-18, E1). A published image's label
+		// is a CE commit and the daemon's is an EE one, so comparing them can
+		// only ever fail. imagemanifest.Decide already branches on the tag for
+		// exactly this reason; this is the freshness check catching up.
+		if registryTagged(img.Tag) {
+			verdict := h.decideRegistryImage(budgetCtx, img.Tag, daemonRev, rev, labelled)
+			switch {
+			case verdict.OK:
+			case verdict.NotVerified:
+				notVerified = append(notVerified, verdict.Detail)
+			default:
+				indeterminate = append(indeterminate, verdict.Detail)
+			}
+			continue
+		}
+
+		switch {
 		case !labelled:
 			unlabelled = append(unlabelled, img.Tag)
 		case !revisionsMatch(rev, daemonRev):
@@ -362,8 +390,24 @@ func (h *DoctorHandlers) legacyFreshness(ctx context.Context, daemonRev string) 
 	sort.Strings(stale)
 	sort.Strings(unlabelled)
 	sort.Strings(unreadable)
+	sort.Strings(notVerified)
+	sort.Strings(indeterminate)
 
 	switch {
+	case len(indeterminate) > 0:
+		// Reported BEFORE not-verified: this one has evidence behind it and an
+		// operator decision to make. Both readings are named and no bare pull
+		// is printed — pulling fixes a stale pull and destroys a local build,
+		// and which of the two this is cannot be recovered by inspection.
+		return DoctorCheck{
+			Name:   name,
+			Status: "WARNING",
+			Message: fmt.Sprintf("%d image(s) are not the build the registry serves, and the reason "+
+				"is not recoverable by inspection. Read the per-image line before acting: the "+
+				"right command differs between the two cases and one of them is destructive.",
+				len(indeterminate)),
+			Items: append(indeterminate, notVerified...),
+		}
 	case len(stale) > 0:
 		return DoctorCheck{
 			Name:   name,
@@ -389,6 +433,23 @@ func (h *DoctorHandlers) legacyFreshness(ctx context.Context, daemonRev string) 
 				"cannot be verified. They predate provenance labelling; rebuild them to make "+
 				"drift detectable.", len(unlabelled)),
 			Items: unlabelled,
+		}
+	case len(notVerified) > 0:
+		// A couldn't-check, reported as one and carrying NO remedy. The §4
+		// harm in the defect this replaced was never the warning line — it was
+		// that the line told an operator to run `vornik-update.sh --force`,
+		// which rebuilt seven images to fix nothing. An air-gapped host sees
+		// this permanently, and that is honest: E2a already resolved every
+		// locally-built image offline, so what remains here was genuinely
+		// pulled and genuinely cannot be checked without the registry.
+		return DoctorCheck{
+			Name:   name,
+			Status: "WARNING",
+			Message: fmt.Sprintf("%d published image(s) NOT VERIFIED — the registry could not be "+
+				"consulted, so their freshness was not established. This is not a statement that "+
+				"they are stale, and there is nothing to run: the per-image line says which of "+
+				"registry-unreachable, skopeo-absent or budget-exhausted applied.", len(notVerified)),
+			Items: notVerified,
 		}
 	default:
 		return DoctorCheck{

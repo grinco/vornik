@@ -131,12 +131,21 @@ func TestIssueLinkCode_ShapeAndHashOnlyStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueLinkCode: %v", err)
 	}
-	if len(code) != linkCodeLength {
-		t.Errorf("code %q has length %d, want %d", code, len(code), linkCodeLength)
+	// UPDATED 2026-09-19 (§5.2b): an issued code is now marker + body + check
+	// character, so the shape assertions move to the BODY. The marker is not
+	// secret and adds no entropy — it exists so that recognising a code is a
+	// local decision rather than a question for the code store, which would be
+	// the redemption oracle §5.2 refuses to build.
+	body, marked := splitMarkedLinkCode(code)
+	if !marked {
+		t.Fatalf("issued code %q is not recognisable as a code", code)
 	}
-	for _, r := range code {
+	if len(body) != linkCodeLength {
+		t.Errorf("code body %q has length %d, want %d", body, len(body), linkCodeLength)
+	}
+	for _, r := range body {
 		if !strings.ContainsRune(linkCodeAlphabet, r) {
-			t.Errorf("code %q contains %q, which is outside the unambiguous alphabet", code, r)
+			t.Errorf("code body %q contains %q, which is outside the unambiguous alphabet", body, r)
 		}
 	}
 

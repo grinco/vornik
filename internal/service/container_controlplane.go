@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -525,27 +526,25 @@ func (c *Container) newProposalApplier() *controlplane.ApplyEngine {
 	// the project's canonical .autonomy/PROJECT_CONTEXT.md, so it is
 	// registered only when a runtime workspace root is configured. Config is
 	// nil in callers that build a bare Container, so guard it.
+	// The workspace tree is a NAMED APPLY ROOT, not a kind-applier
+	// (config-apply-journal design §9.2b/c). The write it carries is an
+	// ordinary file apply, so it gets the journal's pre-image, fenced rollback
+	// and post-reload verification for free — and the second recovery protocol
+	// that existed only because it could not is gone.
+	//
+	// Held on the container as well as the engine because
+	// verifyConfigGeneration must resolve an op the SAME way the engine wrote
+	// it; two spellings of one mapping is how a write succeeds and its
+	// verification looks in the wrong tree.
 	if c.Config != nil && c.Config.Runtime.ProjectWorkspacePath != "" {
-		if engine.KindAppliers == nil {
-			engine.KindAppliers = map[string]controlplane.KindApplier{}
+		if c.applyRoots == nil {
+			c.applyRoots = map[string]string{}
 		}
-		ws := &controlplane.WorkspaceContextApplier{
-			WorkspaceRoot: c.Config.Runtime.ProjectWorkspacePath,
-			// Root for the non-workspace entries of the proposal's read set,
-			// so every dependency is re-checked before the write, not only
-			// the target file (audit 2026-09-15 CA-06).
-			ConfigDir: filepath.Dir(c.ConfigPath),
-			// The rollback record is committed to the ledger BEFORE the
-			// context file is touched. Without this the engine only stored
-			// it in MarkApplied, after the mutation.
-			PreImage: func(ctx context.Context, proposalID, snapshot string) error {
-				return c.repos.Proposals.StagePreApplySnapshot(ctx, proposalID, snapshot)
-			},
+		c.applyRoots[controlplane.WorkspaceRootName] = c.Config.Runtime.ProjectWorkspacePath
+		if engine.Roots == nil {
+			engine.Roots = map[string]string{}
 		}
-		if elector := c.configWriter(); elector != nil {
-			ws.LeaderGate = elector
-		}
-		engine.KindAppliers[persistence.ProposalKindWorkspaceContext] = ws
+		engine.Roots[controlplane.WorkspaceRootName] = c.Config.Runtime.ProjectWorkspacePath
 	}
 	c.attachApplyJournal(engine)
 	return engine
@@ -656,18 +655,24 @@ func (c *Container) StopConfigWriterLease(ctx context.Context) error {
 // What this DOES cover: a reload that reported success while the deployed
 // file was reverted, truncated, or rewritten by another writer between the
 // rename and the reload. What it does NOT cover: whether the in-memory
-// registry re-parsed those bytes — that needs a generation identifier the
-// registry does not yet expose, and configGeneration below is a content
-// digest standing in for one. The distinction is stated rather than papered
-// over, because a check that cannot tell "verified" from "not examined"
-// reports the first and means the second.
-func (c *Container) verifyConfigGeneration(_ context.Context, ops []controlplane.JournaledOp) error {
+// registry re-parsed those bytes. CLOSED 2026-09-19 (CA-19): the registry now
+// exposes an activation counter, configGeneration carries it alongside the
+// content digest, and the check below refuses a reload that did not advance it.
+// Before that, a reload which silently kept the old configuration produced the
+// same two markers as one that worked — a check that could not tell "verified"
+// from "not examined", reporting the first and meaning the second.
+func (c *Container) verifyConfigGeneration(_ context.Context, ops []controlplane.JournaledOp, generationBefore string) error {
 	if len(ops) == 0 {
 		return nil
 	}
+
+	// HALF ONE: the bytes on disk are the bytes the apply intended.
+	// HALF TWO (below): the running registry re-read them. Neither implies the
+	// other — a correct file with a no-op reload is the CA-19 case, and a moved
+	// generation with reverted content is a rollback that raced the reload.
 	root := filepath.Dir(c.ConfigPath)
 	for _, op := range ops {
-		target, err := safepath.JoinUnder(root, op.Path)
+		target, err := c.resolveVerifyTarget(root, op.Path)
 		if err != nil {
 			return fmt.Errorf("verify generation: %s: %w", op.Path, err)
 		}
@@ -679,14 +684,65 @@ func (c *Container) verifyConfigGeneration(_ context.Context, ops []controlplane
 			return fmt.Errorf("verify generation: %s does not hold the applied content after reload (want %s, got %s)", op.Path, op.ContentSHA256, got)
 		}
 	}
+
+	// A generation recorded before this counter shipped, or from a daemon that
+	// exposes none, carries no counter — accept it rather than fail every
+	// in-flight journal row across the upgrade. The content half still applies.
+	beforeN, ok := generationCounter(generationBefore)
+	if !ok {
+		return nil
+	}
+	if now := c.Registry.Generation(); now <= beforeN {
+		return fmt.Errorf(
+			"verify generation: the files hold the applied content but the registry did not re-parse them "+
+				"(generation still %d after reload); the configuration serving requests is the previous one",
+			now)
+	}
 	return nil
 }
 
-// configGeneration is the journal's generation_before/after marker: a digest
-// over the deployed tree's resolved project set. It is not a registry
-// generation counter — the registry has none — so it identifies WHAT is
-// resolved, not how many times it changed. That is enough for the journal's
-// purpose: telling two generations apart.
+// resolveVerifyTarget resolves an op's path the way the APPLY ENGINE did, named
+// roots included (design §9.2b/c).
+//
+// It must agree with `ApplyEngine.resolveTarget` or the verification looks in
+// the wrong tree: a workspace-rooted op would be sought under the config dir,
+// not found, and the journal would fail a write that SUCCEEDED. Found while
+// designing the cutover rather than after shipping it, which is why the cutover
+// is four steps and not a registration.
+func (c *Container) resolveVerifyTarget(configRoot, rel string) (string, error) {
+	if name, rest, found := strings.Cut(rel, "/"); found && strings.TrimSpace(rest) != "" {
+		if root, ok := c.applyRoots[name]; ok && root != "" {
+			return safepath.JoinUnder(root, rest)
+		}
+	}
+	return safepath.JoinUnder(configRoot, rel)
+}
+
+// generationCounter reads the activation counter out of a generation marker.
+// The marker is "<counter>:<digest>"; anything else is a pre-counter marker
+// and reports ok=false rather than 0, because 0 is a real counter value and a
+// missing one is not a claim of any kind.
+func generationCounter(marker string) (uint64, bool) {
+	idx := strings.IndexByte(marker, ':')
+	if idx <= 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(marker[:idx], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// configGeneration is the journal's generation_before/after marker:
+// "<activation counter>:<digest over the resolved project set>".
+//
+// Both halves earn their place. The COUNTER answers "did the registry re-parse
+// since you last looked", which is what §1.3 actually asserts and what a digest
+// can never show — two applies resolving to identical content produce identical
+// digests whether or not the second one was ever read. The DIGEST answers "what
+// is resolved now", which is what an operator reading a journal row wants and
+// which a counter cannot say.
 func (c *Container) configGeneration() string {
 	if c.Registry == nil {
 		return ""
@@ -706,7 +762,7 @@ func (c *Container) configGeneration() string {
 			}
 		}
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))
+	return fmt.Sprintf("%d:%x", c.Registry.Generation(), h.Sum(nil))
 }
 
 // configApplyBlockedGate is the scheduler's per-project admission gate for
@@ -767,12 +823,12 @@ func (c *Container) ReconcileConfigApplyJournal(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
-	// Kind-appliers bypass the journal by design, so their staged pre-images
-	// need their own recovery pass or a write that landed without its ledger
-	// transition is unrecoverable (re-audit 2026-09-15, CA-06).
-	if err := engine.RecoverStagedKindApplies(ctx); err != nil {
-		errs = append(errs, err)
-	}
+	// The staged-kind recovery pass that stood here is GONE (2026-09-19). It
+	// existed because the workspace-context write bypassed the journal, and
+	// that write is now an ordinary journaled file apply under a named root —
+	// so engine.Reconcile above covers it. The remaining kind-applier
+	// (instinct_retire) mutates a database row inside its own transaction and
+	// has no half-written file to recover.
 	return errors.Join(errs...)
 }
 

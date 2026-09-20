@@ -31,6 +31,22 @@ type Registry struct {
 	// back to this map. Lazily initialised by RegisterTransient.
 	transient map[string]*Workflow
 	configDir string
+	// generation counts ACTIVATIONS — every promotion of a staged snapshot
+	// to active, whether or not the content changed.
+	//
+	// It exists because the config apply journal records generation_before and
+	// generation_after around a reload and treats the pair as evidence that
+	// the running registry re-parsed the bytes an apply had just written. The
+	// marker standing in for it was a digest over the resolved project set,
+	// which identifies WHAT is resolved and says nothing about whether
+	// anything was re-read — so an apply whose reload silently did nothing was
+	// indistinguishable from one that worked, which is the
+	// cannot-tell-verified-from-not-examined shape (CA-19,
+	// 2026-09-13-config-apply-journal-design.md §9.2).
+	//
+	// Counts identical content too, deliberately: a counter that moved only on
+	// a change would be the digest again.
+	generation uint64
 }
 
 // ConfigSet represents a fully loaded, validated registry snapshot.
@@ -126,7 +142,37 @@ func (r *Registry) Reload() error {
 	if r.configDir == "" {
 		return fmt.Errorf("no config directory configured")
 	}
-	return r.Load(r.configDir)
+
+	// A RELOAD is gated where the initial Load is not, and the asymmetry is the
+	// point: here there is a known-good configuration already serving, so
+	// refusing a tree that lost a file is strictly safer than promoting it.
+	//
+	// Incident 2026-09-10 (~30 min outage): `autonomy.feeds` was written into
+	// the deployed tree of a running daemon whose binary predated the field.
+	// KnownFields(true) makes an unknown key fatal to the document, loadProjects
+	// SKIPS a file it cannot parse, and the reload then activated a set with the
+	// `assistant` project simply absent — autonomy, chat and email went dark
+	// together. The daemon never restarted, so a startup gate would not have
+	// fired; the reload path is where this has to be caught.
+	//
+	// Design: 2026-08-27-loader-validator-agreement-design.md §12.
+	if err := r.Stage(r.configDir); err != nil {
+		return err
+	}
+	if rejected := r.stagedRejections(); len(rejected) > 0 {
+		// Drop the snapshot so no later ActivateStaged can promote the tree
+		// this call just refused.
+		r.discardStaged()
+		return &ReloadRejectedError{Rejected: rejected}
+	}
+	warnings := r.StripInvalidFromStaged()
+	if err := r.ActivateStaged(); err != nil {
+		return err
+	}
+	if warnings != nil {
+		return warnings
+	}
+	return nil
 }
 
 // ConfigDir returns the directory the registry currently reads
@@ -404,6 +450,23 @@ func (r *Registry) ActivateStaged() error {
 	return nil
 }
 
+// Generation reports how many times a configuration snapshot has been promoted
+// to active in this process. It is the apply journal's evidence that a reload
+// re-parsed: an apply whose generation_after equals its generation_before did
+// NOT reach the registry, whatever the file on disk says.
+//
+// Process-local and not durable: it answers "did THIS daemon re-read since I
+// looked", which is the question the journal asks, and a restart legitimately
+// restarts the count.
+func (r *Registry) Generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.generation
+}
+
 // DiffStaged reports the change set between the active and staged snapshots.
 func (r *Registry) DiffStaged() (ConfigDiff, error) {
 	r.mu.RLock()
@@ -432,6 +495,11 @@ func (r *Registry) DiffStaged() (ConfigDiff, error) {
 }
 
 func (r *Registry) applyActiveLocked(cfg *ConfigSet) {
+	// Bumped HERE rather than in ActivateStaged so every path that promotes a
+	// snapshot counts — the initial load, a reload, and any future promoter —
+	// without each having to remember to. A refused activation never reaches
+	// this function, so it cannot advance the counter.
+	r.generation++
 	r.active = cfg
 	r.projects = cfg.projects
 	r.swarms = cfg.swarms

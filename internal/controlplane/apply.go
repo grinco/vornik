@@ -47,6 +47,12 @@ var (
 	ErrDaemonAckRequired = errors.New("control-plane: daemon-scope apply requires acknowledgement")
 	// ErrPathTraversal means apply_target escapes the config dir.
 	ErrPathTraversal = errors.New("control-plane: apply target escapes the config directory")
+
+	// ErrReservedRootPath is an op whose path IS a root name with nothing
+	// beneath it (design §9.2b). Root names are reserved, so such a path is
+	// either a bug or an attempt to write a file where a root belongs — and it
+	// is refused rather than quietly resolved under the config directory.
+	ErrReservedRootPath = errors.New("control-plane: apply target names a reserved root, not a file under one")
 	// ErrContentTooLarge means the apply content exceeds the size cap.
 	ErrContentTooLarge = errors.New("control-plane: apply content too large")
 	// ErrApplyInProgress means another apply/rollback holds the global lock.
@@ -150,6 +156,21 @@ type ApplyEngine struct {
 	Mirror func(proposalID string, files map[string][]byte) error
 	Logger zerolog.Logger
 
+	// Roots maps a ROOT NAME to an absolute path an op may resolve under,
+	// beside ConfigDir (design §9.2b).
+	//
+	// It exists so a write outside the config tree can go through the JOURNAL
+	// rather than around it. The workspace-context write was a KindApplier for
+	// exactly one reason — resolveTarget joined every op under a single
+	// ConfigDir — and that bypass took durable recovery with it, leaving a
+	// second recovery protocol beside the journal. Two mechanisms for one
+	// invariant is the shape this repository's tenet warns about.
+	//
+	// Root names are RESERVED: the registry validator refuses a config subtree
+	// whose top-level name matches one, because a silent shadow here would
+	// write a config file into a workspace.
+	Roots map[string]string
+
 	// KindAppliers routes proposal Kinds that mutate application state
 	// directly (rather than a deployed config file) to a registered
 	// KindApplier — see kind_applier.go. Nil/absent-kind falls through to
@@ -173,7 +194,12 @@ type ApplyEngine struct {
 	// resolved runtime carries the intended content (§1.3: a reload that
 	// returns nil but leaves the old generation active is NOT applied). Nil
 	// accepts reload success.
-	VerifyGeneration func(ctx context.Context, ops []JournaledOp) error
+	//
+	// It is handed the generation recorded at PREPARE so it can check the
+	// second half of that sentence as well as the first: bytes on disk prove
+	// the write survived, and only a moved generation proves the running
+	// registry re-parsed them (§9.2, CA-19).
+	VerifyGeneration func(ctx context.Context, ops []JournaledOp, generationBefore string) error
 	// RestartOnly reports whether every changed key is restart-only (the
 	// featuredoctor RestartRequired classification), in which case the
 	// journal ends PENDING_RESTART with the ledger APPLIED (§3). Nil → never.
@@ -209,11 +235,57 @@ func (e *ApplyEngine) resolveTarget(rel string) (string, error) {
 	// rel is proposal-authored, so absolute paths must be rejected rather than
 	// silently re-targeted under ConfigDir. JoinUnderRel keeps that input-shape
 	// contract while preserving JoinUnder's containment checks.
+	//
+	// NAMED ROOTS (design §9.2b) are checked FIRST, and only on an exact match
+	// of the first segment. An unknown first segment resolves under ConfigDir
+	// exactly as it always has — otherwise registering a root would silently
+	// re-target every op whose path happened to begin with that word.
+	// A path that IS a root name, with nothing under it, is refused rather than
+	// resolved under ConfigDir: root names are reserved, so such an op is
+	// either a bug or an attempt to write a file where a root should be.
+	if e.isReservedRootName(rel) {
+		return "", ErrReservedRootPath
+	}
+	if root, rest, ok := e.namedRoot(rel); ok {
+		full, err := safepath.JoinUnderRel(root, rest)
+		if err != nil {
+			return "", ErrPathTraversal
+		}
+		return full, nil
+	}
 	full, err := safepath.JoinUnderRel(e.ConfigDir, rel)
 	if err != nil {
 		return "", ErrPathTraversal
 	}
 	return full, nil
+}
+
+// isReservedRootName reports whether rel names a root and nothing beneath it.
+func (e *ApplyEngine) isReservedRootName(rel string) bool {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(rel), "/")
+	if trimmed == "" {
+		return false
+	}
+	_, ok := e.Roots[trimmed]
+	return ok
+}
+
+// namedRoot splits rel into (root path, remainder) when its first segment names
+// a configured root. The remainder must be non-empty: a bare root name is a
+// directory, and an op that writes one is a bug rather than a file.
+func (e *ApplyEngine) namedRoot(rel string) (string, string, bool) {
+	if len(e.Roots) == 0 {
+		return "", "", false
+	}
+	name, rest, found := strings.Cut(rel, "/")
+	if !found || strings.TrimSpace(rest) == "" {
+		return "", "", false
+	}
+	root, ok := e.Roots[name]
+	if !ok || root == "" {
+		return "", "", false
+	}
+	return root, rest, true
 }
 
 // Apply applies an APPROVED proposal. Returns nil only after the new config
@@ -806,6 +878,19 @@ func (e *ApplyEngine) reload() error {
 // on every error path — no .bak, no stray copy left behind.
 func atomicWrite(target string, data []byte) error {
 	dir := filepath.Dir(target)
+	// CREATE THE PARENT. The config tree's directories always exist, so this
+	// was never needed there — but a named root can point at a tree where they
+	// do not, and the workspace root is exactly that: a project's
+	// `.autonomy/` may not exist before its first context write. The applier
+	// this path replaced did the same MkdirAll, and dropping it in the move
+	// would have turned a working write into "no such file or directory"
+	// (caught by the writer-lease test, 2026-09-19).
+	//
+	// 0o700: the parent of a file we write 0600 should not be wider than the
+	// file.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dir, ".cp-apply-*.tmp")
 	if err != nil {
 		return err

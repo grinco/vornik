@@ -32,6 +32,8 @@ already have a project up and running — if you don't, start with
   with budgets, dynamic tool budgets, caching, and rate limits.
 - **[Named secrets](secrets.md)** — inject credentials into a project's agents
   as environment variables, scoped to the projects allowed to use them.
+- **[Signing in to the console](browser-login.md)** — browser sessions: SSO on
+  Enterprise, and exchanging an API key for a bounded session on Community.
 - **[Observability](observability.md)** — the operator dashboards, the spend
   and Insight views, and the Prometheus metrics endpoint.
 - **[Storage and retention](storage-and-retention.md)** — understand what

@@ -40,6 +40,9 @@ type Accounts struct {
 	// claims bounds key-claim attempts per target key across EVERY door
 	// (audit 2026-09-15 CA-09). See claim_limiter.go.
 	claims *claimLimiter
+	// claimAttempts is the durable, cluster-wide claim bound (§5.4
+	// follow-up). Nil falls back to the process-local bucket above.
+	claimAttempts persistence.KeyClaimAttemptRepository
 }
 
 // Actor names who performed an account-management action, for the audit

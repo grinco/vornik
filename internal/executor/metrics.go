@@ -114,6 +114,30 @@ type Metrics struct {
 	// (taint-lineage-tracking §8/§14 — watch the unknown/low volume before any
 	// project flips to enforce). Incremented once per classified agent step.
 	StepTaintTotal *prometheus.CounterVec
+	// OutputEnumViolationTotal counts values the agent emitted that the schema
+	// it was handed does not admit, by role and field path.
+	//
+	// This is the provider-enforcement signal. An out-of-enum value can only
+	// be OBSERVED here if it arrived, and it can only arrive if the emitted
+	// enum went unenforced — so a non-zero count means something on the
+	// provider side of the wire did not do what was asked. It replaces D5's
+	// "read a non-zero ExtraCaseCount on the next arm" test, which the
+	// receipt-time backstop silently zeroes out, and it answers on the first
+	// execution that trips it rather than on the next scored arm.
+	//
+	// It does NOT subdivide: provider-ignored, provider-coerced-to-its-own-
+	// schema and a daemon-side validator false positive all land here
+	// identically. Read it beside PinnedCaseEnumInstalledTotal, which is what
+	// separates "the daemon never pinned" from "the provider side".
+	OutputEnumViolationTotal *prometheus.CounterVec
+	// PinnedCaseEnumInstalledTotal counts executions where the producer's
+	// pinned ids were actually installed on the verifier's emitted schema.
+	//
+	// Exists only to disambiguate the counter above. A violation with no
+	// install means applyPinnedCaseEnum found no readable producer evidence or
+	// no id node to pin, and the bug is ours — without this, that case reads
+	// as provider non-enforcement and libels the provider for a daemon defect.
+	PinnedCaseEnumInstalledTotal *prometheus.CounterVec
 
 	// ModelSuccessRate is success / (success+failed+timeout) per (role, model).
 	// Cancelled outcomes are excluded: a user-initiated cancel should not
@@ -552,6 +576,24 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Help:      "Per-task cost-governor step-boundary evaluations by outcome tier (ok/soft/hard), per project. Not deduped — a persistent soft breach increments each step (time-in-tier signal).",
 			},
 			[]string{"project", "tier"},
+		),
+		OutputEnumViolationTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "output_enum_violation_total",
+				Help:      "Agent-emitted values outside the enum of the schema the model was handed, by role and field path. Non-zero = the emitted enum was not enforced on the provider side (ignored, or coerced to the provider's own schema) OR the daemon's validator is wrong. Read beside vornik_executor_pinned_case_enum_installed_total, which rules out the daemon-never-pinned case.",
+			},
+			[]string{"role", "field"},
+		),
+		PinnedCaseEnumInstalledTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "pinned_case_enum_installed_total",
+				Help:      "Executions where a pinned_case_validation verifier's emitted schema actually carried the producer's pinned case ids. A violation with no install means the daemon never pinned, not that the provider ignored the enum.",
+			},
+			[]string{"role"},
 		),
 		StepTaintTotal: promauto.With(registerer).NewCounterVec(
 			prometheus.CounterOpts{

@@ -1454,6 +1454,11 @@ func (c *Container) initHTTPServer() error {
 		// independently of the shim: redemption is what CREATES the bindings
 		// the shim later resolves, so it must work before the shim has
 		// anything to find.
+		// §5.2b, on the same shared instance and for the same reason as the
+		// shim: one guard means one counter over one population.
+		for _, ch := range skChannels {
+			ch.SetLinkCodeExposureGuard(c.linkCodeExposureGuard())
+		}
 		if acc := c.accountsService(); acc != nil {
 			for _, ch := range skChannels {
 				ch.SetAccountLinker(acc)
@@ -1491,6 +1496,46 @@ func (c *Container) initHTTPServer() error {
 	sessionLogin := c.buildSessionLogin()
 	if sessionLogin != nil {
 		apiOpts = append(apiOpts, api.WithServerSessionBackend(sessionLogin.backend))
+	}
+
+	// CE credential→session exchange (ce-human-login-design §4). Built
+	// here for the same reason as the EE login above: the session backend
+	// has to join the api server's auth chain, and the server is
+	// constructed on the next line.
+	//
+	// THEY ARE MUTUALLY EXCLUSIVE, and an earlier comment here claimed the
+	// opposite — that if a deployment had both, "the EE login wins the chain
+	// slot and the exchange still mints sessions the EE backend can read,
+	// because they are the SAME store and the SAME backend type". Same type,
+	// DIFFERENT INSTANCE: the EE provider never sets Credentials or Revoker,
+	// so its backend cannot apply the capping rule. A credential-minted
+	// session presented to it hits ErrCredentialUncheckable and is refused.
+	//
+	// That fails CLOSED, so it was never an authority hole — but it is a door
+	// that mints cookies nothing will authenticate, which is worse than not
+	// offering the door. Found by the implementation review
+	// (review-20260919-76da, suggestion 5a) asking whether the caller mounts
+	// the backend in the same branch that applies the options. It did not.
+	//
+	// So the exchange is not enabled beside the EE login, and the refusal is
+	// LOUD: a silent omission here would present as "login returns 204 and
+	// then nothing works", which is the hardest shape to diagnose.
+	credentialSession := c.buildCredentialSession()
+	switch {
+	case credentialSession == nil:
+		// Not enabled, or a gate declined — buildCredentialSession logs why.
+	case sessionLogin != nil:
+		c.Logger.Warn().
+			Msg("auth.session.credential_exchange is ON while browser login is also configured; " +
+				"the exchange is NOT enabled. The login flow owns the session backend on this " +
+				"deployment and cannot apply the credential capping rule, so the exchange would " +
+				"mint cookies that every subsequent request refuses. Use one or the other.")
+	default:
+		apiOpts = append(apiOpts, api.WithServerSessionBackend(credentialSession.backend))
+		apiOpts = append(apiOpts, credentialSession.options...)
+		c.Logger.Info().
+			Bool("allow_insecure", c.Config.Auth.Session.AllowInsecureExchange).
+			Msg("credential session exchange enabled: POST /api/v1/auth/session")
 	}
 
 	apiServer := api.NewServer(apiOpts...)
@@ -1546,6 +1591,7 @@ func (c *Container) initHTTPServer() error {
 				ConfigPath:     c.ConfigPath,
 				WorkspaceRoot:  c.Config.Runtime.ProjectWorkspacePath,
 				SecretSnapshot: dh.SecretFieldsSnapshot,
+				Slots:          c.classESlotStore(),
 				Usage: func(ctx context.Context, projectID, _ string, model string, prompt, completion int) {
 					spend.Record(ctx, llmspend.Input{ProjectID: projectID, Model: model, PromptTokens: prompt, CompletionTokens: completion})
 				},
@@ -1563,6 +1609,10 @@ func (c *Container) initHTTPServer() error {
 		// runs before initHTTPServer (container.go:1097), so the tally exists by now.
 		// Nil is handled anyway — the check reports "nothing to assess".
 		dh.SetChatCallStats(c.ChatCallStats)
+		// Slack slash-command reconciliation (2026-09-15 incident): the
+		// reporter reads c.SlackChannels at call time, so a reload that
+		// rebuilds a channel needs no re-wiring here.
+		dh.SetSlashCommandReporter(slashCommandReporter{c: c})
 		// Role-library doctor check (composer task 1.1b concern-2): a
 		// role-library entry's tool may legitimately name a system-step
 		// handler (e.g. "rag.extract") instead of a built-in/mcp__ tool;
@@ -2841,10 +2891,31 @@ func (c *Container) newAccountsService(identity persistence.IdentityRepository) 
 	if c.repos.APIKeys != nil {
 		acc.WithAPIKeys(c.repos.APIKeys)
 	}
+	// §5.4's claim bound, durable. Without it the bound falls back to a
+	// process-local bucket, which is correct for a single-process deployment
+	// and silently weaker for a replicated one — so it is wired here rather
+	// than left to whoever notices.
+	if c.repos.KeyClaimAttempts != nil {
+		acc.WithClaimAttempts(c.repos.KeyClaimAttempts)
+	}
 	// §5.2's profile half of redemption. Nil on a deployment with no
 	// operator-profile store, which has no profile to move.
 	if l := c.profileLinkerFor(); l != nil {
 		acc.WithProfileLinker(l)
 	}
 	return acc
+}
+
+// classESlotStore returns the class-E admission slot store, or nil when the
+// deployment has no repository wired.
+//
+// Returned as an interface with an explicit nil check rather than handing the
+// struct pointer straight through: a typed nil in an interface is not nil, and
+// the assistant's "no store wired" branch tests the interface. That distinction
+// has bitten this codebase before, and here it would silently disable a quota.
+func (c *Container) classESlotStore() configassist.SlotStore {
+	if c == nil || c.repos == nil || c.repos.ClassESlots == nil {
+		return nil
+	}
+	return c.repos.ClassESlots
 }

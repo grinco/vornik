@@ -3003,4 +3003,13 @@ type UISession struct {
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 	IP         string     `json:"ip,omitempty"`
 	UserAgent  string     `json:"user_agent,omitempty"`
+	// OriginCredentialID is the API key that minted this session, or empty
+	// for an OIDC login — which has no originating credential and must not
+	// be made to invent one (ce-human-login-design §4).
+	//
+	// It is what the per-request capping rule asks about: is the key that
+	// minted this session still live, and still mapped to this user? A
+	// session whose origin is empty is not capped by a credential, because
+	// no credential minted it.
+	OriginCredentialID string `json:"origin_credential_id,omitempty"`
 }

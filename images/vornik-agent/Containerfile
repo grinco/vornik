@@ -117,7 +117,8 @@ RUN userdel --remove ubuntu 2>/dev/null || true \
  && groupadd --gid "$VORNIK_GID" vornik \
  && useradd --uid "$VORNIK_UID" --gid "$VORNIK_GID" --create-home --shell /bin/bash vornik \
  && mkdir -p /app/input /app/output /app/workspace \
- && chown -R vornik:vornik /app
+ && chown -R vornik:vornik /app \
+ && chmod 1777 /app/input /app/output /app/workspace /home/vornik
 
 COPY --from=builder /bin/mcp-bridge /usr/local/bin/mcp-bridge
 COPY --from=builder /bin/vornik-agent-helper /usr/local/bin/vornik-agent-helper
@@ -136,10 +137,43 @@ ENV PATH=/usr/local/go/bin:$PATH \
     GOCACHE=/home/vornik/.cache/go-build \
     GOMODCACHE=/home/vornik/go/pkg/mod
 
+# The image must work when the process runs as a uid it did not bake.
+#
+# Incident 2026-09-17/18: the published image bakes 1000 because CI does not
+# pass VORNIK_UID, and on a uid-1001 host every agent step died on permission
+# denied — 9 hours of total outage. runtime.run_as_user (podman --user) fixes
+# WHO the process is but cannot fix what the image OWNS, so without this the
+# workspace came back and every `go build` inside the agent still failed on an
+# unwritable GOCACHE — the coder role's whole function, broken quietly.
+#
+# 1777 is the /tmp convention: any uid may write, the sticky bit stops one
+# deleting another's files. It is bounded by this container's own filesystem —
+# these paths are not shared between containers — so it is not the
+# world-writable HOST directory the design's non-goals reject.
+#
+# VORNIK_UID/VORNIK_GID are still honoured: `make build-agent` bakes a matching
+# uid, which stays the tidiest arrangement. It is simply no longer what makes
+# the image work. Pinned by images/vornik-agent/test-image-uid-agnostic.sh.
+RUN mkdir -p /home/vornik/go/pkg/mod /home/vornik/.cache/go-build \
+ && chown -R vornik:vornik /home/vornik \
+ && chmod -R a+rwX /home/vornik \
+ && chmod 1777 /home/vornik /home/vornik/go /home/vornik/go/pkg /home/vornik/go/pkg/mod \
+               /home/vornik/.cache /home/vornik/.cache/go-build
+
 COPY --chown=vornik:vornik images/vornik-agent/entrypoint.sh /entrypoint.sh
 # The generated tool registry the entrypoint sources (internal/agenttools -> docs-gen tools).
 COPY --chown=vornik:vornik images/vornik-agent/tool_registry.generated.sh /tool_registry.generated.sh
 RUN chmod +x /entrypoint.sh
+
+# Declares that this image works as ANY uid (the 1777 paths above), so the
+# daemon's agent_image_uid doctor check can answer without starting a
+# container. `podman image inspect` reads it in ~55ms; the `id -u` probe it
+# replaces takes 5.92-12.55s cold on this 1.3GB image and is what CE issue 59
+# reports being SIGKILLed by its own deadline on every doctor run.
+#
+# The value is the contract version, so a future change to which paths are
+# writable can bump it rather than having to invent a second label.
+LABEL io.vornik.agent.uid-agnostic="1"
 
 WORKDIR /app/workspace
 USER vornik:vornik

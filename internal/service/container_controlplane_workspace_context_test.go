@@ -58,11 +58,15 @@ func TestNewProposalApplierSurvivesNilConfig(t *testing.T) {
 	}
 }
 
-// TestNewProposalApplierWiresWorkspaceContext asserts the other half: with a
-// runtime workspace path configured, the workspace_context kind IS registered
-// and carries that root, so an approved virtual PROJECT_CONTEXT.md proposal
-// has somewhere to land.
-func TestNewProposalApplierWiresWorkspaceContext(t *testing.T) {
+// UPDATED 2026-09-19 (config-apply-journal design §9.2b/c). This asserted that
+// the workspace_context KIND APPLIER was registered. It no longer exists: the
+// write was on that seam only because the apply engine could resolve ops under
+// exactly one root, so it bypassed the journal and took durable recovery with
+// it. The engine now understands named roots, so the assertion moves to the
+// wiring that replaced it — and the test is rewritten deliberately rather than
+// deleted, because "the workspace write has somewhere to land" is still exactly
+// what needs pinning.
+func TestNewProposalApplierWiresTheWorkspaceRoot(t *testing.T) {
 	c := newProposalApplierContainer(t)
 	ws := t.TempDir()
 	c.Config = &config.Config{}
@@ -72,15 +76,21 @@ func TestNewProposalApplierWiresWorkspaceContext(t *testing.T) {
 	if engine == nil {
 		t.Fatal("newProposalApplier returned nil")
 	}
-	ka, ok := engine.KindAppliers[persistence.ProposalKindWorkspaceContext]
-	if !ok {
-		t.Fatal("workspace_context KindApplier must be registered when runtime.project_workspace_path is set")
+	if got := engine.Roots[controlplane.WorkspaceRootName]; got != ws {
+		t.Fatalf("apply engine workspace root = %q, want %q", got, ws)
 	}
-	wca, ok := ka.(*controlplane.WorkspaceContextApplier)
-	if !ok {
-		t.Fatalf("workspace_context applier has type %T", ka)
+	// The container must carry the SAME mapping: verifyConfigGeneration
+	// re-reads through it after the reload, and a second spelling is how a
+	// write succeeds while its verification looks in the wrong tree.
+	if got := c.applyRoots[controlplane.WorkspaceRootName]; got != ws {
+		t.Fatalf("container apply root = %q, want %q", got, ws)
 	}
-	if wca.WorkspaceRoot != ws {
-		t.Errorf("workspace root = %q, want %q", wca.WorkspaceRoot, ws)
+	// And the kind must NOT be on the applier seam any more, or both paths
+	// would claim the write.
+	if _, ok := engine.KindAppliers[persistence.ProposalKindWorkspaceContext]; ok {
+		t.Fatal("workspace_context is still registered as a KindApplier; two paths now claim one write")
+	}
+	if persistence.KindApplierManaged(persistence.ProposalKindWorkspaceContext) {
+		t.Fatal("workspace_context is still reported as kind-applier managed")
 	}
 }

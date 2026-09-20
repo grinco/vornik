@@ -40,6 +40,11 @@ type ConfigAssistDeps struct {
 	SecretSnapshot func() map[string]string
 	// Usage records model spend (assistant + judge) to the ledger.
 	Usage configassist.UsageRecorder
+	// Slots hands out class-E daily admission slots (design §13.9a). Nil on a
+	// deployment whose store predates the table: the cap then falls back to
+	// the exhaustive count alone, which is where it was before — not a bypass,
+	// because that count still runs.
+	Slots configassist.SlotStore
 }
 
 // EnableConfigAssistant constructs the engine over the server's own
@@ -65,7 +70,13 @@ func (s *Server) EnableConfigAssistant(deps ConfigAssistDeps) {
 			return s.config.ConfigAssistant
 		},
 		Registry: s.projectRegistry, Evidence: assistEvidence{s: s}, Assistant: s.chatProvider, Judge: s.chatProvider,
-		Proposals: store, Usage: deps.Usage, Logger: s.logger,
+		Proposals: store, Slots: deps.Slots, Usage: deps.Usage, Logger: s.logger,
+	}
+	if deps.Slots == nil {
+		// Say it, rather than letting an unenforced cap look enforced. This is
+		// the same failure shape as a reload that reports success on a change
+		// it did not apply.
+		s.logger.Warn().Msg("config-assistant: no class-E slot store wired; the daily cap falls back to the exhaustive count, which cannot bind under concurrent requests")
 	}
 	if s.proposalApplier != nil {
 		e.Applier = s.proposalApplier

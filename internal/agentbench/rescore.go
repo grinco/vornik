@@ -3,6 +3,7 @@ package agentbench
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
 
 // TraceReader re-reads an execution's traces from the ledger.
@@ -59,6 +60,11 @@ func RescoreWithTasks(ctx context.Context, j Journal, traces TraceReader, probes
 		return Journal{}, fmt.Errorf("journal %q was already scored by harness %s: "+
 			"re-scoring it would change nothing and overwrite the original",
 			j.Manifest.RunID, HarnessVersion)
+	}
+	if reason := rescoreInputGap(j.Manifest.Arm.HarnessVersion, len(j.TaskScores) > 0); reason != "" {
+		return Journal{}, fmt.Errorf("journal %q was scored by harness %s and cannot be "+
+			"re-scored by harness %s: %s",
+			j.Manifest.RunID, j.Manifest.Arm.HarnessVersion, HarnessVersion, reason)
 	}
 
 	out := j
@@ -175,4 +181,72 @@ func rescoreSnapshotFor(ctx context.Context, store ExecutionStateStore, ts TaskS
 		}
 	}
 	return snapshot, nil
+}
+
+// MinRescorableHarness is the oldest harness whose journals the CURRENT
+// harness can re-score.
+//
+// It exists because "already at this version" was the only refusal, and
+// everything older was re-stamped — which is correct exactly while a harness
+// bump changes the SCORING RULE over inputs every journal still carries. It
+// stops being correct the moment a bump changes the INPUTS.
+//
+// That is what D3' does. Harness 7 assembles its numerator from the per-visit
+// result bodies in `execution_step_outcomes`, and a harness-6 journal does not
+// carry them: they live in the ledger, and the bench database is wiped by the
+// next arm. Re-stamping such a journal would produce a harness-7 number from
+// inputs harness 7 never saw — worse than refusing, because the figure would
+// look comparable with real harness-7 figures and would not be.
+//
+// The previous design text asserted this refusal already existed. It did not;
+// `review-20260919-43d1` F6 caught the assertion, and this is the refusal it
+// was asserting.
+const MinRescorableHarness = "7"
+
+// rescoreInputGap reports why a journal at the given harness version cannot be
+// re-scored by the current one, or "" when it can.
+//
+// It names the missing INPUT rather than the version gap, because "harness 6
+// journals cannot be re-scored" tells an operator nothing they can act on,
+// while "the per-visit bodies are not in the journal" tells them the figure
+// they wanted is not recoverable and a fresh arm is the only route to it.
+//
+// THE GAP IS SCOPED TO TASK SCORES, and that scoping is the whole correctness
+// of it. Probe verdicts are re-derived from TRACES, which the ledger still
+// holds and which no harness bump has changed the shape of — so a probe-only
+// journal crosses the v7 boundary perfectly well, and refusing it would throw
+// away the one thing re-scoring is genuinely for (applying a corrected probe
+// to a pass that already cost money to run). It is the pinned-case numerator
+// that needs per-visit bodies, and only a journal carrying task scores has
+// one.
+//
+// A first draft refused on version alone, which made every historical journal
+// unrescorable and three existing tests fail for a reason that was not true of
+// them.
+func rescoreInputGap(journalHarness string, carriesTaskScores bool) string {
+	if !carriesTaskScores {
+		return ""
+	}
+	if journalHarness == "" {
+		return "the journal declares no harness version, so what it was scored " +
+			"against — and therefore what re-scoring its task scores would mean — is unknown"
+	}
+	// NUMERIC, not lexicographic. The versions are decimal strings, so a
+	// string compare says "10" < "7" and would silently start re-scoring the
+	// very journals this refuses the moment the counter reaches two digits —
+	// a bug that cannot be caught by any test written before then unless the
+	// test is written now. It is.
+	journal, jErr := strconv.Atoi(journalHarness)
+	floor, fErr := strconv.Atoi(MinRescorableHarness)
+	if jErr != nil || fErr != nil {
+		return "harness version " + journalHarness + " is not a number, so it cannot be " +
+			"compared against the re-scorable floor (" + MinRescorableHarness + ")"
+	}
+	if journal < floor {
+		return "harness " + HarnessVersion + " assembles the pinned-case numerator from " +
+			"the per-visit result bodies in the execution ledger, which a journal at " +
+			"harness " + journalHarness + " does not carry; its probe verdicts could be " +
+			"re-derived from traces, but its TASK SCORES cannot — run a fresh arm instead"
+	}
+	return ""
 }

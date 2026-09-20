@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"vornik.io/vornik/internal/quality"
@@ -43,6 +44,15 @@ func extrasSnapshot(t *testing.T, ids []string, reported map[string]string) []by
 //
 // The shape is dp-01-nilguard's: every pinned case reported passed, plus extras.
 // Under harness 5 that scored 0.000/invalid_evidence.
+//
+// DRIVEN THROUGH THE RECOMPUTE DIRECTLY, not through Rescore, since D3'.
+// Harness 7 changed the scorer's INPUTS rather than its rule, so a journal
+// carrying task scores from before v7 is refused at the door
+// (TestRescore_RefusesTaskScoresFromBeforeTheInputChange) — its per-visit
+// bodies are not recoverable. The capability this test exists for is
+// unaffected and becomes reachable again at the next rule-only bump, so the
+// coverage moves down one level rather than being deleted: deleting it would
+// mean the next such bump ships with the recompute untested.
 func TestRescore_RecomputesTaskScores(t *testing.T) {
 	ids := []string{"a", "b"}
 	snap := extrasSnapshot(t, ids, map[string]string{"a": "passed", "b": "passed", "x1": "passed"})
@@ -58,16 +68,15 @@ func TestRescore_RecomputesTaskScores(t *testing.T) {
 	tasks := []TaskSpec{{ID: "dp-01", Scoring: &quality.ScoringPolicy{
 		Kind: quality.ScoreKindPinnedCaseValidation, ProducerStep: "analyze", VerifierStep: "test"}}}
 
-	out, err := RescoreWithTasks(context.Background(), j,
-		snapTraces{snaps: map[string][]byte{"exec-1": snap}},
-		[]Probe{SchemaProbe{}}, nil, tasks)
+	scores, err := rescoreTaskScores(context.Background(), j,
+		snapTraces{snaps: map[string][]byte{"exec-1": snap}}, tasks)
 	if err != nil {
 		t.Fatalf("rescore: %v", err)
 	}
-	if len(out.TaskScores) != 1 {
-		t.Fatalf("task scores = %d, want 1", len(out.TaskScores))
+	if len(scores) != 1 {
+		t.Fatalf("task scores = %d, want 1", len(scores))
 	}
-	ts := out.TaskScores[0]
+	ts := scores[0]
 	if ts.Score != 1 {
 		t.Errorf("score = %v, want 1.0 — every pinned case passed", ts.Score)
 	}
@@ -78,8 +87,30 @@ func TestRescore_RecomputesTaskScores(t *testing.T) {
 		t.Errorf("ExtraCaseCount = %d, want 1 — the count must reach the JOURNAL, "+
 			"not stop at the scorer's return value", ts.ExtraCaseCount)
 	}
-	if out.Manifest.Arm.HarnessVersion != HarnessVersion {
-		t.Errorf("harness = %q, want %q", out.Manifest.Arm.HarnessVersion, HarnessVersion)
+}
+
+// The D3' door: harness 7 assembles the pinned-case numerator from per-visit
+// result bodies that live in the ledger, not in the journal, so a journal
+// carrying task scores from before that change cannot be re-stamped. Producing
+// a harness-7 number from inputs harness 7 never saw would be worse than
+// refusing, because the figure would look comparable with real harness-7
+// figures and would not be.
+func TestRescore_RefusesTaskScoresFromBeforeTheInputChange(t *testing.T) {
+	j := Journal{}
+	j.Manifest.RunID = "r1"
+	j.Manifest.Arm.HarnessVersion = "5"
+	j.TaskScores = []TaskScore{{TaskID: "dp-01", Repeat: 1, Kind: quality.ScoreKindPinnedCaseValidation}}
+	tasks := []TaskSpec{{ID: "dp-01", Scoring: &quality.ScoringPolicy{
+		Kind: quality.ScoreKindPinnedCaseValidation, ProducerStep: "analyze", VerifierStep: "test"}}}
+
+	_, err := RescoreWithTasks(context.Background(), j, snapTraces{}, []Probe{SchemaProbe{}}, nil, tasks)
+	if err == nil {
+		t.Fatal("RescoreWithTasks() = nil error, want the input-gap refusal")
+	}
+	for _, want := range []string{"per-visit result bodies", "run a fresh arm"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to say %q", err, want)
+		}
 	}
 }
 

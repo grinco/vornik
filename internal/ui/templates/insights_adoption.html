@@ -43,7 +43,7 @@
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Activity.RAGQueries}}{{if .Stats.Activity.Truncated}}+{{end}}</div><div class="text-[11px] text-gray-500 mt-0.5">RAG queries{{if .Stats.Activity.Truncated}} (at least){{end}}</div></div>
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Activity.LLMCalls}}</div><div class="text-[11px] text-gray-500 mt-0.5">Attributed LLM calls</div></div>
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">${{printf "%.2f" .Stats.Activity.CostUSD}}</div><div class="text-[11px] text-gray-500 mt-0.5">Attributed spend</div></div>
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{len .Stats.Keys}}</div><div class="text-[11px] text-gray-500 mt-0.5">Active credentials</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.KeysWithActivity}}<span class="text-base text-gray-500">/{{len .Stats.Keys}}</span></div><div class="text-[11px] text-gray-500 mt-0.5">Credentials with measured activity</div></div>
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Total}}</div><div class="text-[11px] text-gray-500 mt-0.5">Tasks in window</div></div>
             </div>
 
@@ -82,7 +82,8 @@
                             <th class="text-right py-2 px-3">Projects</th>
                             <th class="text-right py-2 px-3">LLM calls</th>
                             <th class="text-right py-2 px-3">Tasks</th>
-                            <th class="text-right py-2 pl-3">Spend</th>
+                            <th class="text-right py-2 px-3">Spend</th>
+                            <th class="text-right py-2 pl-3">Last seen</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -91,6 +92,7 @@
                             <td class="py-2 pr-3">
                                 <span class="font-mono text-xs text-gray-200">{{.Label}}</span>
                                 {{if .Ephemeral}}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-400">{{.FoldedKeys}} system-issued key{{if ne .FoldedKeys 1}}s{{end}}</span>{{end}}
+                                {{if .NoMeasuredActivity}}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-500" title="This credential authenticated in the window but produced no RAG query, memory write or LLM call. Activity on the REST API, the UI, chat and A2A is not counted here.">authenticated, no measured activity</span>{{end}}
                             </td>
                             <td class="py-2 pr-3"><span class="text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-300">{{if .Kind}}{{.Kind}}{{else}}—{{end}}</span></td>
                             <td class="py-2 px-3 text-right tabular-nums text-gray-100">{{.RAGQueries}}</td>
@@ -99,13 +101,17 @@
                             <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.Projects}}</td>
                             <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.LLMCalls}}</td>
                             <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.Tasks}}</td>
-                            <td class="py-2 pl-3 text-right tabular-nums text-gray-300">${{printf "%.2f" .CostUSD}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">${{printf "%.2f" .CostUSD}}</td>
+                            <td class="py-2 pl-3 text-right tabular-nums text-gray-400">{{if .LastSeen}}{{.LastSeen.Format "2006-01-02"}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                         </tr>
                         {{end}}
                     </tbody>
                 </table>
+                {{if .Stats.KeysHidden}}
+                <p class="text-xs text-gray-500 mt-3">Showing the top {{len .Stats.Keys}} of {{.Stats.KeysTotal}} credentials — <span class="text-gray-400">{{.Stats.KeysHidden}} more</span> are not shown. Credentials with no measured activity sort last, so a newly issued key appears at the bottom of this list.</p>
+                {{end}}
                 {{else}}
-                <p class="text-sm text-gray-500 py-4">No credential-attributed activity in this window.</p>
+                <p class="text-sm text-gray-500 py-4">No credentials to show — no activity was attributed to a credential in this window, and no unrevoked keys are visible in this scope.</p>
                 {{end}}
             </div>
 

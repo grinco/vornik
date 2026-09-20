@@ -885,17 +885,59 @@ write_step_prompt_file() {
     sys_hash=$(printf '%s' "$system_part" | sha256sum | cut -d' ' -f1)
     user_hash=$(printf '%s' "$user_part" | sha256sum | cut -d' ' -f1)
     tools_hash=$(printf '%s' "$tools_part" | sha256sum | cut -d' ' -f1)
-    if jq -n --arg s "$system_part" --arg sh "$sys_hash" \
-             --arg u "$user_part" --arg uh "$user_hash" \
-             --arg t "$tools_part" --arg th "$tools_hash" \
-             '{system:{sha256:$sh,body:$s},user:{sha256:$uh,body:$u},tools:{sha256:$th,body:$t}}' \
-             2>/dev/null > "$out_dir/step_prompt.json.tmp" \
-       && mv "$out_dir/step_prompt.json.tmp" "$out_dir/step_prompt.json" 2>/dev/null; then
-        STEP_PROMPT_WRITTEN=1
-    else
+    # The bodies go to jq BY FILE, never as --arg. Linux caps a single
+    # argument at MAX_ARG_STRLEN (131072 bytes) regardless of the much larger
+    # total ARG_MAX, so --arg silently failed with E2BIG on exactly the steps
+    # whose prompt was worth keeping — a reviewer handed a document, an
+    # ingestor handed file content. Measured 2026-09-18: 131071 bytes
+    # persisted, 131072 was lost, and ~40% of companion reviewer and ingestor
+    # steps had never recorded a prompt since the feature shipped.
+    #
+    # printf is a shell BUILTIN, so staging the parts costs no argv; --rawfile
+    # then reads each file verbatim, which is byte-identical to what --arg
+    # carried (the parts are command-substituted, so they hold no trailing
+    # newline) and therefore leaves prompt_*_hash meaning exactly what it did.
+    local part_dir
+    if ! part_dir=$(mktemp -d 2>/dev/null) || [ -z "$part_dir" ]; then
+        log "step prompt: could not stage prompt parts (mktemp failed; prompt not persisted for this step)"
+        return 0
+    fi
+    printf '%s' "$system_part" > "$part_dir/system" 2>/dev/null
+    printf '%s' "$user_part"   > "$part_dir/user"   2>/dev/null
+    printf '%s' "$tools_part"  > "$part_dir/tools"  2>/dev/null
+
+    # Three failure modes, reported separately and accurately. They were ONE
+    # branch with jq's stderr discarded, so an E2BIG from jq was announced as
+    # an unwritable output directory — which cost real time on 2026-09-18,
+    # pointing the investigation at a mount that was fine. A control that
+    # cannot tell its own failure modes apart reports the wrong one.
+    # Braces so the shell's own redirect diagnostic is captured too: with a
+    # bare `: > f 2>/dev/null` the redirections apply left to right, so the
+    # failure is announced before stderr is silenced.
+    if ! { : > "$out_dir/step_prompt.json.tmp"; } 2>/dev/null; then
+        log "step prompt: cannot create $out_dir/step_prompt.json.tmp (output dir not writable; prompt not persisted for this step)"
+        rm -rf "$part_dir" 2>/dev/null
+        return 0
+    fi
+    local jq_err
+    if ! jq_err=$(jq -n --rawfile s "$part_dir/system" --arg sh "$sys_hash" \
+                        --rawfile u "$part_dir/user" --arg uh "$user_hash" \
+                        --rawfile t "$part_dir/tools" --arg th "$tools_hash" \
+                        '{system:{sha256:$sh,body:$s},user:{sha256:$uh,body:$u},tools:{sha256:$th,body:$t}}' \
+                        2>&1 > "$out_dir/step_prompt.json.tmp"); then
+        log "step prompt: could not build $out_dir/step_prompt.json (prompt not persisted for this step): ${jq_err}"
+        rm -f "$out_dir/step_prompt.json.tmp" 2>/dev/null
+        rm -rf "$part_dir" 2>/dev/null
+        return 0
+    fi
+    if ! mv "$out_dir/step_prompt.json.tmp" "$out_dir/step_prompt.json" 2>/dev/null; then
         log "step prompt: could not write $out_dir/step_prompt.json (prompt not persisted for this step)"
         rm -f "$out_dir/step_prompt.json.tmp" 2>/dev/null
+        rm -rf "$part_dir" 2>/dev/null
+        return 0
     fi
+    rm -rf "$part_dir" 2>/dev/null
+    STEP_PROMPT_WRITTEN=1
 }
 
 build_llm_request_file() {

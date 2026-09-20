@@ -1,8 +1,11 @@
 package authz
 
 import (
+	"context"
 	"sync"
 	"time"
+
+	"vornik.io/vornik/internal/persistence"
 )
 
 // ClaimAttemptLimit and ClaimAttemptWindow are §5.4's bound: 10 attempts per
@@ -37,9 +40,12 @@ const (
 // no legitimate concurrency, and the alternative is letting the guesser spread
 // across addresses, which is the attack.
 //
-// The bucket is per process. A replicated deployment therefore bounds
-// attempts per replica, not per cluster — this is the same scope the HTTP
-// limiter had, and it is written down here rather than implied.
+// The bucket is per process, and since 2026-09-19 that is the FALLBACK rather
+// than the mechanism: when a KeyClaimAttemptRepository is wired, the bound is
+// counted in the database and holds across replicas and restarts (§5.4
+// follow-up). This in-memory bucket remains for a deployment with no repository
+// — one process, where per-process IS per cluster — so the bound never
+// disappears because a store is missing.
 type claimLimiter struct {
 	mu      sync.Mutex
 	hits    map[string][]time.Time
@@ -78,4 +84,41 @@ func (l *claimLimiter) allow(keyID string) bool {
 	}
 	l.hits[keyID] = append(kept, now)
 	return true
+}
+
+// allowClaimAttempt records the attempt and reports whether it may proceed,
+// preferring the DURABLE bound when one is wired.
+//
+// §5.4's bound held per process: N replicas allowed N times the attempts and a
+// restart cleared the count. That was equally true of the HTTP limiter it
+// replaced, so it was written down as remaining rather than treated as a
+// regression — this closes it.
+//
+// A store ERROR refuses. The bound exists to bound a guesser, so an unreadable
+// store is not permission — and the alternative, silently falling back to the
+// in-memory bucket, would mean a deployment whose database is flapping quietly
+// loses the property it thinks it has.
+func (a *Accounts) allowClaimAttempt(ctx context.Context, keyID string) bool {
+	if a == nil {
+		return false
+	}
+	if a.claimAttempts == nil {
+		return a.claims.allow(keyID)
+	}
+	count, err := a.claimAttempts.RecordClaimAttempt(ctx, keyID, time.Now().UTC(), ClaimAttemptWindow)
+	if err != nil {
+		return false
+	}
+	return count <= ClaimAttemptLimit
+}
+
+// WithClaimAttempts wires the durable attempt store. Without it the in-memory
+// bucket stands, which is correct for a single-process deployment and stated
+// rather than assumed.
+func (a *Accounts) WithClaimAttempts(r persistence.KeyClaimAttemptRepository) *Accounts {
+	if a == nil {
+		return nil
+	}
+	a.claimAttempts = r
+	return a
 }

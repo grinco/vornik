@@ -525,7 +525,7 @@ func TestJournal_GenerationNotConfirmed_Reverted(t *testing.T) {
 	id := env.seed(t, "")
 	gen := "gen-1"
 	env.e.Generation = func() string { return gen }
-	env.e.VerifyGeneration = func(context.Context, []JournaledOp) error {
+	env.e.VerifyGeneration = func(context.Context, []JournaledOp, string) error {
 		return errors.New("registry still at gen-1 for projects/a.yaml")
 	}
 	err := env.e.Apply(context.Background(), id, "vadim", false)

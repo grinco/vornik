@@ -52,8 +52,19 @@ func IsObservationKind(kind string) bool { return kind == ProposalKindObservatio
 // state-mutating KindApplier (internal/controlplane) rather than the
 // file-based apply path — such proposals are applyable even with empty
 // ApplyTarget/ApplyOps.
+//
+// WORKSPACE_CONTEXT LEFT THIS SET ON 2026-09-19. It writes a FILE, and it was
+// on the kind-applier seam only because the apply engine could resolve ops under
+// exactly one root — so the write bypassed the journal, and the bypass took
+// durable recovery with it. The engine now understands named roots
+// (config-apply-journal design §9.2b), so the write is an ordinary journaled
+// file apply and needs no seam.
+//
+// instinct_retire stays, and the distinction is the one this seam should have
+// drawn from the start: it mutates a DATABASE ROW, so journalling it would
+// record a file apply that never happens.
 func KindApplierManaged(kind string) bool {
-	return kind == ProposalKindInstinctRetire || kind == ProposalKindWorkspaceContext
+	return kind == ProposalKindInstinctRetire
 }
 
 // Proposal blast-radius levels (model ⊂ project ⊂ swarm ⊂ daemon). A

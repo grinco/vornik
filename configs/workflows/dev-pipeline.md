@@ -275,9 +275,21 @@ Respond with:
 
 ### test
 
-Read `project/.autonomy/CURRENT_TASK.md` — focus on the most recently
-completed subtask AND its pinned `test_cases` block. The pinned cases
-are the contract; you validate every one of them by `id`.
+THE PINNED CASE IDS ARE EXACTLY THESE, and this list — not any file — is
+the contract you report against:
+
+${outputs.analyze.analysis.test_case_ids}
+
+Report one `testing.cases[]` entry for each id above, copied character for
+character, and no others. Do not renumber them, do not shorten them, do not
+add ids of your own, and do not omit any: the scorer matches your ids against
+exactly this list, so an id that differs scores as though the case were never
+evaluated, however good the work behind it was.
+
+Read `project/.autonomy/CURRENT_TASK.md` for the most recently completed
+subtask and the DETAIL of its pinned `test_cases` block — what each case
+means, its inputs and expected result. The ids above override the file if the
+two ever disagree.
 If `project/.autonomy/PROJECT_CONTEXT.md` exists, read it for test
 framework details.
 

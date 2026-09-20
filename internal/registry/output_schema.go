@@ -79,11 +79,29 @@ type OutputSchema struct {
 	// check accepts empty strings). Phase 2 may add full numeric
 	// bounds.
 	MinLength int `yaml:"minLength,omitempty"`
-	// Enum constrains a string/number to a fixed value set. Phase 2
-	// will wire this into the validator. Today the field is parsed
-	// but unused — declaring it now keeps role YAMLs forward-
-	// compatible.
+	// Enum constrains a string/number to a fixed value set.
+	//
+	// Emitted to the provider by convertSchemaNode and, since D6
+	// (2026-09-18), ENFORCED on receipt by the executor's output
+	// validator against the schema the model was actually handed —
+	// which for a pinned_case_validation verifier is the
+	// per-execution clone, not this declaration. An enum binds at the
+	// provider only where the provider honours json_schema; the
+	// daemon-side check is the backstop for the providers that do not.
+	// See 2026-08-13-agent-quality-benchmark-design.md D6.
 	Enum []any `yaml:"enum,omitempty"`
+	// OnViolation says what an out-of-enum value MEANS: "fail"
+	// (default) rejects the step with INVALID_OUTPUT and routes it
+	// into the shape-retry ladder; "warn" logs, counts, and lets the
+	// value through for a downstream fallback to resolve.
+	//
+	// It exists because a closed correctness contract and an advisory
+	// hint are different things. analysis.complexity is the advisory
+	// case: dynamic-tool-budget-design.md §4 resolves an absent,
+	// empty or unrecognised tier to 1.0x deliberately, a decision made
+	// under incident pressure on 2026-06-13, and failing the step
+	// there would invert it. Only meaningful beside an Enum.
+	OnViolation string `yaml:"onViolation,omitempty"`
 	// Plausibility is the conditional-non-empty block from the
 	// existing PlausibilityRules feature, hoisted under the schema
 	// so role YAMLs declare shape constraints in one place.
@@ -682,4 +700,43 @@ func (s *OutputSchema) walkMinLength(prefix string, rules *[]PlausibilityRule) {
 			child.walkMinLength(path, rules)
 		}
 	}
+}
+
+// Clone returns a deep copy of the schema tree. A role's OutputSchema is
+// shared by every execution of that role, so any per-execution specialisation
+// — pinning a case-id enum for one task, say — must work on a copy or it
+// leaks into the next task's agent.
+//
+// Plausibility rules are copied by value into a fresh slice: they are not
+// specialised today, but sharing the backing array would make a future
+// per-execution tweak silently global, which is the bug this exists to stop.
+func (s *OutputSchema) Clone() *OutputSchema {
+	if s == nil {
+		return nil
+	}
+	out := &OutputSchema{
+		Type:        s.Type,
+		Description: s.Description,
+		MinLength:   s.MinLength,
+	}
+	if s.Required != nil {
+		out.Required = append([]string(nil), s.Required...)
+	}
+	if s.Enum != nil {
+		out.Enum = append([]any(nil), s.Enum...)
+	}
+	out.OnViolation = s.OnViolation
+	if s.Plausibility != nil {
+		out.Plausibility = append([]PlausibilityRule(nil), s.Plausibility...)
+	}
+	if s.Items != nil {
+		out.Items = s.Items.Clone()
+	}
+	if s.Properties != nil {
+		out.Properties = make(map[string]*OutputSchema, len(s.Properties))
+		for k, v := range s.Properties {
+			out.Properties[k] = v.Clone()
+		}
+	}
+	return out
 }

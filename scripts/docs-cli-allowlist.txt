@@ -26,6 +26,11 @@ control-plane
 models
 mcp
 skill
+# package — the extension-package lifecycle (install/list/uninstall). Published
+# on the same reasoning as `skill`: it is the verb an operator runs to accept an
+# artifact somebody handed them, so hiding it would leave the artifact format
+# documented and the only way to install it undocumented.
+package
 retention
 backup
 restore

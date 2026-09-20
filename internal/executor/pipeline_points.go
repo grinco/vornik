@@ -11,6 +11,7 @@ import (
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pipeline"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // The executor's step-outcome point (2026-09-04-pipeline-points-design.md
@@ -118,9 +119,52 @@ func (e *Executor) outputFileContractParticipant(_ context.Context, in *StepOutc
 		in.GlobVerified = true
 		return pipeline.Verdict{}
 	}
+	// LEAD WITH THE CAUSE WHEN THERE IS ONE (2026-09-15). A step that stopped
+	// on a budget or an iteration cap did not write its file BECAUSE it ran out
+	// — the daemon knows that at this exact moment, from the agentOutcome the
+	// agent wrote into result.json, and used to discard it and report the
+	// consequence instead.
+	//
+	// The cost of reporting the consequence is not cosmetic: "no file matching
+	// … was written. You MUST write the declared output file" reads as a model
+	// that would not comply, so the caller re-runs it, pays again, and gets the
+	// same result. The observed case (task_20260915020853_…) spent a full agent
+	// budget on 248 KB of staged artifacts and could only be diagnosed by
+	// reading the container log.
+	if cause, detail := agentQualityOutcome(in.ResultBytes); cause != "" {
+		if lead := budgetStopLead(cause); lead != "" {
+			reason := fmt.Sprintf(
+				"%s: step %q stopped before it could write its declared output %q",
+				lead, in.StepID, in.Step.RequireOutputGlob)
+			if detail != "" {
+				reason += " (" + detail + ")"
+			}
+			// No "you MUST write the file" here: telling a model to try harder
+			// is the wrong instruction when the thing it ran out of was budget.
+			return pipeline.Verdict{Refused: true, Reason: reason}
+		}
+	}
 	return pipeline.Verdict{Refused: true, Reason: fmt.Sprintf(
 		"schema violation: output contract for step %q not met — no file matching %q was written during this step. You MUST write the declared output file before finishing.",
 		in.StepID, in.Step.RequireOutputGlob)}
+}
+
+// budgetStopLead names the agent bails that EXPLAIN a missing output file, in
+// the words a caller needs. An outcome not listed here is not a cause — a
+// degenerate loop over an already-satisfied contract, for instance, never
+// reaches this participant — so it falls through to the contract's own message
+// rather than being dressed up as an explanation.
+func budgetStopLead(agentOutcome string) string {
+	switch agentOutcome {
+	case string(stepoutcome.PromptTokenBudget):
+		return "prompt-token budget exhausted"
+	case string(stepoutcome.BudgetTripwire):
+		return "cost budget exhausted"
+	case string(stepoutcome.IterationExhausted):
+		return "iteration cap reached"
+	default:
+		return ""
+	}
 }
 
 // Tool contract: an auth-class tool failure fails the step (no opt-in), and a

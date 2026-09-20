@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/mcpauth"
+	"vornik.io/vornik/internal/projectdeps"
 	"vornik.io/vornik/internal/taintlineage"
 	"vornik.io/vornik/internal/trading"
 )
@@ -94,6 +95,22 @@ type Project struct {
 	// (memoryscope.Resolve): the caller knew which repo the work concerned;
 	// this is only a guess about the common case.
 	RepoScope string `yaml:"repo_scope"`
+	// Dependencies declares the project's package dependencies, which the
+	// daemon materialises into a content-addressed cache OUTSIDE the
+	// agent container and mounts read-only (LLD
+	// 2026-09-19-project-dependency-provisioning-design.md).
+	//
+	// It exists because the image's "the coder pip-installs them per
+	// task" assumption is true of exactly ONE role. A reviewer is handed
+	// a diff and asked to judge it: it never runs an install step, so it
+	// cannot run the suite it is reviewing and cannot tell "the tests
+	// pass" from "the tests did not run". The same gap at the deployment
+	// level is what makes an air-gapped dev swarm impossible.
+	//
+	// Empty is the common case and costs nothing: a project with no
+	// manifest gets NO mount and NO env injection at all — not an empty
+	// variable, not a path that does not exist.
+	Dependencies []projectdeps.Entry `yaml:"dependencies" since:"2026.9.6"`
 	// RateLimit caps task-creation frequency for the project.
 	RateLimit ProjectRateLimit `yaml:"rate_limit"`
 	// TradingRateLimit caps how fast this project may place orders
@@ -2185,6 +2202,9 @@ func (p *Project) Validate(filename string) error {
 	}
 	if p.Autonomy.MaxTasksPerHour < 0 {
 		return ProjectValidationError{File: filename, Field: "autonomy.maxTasksPerHour", Message: "cannot be negative"}
+	}
+	if err := (projectdeps.Manifest{Entries: p.Dependencies}).Validate(); err != nil {
+		return ProjectValidationError{File: filename, Field: "dependencies", Message: err.Error()}
 	}
 	if p.RateLimit.TasksPerMinute < 0 {
 		return ProjectValidationError{File: filename, Field: "rate_limit.tasks_per_minute", Message: "cannot be negative"}

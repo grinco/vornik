@@ -169,6 +169,16 @@ roles:
             complexity:
               type: string
               enum: [trivial, standard, complex, open_ended]
+              # D6 (2026-09-18): the daemon enforces declared enums on receipt.
+              # This one must NOT fail the step. dynamic-tool-budget-design.md
+              # §4 resolves an absent, empty or unrecognised tier to 1.0x, a
+              # decision taken on 2026-06-13 after coercing it to `standard`
+              # silently halved every dev-pipeline budget and timed out a
+              # 15-minute implement step. warn keeps that degradation and still
+              # counts the slip. The field stays OPTIONAL, which is what keeps
+              # the "absent -> 1.0x" leg reachable under a provider that does
+              # enforce the emitted enum.
+              onViolation: warn
               description: >-
                 Effort tier for the task you just spec'd, sizing the coder's budget. Rubric: trivial = one-line / single-file edit; standard = small multi-file change; complex = a real feature or bug fix touching several files or needing investigation; open_ended = large or ambiguous work needing broad exploration. When torn between two tiers, pick the HIGHER — under-calling starves the coder and it times out.
             # Gate-metric producer contract (2026-08-17). The
@@ -364,10 +374,11 @@ roles:
               description: >-
                 One entry per case the analyst pinned in
                 analysis.test_case_ids: exactly those ids, no extras and no
-                omissions. The scorer closes the id space, so a case id the
-                analyst did not pin makes the WHOLE report invalid evidence
-                and floors the task score at zero. Never invent, split,
-                renumber or append cases.
+                omissions. An id the analyst did not pin is skipped and
+                counted rather than credited, and every pinned id you do not
+                report scores zero for that case — so an omission costs you
+                the case and a renumbering costs you all of them. Never
+                invent, split, renumber or append cases.
               items:
                 type: object
                 required: [id, status]

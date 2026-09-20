@@ -96,6 +96,10 @@ func (c *Channel) anyInstallationAllowsSpeaker(userID string) bool {
 // behaviour exactly.
 func (c *Channel) SetIdentityShim(s *chatauth.Shim) { c.identityShim = s }
 
+// SetLinkCodeExposureGuard wires §5.2b's scrub-and-burn. Nil — the default —
+// leaves text untouched, which is the pre-feature behaviour.
+func (c *Channel) SetLinkCodeExposureGuard(g *chatauth.ExposureGuard) { c.exposure = g }
+
 // slackAllowlistConfigKey names the config the legacy gate reads. It is the
 // label the shim's legacy-grant metric carries, so both gates must report the
 // same one — they used to spell it twice.
@@ -598,6 +602,16 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 	}
 	expected := NormaliseSlashCommand(c.cfg.SlashCommand)
 	if command := strings.TrimSpace(form.Get("command")); command != expected {
+		// RECORD IT. This answer is a 200, and the HTTP access logger records
+		// only non-2xx, so before this line a signature-valid delivery the
+		// daemon refused left no trace anywhere — which is how the 2026-09-15
+		// /t800 mismatch survived forty minutes and five expired link codes
+		// while "zero webhook entries" was read as "Slack never reached us".
+		c.noteUnmatchedSlashCommand(command)
+		c.logger.Warn().
+			Str("received", command).
+			Str("answers", expected).
+			Msg("slack: slash command refused — this daemon answers a different command")
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Unsupported command. Use " + expected + " <prompt>."))
@@ -627,6 +641,12 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 	if c.tryConfigAssistant(w, inst, userID, text) {
 		return
 	}
+	// §5.2b: a link code that reaches here was NOT typed as a redemption —
+	// tryAccountLinkCode above handles that case — so it is about to be
+	// dispatched to a model and land in a transcript. Scrub it first and burn
+	// it; the reply below is unchanged either way, which is what keeps the
+	// store consultation from becoming a redemption oracle.
+	text = c.exposure.Scrub(r.Context(), channelName, text)
 	if text == "" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -908,12 +928,17 @@ func (c *Channel) buildMessageChannelMessage(p eventPayload, inst *installation)
 		cs["thread_parent_is_bot"] = "true"
 	}
 	ts := slackTsToTime(ev.Ts, c.clock)
+	// §5.2b, the ordinary-message half. A code pasted into a channel message
+	// rather than a slash command reaches a model the same way, so it is
+	// scrubbed and burned on this path too — the whole class, not the half that
+	// happened to arrive through the command.
+	text := c.exposure.Scrub(context.Background(), channelName, ev.Text)
 	return conversation.ChannelMessage{
 		Source:          channelName,
 		ID:              ev.Ts,
 		SessionID:       sessionID,
 		SpeakerID:       ev.User,
-		Text:            ev.Text,
+		Text:            text,
 		InReplyTo:       "",          // Slack uses thread_ts as the threading primitive — captured in ChannelSpecific
 		ThreadID:        ev.ThreadTs, // empty at channel level; ThreadID names a thread, and there isn't one
 		Timestamp:       ts,

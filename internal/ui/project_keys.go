@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/apikey"
+	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -229,7 +230,7 @@ func (s *Server) handleProjectKeysAction(r *http.Request, data *ProjectKeysData,
 			data.Error = "failed to mint rotated key: " + err.Error()
 			return
 		}
-		_ = s.apiKeyRepo.Revoke(r.Context(), prior.ID)
+		_ = s.revokeKeyAndSessions(r, prior.ID)
 		data.Success = "Rotated key " + prior.Name + "."
 		data.NewSecret = secret
 		data.NewSecretID = fresh.ID
@@ -256,7 +257,7 @@ func (s *Server) handleProjectKeysAction(r *http.Request, data *ProjectKeysData,
 			data.Error = "key not found in this project"
 			return
 		}
-		if err := s.apiKeyRepo.Revoke(r.Context(), keyID); err != nil {
+		if err := s.revokeKeyAndSessions(r, keyID); err != nil {
 			data.Error = "failed to revoke: " + err.Error()
 			return
 		}
@@ -431,4 +432,18 @@ func relativeShort(d time.Duration) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd ago", int(d.Hours())/24)
+}
+
+// revokeKeyAndSessions revokes an API key through the one verb that also ends
+// the browser sessions that key minted (ce-human-login-design §5.1).
+//
+// Falls back to the bare repository revoke when no accounts service is wired:
+// a deployment with no identity core has no sessions to end, and refusing to
+// revoke a key there would be a regression dressed as a safety check.
+func (s *Server) revokeKeyAndSessions(r *http.Request, keyID string) error {
+	if s.accounts == nil {
+		return s.apiKeyRepo.Revoke(r.Context(), keyID)
+	}
+	actor := authz.Actor{Principal: adminPrincipal(r), Source: "ui", IP: clientIP(r), UserAgent: r.UserAgent()}
+	return s.accounts.RevokeCredential(r.Context(), keyID, actor)
 }

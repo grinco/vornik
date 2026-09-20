@@ -200,6 +200,23 @@ type agentInputOpts struct {
 	// config.resultEmissionTool. Item 9 of
 	// https://docs.vornik.io
 	ResultEmissionTool *registry.ToolSpec
+	// EffectiveSchema is the DIALECT TREE behind ResponseSchema: the schema
+	// this step's model was actually handed, which for a
+	// pinned_case_validation verifier is the per-execution clone carrying the
+	// producer's pinned ids and NOT the role's shared declaration.
+	//
+	// The receipt-time enum check walks this rather than ResponseSchema so it
+	// reads declared intent (onViolation) instead of re-deriving it from
+	// generated JSON Schema. It must be set at every site that writes
+	// ResponseSchema and CLEARED where the schema is replaced by a hand-built
+	// map with no dialect tree — the recovery override in plan_step.go, which
+	// runs after applyRoleSchemaOpts has already set the role's. Leaving the
+	// role's tree there would fail a step for violating a contract it was
+	// never given. nil suppresses the ENUM sub-check only; the
+	// requiredOutputKeys structural check is untouched by this field.
+	//
+	// See 2026-08-13-agent-quality-benchmark-design.md D6.1a/D6.1b.
+	EffectiveSchema *registry.OutputSchema
 	// ShapeRetryHint is the role-specific corrective text the
 	// retry layer appends on shape-retry. Mirrors the
 	// SwarmRole.ShapeRetryHint field; see retry.go for how it
@@ -998,6 +1015,9 @@ func applyRoleSchemaOpts(opts *agentInputOpts, role *registry.SwarmRole) {
 	}
 	opts.ResponseSchema = role.OutputSchema.ToJSONSchema()
 	opts.ResultEmissionTool = role.OutputSchema.ToToolSpec(role.Name)
+	// D6.1a: the dialect tree beside the generated copies, so the receipt-time
+	// enum check binds against what was actually emitted.
+	opts.EffectiveSchema = role.OutputSchema
 	appendSchemaPromptIfEnabled(opts, role)
 }
 

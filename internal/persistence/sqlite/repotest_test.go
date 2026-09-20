@@ -642,3 +642,23 @@ func TestLLMExchange_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunLLMExchangeSuite(t, sqlite.NewLLMExchangeRepository(db.DB), sqlite.NewExecutionRepository(db.DB), sqlite.NewTaskRepository(db.DB))
 }
+
+func TestClassESlotSuite(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunClassESlotSuite(t, sqlite.NewClassESlotRepository(db.DB))
+}
+
+func TestKeyClaimAttemptSuite(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunKeyClaimAttemptSuite(t, sqlite.NewKeyClaimAttemptRepository(db.DB))
+}
+
+func TestPackageContributionSuite(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunPackageContributionSuite(t, sqlite.NewPackageContributionRepository(db.DB))
+}
+
+func TestCredentialSessionSuite(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunCredentialSessionSuite(t, sqlite.NewUISessionRepository(db.DB), sqlite.NewIdentityRepository(db.DB))
+}

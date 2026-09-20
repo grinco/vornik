@@ -382,6 +382,12 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// capability — and refuse outright without a session, since there is
 		// then no "own account" to act on.
 		mux.HandleFunc("/api/v1/account/", server.AccountSelf)
+		// The CE credential→session exchange (ce-human-login-design §4).
+		// It carries NO operator capability by design: any account with a
+		// live key may open a browser session as itself, and what that
+		// session may then DO is resolved per request from the identity
+		// core exactly as it is for every other channel.
+		mux.HandleFunc("/api/v1/auth/session", server.SessionExchange)
 		mux.HandleFunc("/api/v1/operator/accounts", server.OperatorAccounts)
 		mux.HandleFunc("/api/v1/operator/accounts/", server.OperatorAccountItem)
 

@@ -35,12 +35,16 @@ func TestUISessionRepository_CreateSession(t *testing.T) {
 		ExpiresAt:  now.Add(24 * time.Hour),
 		IP:         "127.0.0.1",
 		UserAgent:  "Mozilla/5.0",
+		// The credential that minted it must reach the column, or the
+		// capping rule has no subject and no key revocation can ever
+		// end this session (ce-human-login-design §4).
+		OriginCredentialID: "key_1",
 	}
 	mock.ExpectExec(regexp.QuoteMeta(
-		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`)).
+		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent, origin_credential_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`)).
 		WithArgs(s.ID, s.TokenHash, s.UserID, s.Provider,
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			s.IP, s.UserAgent).
+			s.IP, s.UserAgent, s.OriginCredentialID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := repo.CreateSession(context.Background(), s)
@@ -70,12 +74,17 @@ func TestUISessionRepository_CreateSession_EmptyIPUA(t *testing.T) {
 		ExpiresAt:  now.Add(24 * time.Hour),
 		IP:         "",
 		UserAgent:  "",
+		// No originating credential: an OIDC login. It must land as
+		// NULL, not "", or every such session would look like it shared
+		// one key — and a revoke-by-credential sweep keyed on "" would
+		// match none of them while appearing to succeed.
+		OriginCredentialID: "",
 	}
 	mock.ExpectExec(regexp.QuoteMeta(
-		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`)).
+		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent, origin_credential_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`)).
 		WithArgs(s.ID, s.TokenHash, s.UserID, s.Provider,
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			nil, nil).
+			nil, nil, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := repo.CreateSession(context.Background(), s)
@@ -93,7 +102,7 @@ func TestUISessionRepository_CreateSession_Error(t *testing.T) {
 
 	now := time.Now().UTC()
 	mock.ExpectExec(regexp.QuoteMeta(
-		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`)).
+		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent, origin_credential_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`)).
 		WillReturnError(sql.ErrConnDone)
 
 	err := repo.CreateSession(context.Background(), &persistence.UISession{
@@ -114,14 +123,14 @@ func TestUISessionRepository_GetActiveByTokenHash(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"id", "token_hash", "user_id", "provider",
 		"created_at", "last_seen_at", "expires_at", "revoked_at",
-		"ip", "user_agent",
+		"ip", "user_agent", "origin_credential_id",
 	}).AddRow(
 		"sess_1", "abc123", "user_1", "google",
 		now, now, expires, nil,
-		"127.0.0.1", "Mozilla/5.0",
+		"127.0.0.1", "Mozilla/5.0", nil,
 	)
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
+		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
 		WithArgs("abc123").
 		WillReturnRows(rows)
 
@@ -169,12 +178,12 @@ func TestUISessionRepository_GetActiveByTokenHash_NotFound(t *testing.T) {
 	defer done()
 
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
+		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
 		WithArgs("missing").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "token_hash", "user_id", "provider",
 			"created_at", "last_seen_at", "expires_at", "revoked_at",
-			"ip", "user_agent",
+			"ip", "user_agent", "origin_credential_id",
 		}))
 
 	_, err := repo.GetActiveByTokenHash(context.Background(), "missing")
@@ -188,7 +197,7 @@ func TestUISessionRepository_GetActiveByTokenHash_Error(t *testing.T) {
 	defer done()
 
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
+		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`)).
 		WithArgs("h").
 		WillReturnError(sql.ErrConnDone)
 
@@ -400,7 +409,7 @@ func TestUISessionRepository_DeleteExpiredSessions_Error(t *testing.T) {
 // where the Go-side clock check lives). Without the predicate, expired
 // sessions show as "active" forever — the ever-growing count + stale
 // login-time IPs the operator reported 2026-06-23.
-const listActiveByUserSQL = `SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent
+const listActiveByUserSQL = `SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id
 FROM ui_sessions
 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 ORDER BY last_seen_at DESC`
@@ -412,9 +421,12 @@ func TestUISessionRepository_ListActiveByUser(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"id", "token_hash", "user_id", "provider", "created_at",
 		"last_seen_at", "expires_at", "revoked_at", "ip", "user_agent",
+		"origin_credential_id",
 	}).
-		AddRow("sess_1", "h1", "user_1", "github", now, now, now.Add(168*time.Hour), nil, "192.0.2.10", "Mozilla/5.0 Chrome/120").
-		AddRow("sess_2", "h2", "user_1", "github", now, now, now.Add(168*time.Hour), nil, "10.0.0.5", "")
+		// One credential-minted session and one OIDC session, so the
+		// listing proves both shapes round-trip.
+		AddRow("sess_1", "h1", "user_1", "github", now, now, now.Add(168*time.Hour), nil, "192.0.2.10", "Mozilla/5.0 Chrome/120", "key_1").
+		AddRow("sess_2", "h2", "user_1", "github", now, now, now.Add(168*time.Hour), nil, "10.0.0.5", "", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(listActiveByUserSQL)).
 		WithArgs("user_1").WillReturnRows(rows)
 

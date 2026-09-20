@@ -934,6 +934,21 @@ type Server struct {
 	// accounts backs the CE operator shell's account-management routes
 	// (/api/v1/operator/accounts*, 2026-09-13 review R1). Nil → 503.
 	accounts *authz.Accounts
+	// sessionMinter, sessionLifetime and insecureSessionsAllowed back the
+	// CE credential→session exchange (ce-human-login-design §4).
+	//
+	// Nil minter → the route answers 503 rather than 401: whether a
+	// deployment OFFERS this door is not a fact about any credential, so
+	// saying so leaks nothing, while a 401 would make the absence look
+	// like a rejected key.
+	sessionSubjects exchangeSubjectResolver
+	sessionMinter   sessionExchangeMinter
+	sessionLifetime time.Duration
+	// insecureSessionsAllowed lets a local deployment mint session cookies
+	// over plaintext HTTP. Off by default and deliberately awkward to
+	// reach: a session cookie in the clear is the whole session, and an
+	// operator should turn this on knowingly rather than discover it.
+	insecureSessionsAllowed bool
 	// featureIdentityRepo / featureDurability / featureA2APeers back the
 	// identity, config-assistant and architect-consult feature-doctor
 	// checks (2026-09-13). See WithFeatureIdentityDeps.

@@ -35,6 +35,17 @@ func freshnessHandlers(daemonRev string, revs map[string]string, absent map[stri
 			rev, labelled := revs[image]
 			return rev, labelled, nil
 		},
+		// The registry branch (amendment 2026-09-18) would otherwise reach the
+		// real host: realImageDigest shells out to podman and
+		// realPublishedDigests to skopeo. Both are stubbed to a deterministic
+		// "could not look" so these fixtures stay hermetic; a test that wants
+		// the digest branch injects its own, as the tag-rule tests do.
+		imageDigestFunc: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("no local digest in this fixture")
+		},
+		publishedDigestsFunc: func(_ context.Context, _ string) (map[string]string, error) {
+			return nil, errors.New("registry not consulted in this fixture")
+		},
 	}
 }
 
@@ -54,20 +65,39 @@ func TestImageFreshnessMatchingRevisionIsOK(t *testing.T) {
 // while ghcr.io/grinco/vornik-agent:latest stayed frozen at install date, and
 // nothing reported it. checkAgentImages returned OK the whole time because it
 // only asks whether the image EXISTS.
+// AMENDED 2026-09-18 — the incident is unchanged, the MECHANISM that catches it
+// moved. The agent tag is published from the CE repo, so its revision label is a
+// CE commit and the daemon's is an EE one; comparing them could only ever fail,
+// which is the defect the tag-rule amendment removes. A frozen pulled image is
+// now caught by its DIGEST not matching what the registry serves — a stronger
+// signal, because it also catches a stale build of the same commit.
+//
+// The assertion this test exists for is unweakened: a six-week-frozen agent
+// image must not read as fine.
 func TestImageFreshnessDivergentRevisionWarns(t *testing.T) {
 	daemon := "1111111111111111111111111111111111111111"
 	stale := "9999999999999999999999999999999999999999"
 	h := freshnessHandlers(daemon, map[string]string{imagemanifest.AgentImageTag: stale}, nil, nil)
+	// The frozen image the customer ran, against the digest the registry has
+	// since moved to.
+	h.imageDigestFunc = func(_ context.Context, _ string) (string, error) {
+		return "sha256:frozenatinstalldate", nil
+	}
+	h.publishedDigestsFunc = func(_ context.Context, _ string) (map[string]string, error) {
+		return map[string]string{"amd64": "sha256:whattheregistryservesnow"}, nil
+	}
 
 	got := h.checkImageFreshness(context.Background())
 	if got.Status != "WARNING" {
-		t.Fatalf("a stale image must WARN, got %q: %s", got.Status, got.Message)
+		t.Fatalf("a frozen image must WARN, got %q: %s", got.Status, got.Message)
 	}
-	// The operator has to be able to act on it, which means seeing both
-	// sides of the comparison and the command that fixes it.
-	for _, want := range []string{stale[:12], daemon[:12], imagemanifest.AgentImageTag} {
+	// The operator has to be able to act on it, which means seeing the image
+	// and the command — and, because a local build is indistinguishable from a
+	// stale pull, both readings rather than a guess.
+	for _, want := range []string{imagemanifest.AgentImageTag, "podman pull"} {
 		if !strings.Contains(got.Message, want) && !containsItem(got.Items, want) {
-			t.Errorf("message must name %q so the drift is actionable; got: %s", want, got.Message)
+			t.Errorf("message must name %q so the drift is actionable; got: %s items=%v",
+				want, got.Message, got.Items)
 		}
 	}
 }
@@ -76,8 +106,16 @@ func TestImageFreshnessDivergentRevisionWarns(t *testing.T) {
 // provenance labelling shipped. It is not an error — the image may be
 // perfectly current — but it is unverifiable, and the design's position is
 // that unverifiable must not read as fine.
+//
+// AMENDED 2026-09-18: pinned to a HOST-BUILT tag. For a published image the
+// absent label no longer decides anything — the digest answers the freshness
+// question directly, so routing it to "rebuild to make drift detectable" would
+// be advice for a question that is already answered. The unlabelled rule is
+// exactly preserved where it still applies, which is the host-built branch
+// (amendment test 16).
 func TestImageFreshnessUnlabelledImageWarns(t *testing.T) {
 	h := freshnessHandlers("abc123", map[string]string{}, nil, nil)
+	h.imageProber = clusterHostProbe{}
 
 	got := h.checkImageFreshness(context.Background())
 	if got.Status != "WARNING" {

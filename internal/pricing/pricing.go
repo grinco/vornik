@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
@@ -92,15 +93,71 @@ type File struct {
 	Default Entry            `yaml:"default"`
 }
 
-// Table holds the loaded pricing data plus an unknown-model warning cache
-// so a missing entry only logs once per model.
-type Table struct {
+// rates is one immutable snapshot of a table's numbers. Readers take the
+// pointer once and hold it for the duration of a lookup, so a swap underneath
+// them cannot tear a calculation in half.
+type rates struct {
 	models   map[string]Entry
 	fallback Entry
+}
+
+// Table holds the loaded pricing data plus an unknown-model warning cache
+// so a missing entry only logs once per model.
+//
+// The numbers live behind an atomic snapshot so a config reload can move them
+// WITHOUT replacing the *Table. That is not a micro-optimisation: the executor's
+// cost recorder, the judge runner and the chat model catalogs all capture this
+// pointer when the container is built, and two of the three have no setter, so
+// a design that swapped the pointer would leave them billing the old rates
+// indefinitely. On 2026-09-17 a corrected table was deployed, `config reload`
+// reported success, and every cost kept using the rate the daemon had loaded at
+// boot — the defect this shape exists to make impossible.
+type Table struct {
+	snap atomic.Pointer[rates]
 
 	mu       sync.Mutex
 	warned   map[string]struct{}
 	warnHook func(model string)
+}
+
+// newTable builds a Table around one snapshot.
+func newTable(models map[string]Entry, fallback Entry) *Table {
+	t := &Table{warned: map[string]struct{}{}}
+	t.snap.Store(&rates{models: models, fallback: fallback})
+	return t
+}
+
+// current returns the live snapshot, never nil.
+func (t *Table) current() *rates {
+	if r := t.snap.Load(); r != nil {
+		return r
+	}
+	return &rates{models: map[string]Entry{}}
+}
+
+// Replace swaps this table's rates for another table's, in place, so every
+// holder of this pointer sees the new numbers. Calls already in flight finish
+// against the snapshot they started with.
+//
+// It also clears the unknown-model warn cache, so a model that has just become
+// unpriced warns again instead of staying silent on the strength of a warning
+// issued against a different table. The hook itself survives: it is wired once
+// at container construction, and dropping it would silence every future
+// warning. Unconditional rather than conditional on purpose — deciding which
+// models changed would get exactly one case wrong, the model that genuinely
+// became unpriced, which is the case worth hearing about.
+//
+// A nil argument is a no-op. The caller that would pass one is a reload whose
+// parse failed, and the rule there is that the running rates keep serving.
+func (t *Table) Replace(next *Table) {
+	if t == nil || next == nil || next == t {
+		return
+	}
+	t.snap.Store(next.current())
+
+	t.mu.Lock()
+	t.warned = map[string]struct{}{}
+	t.mu.Unlock()
 }
 
 // Load reads and parses a pricing YAML file. An absent file returns an
@@ -122,21 +179,14 @@ func Load(path string) (*Table, error) {
 	if parsed.Models == nil {
 		parsed.Models = map[string]Entry{}
 	}
-	return &Table{
-		models:   parsed.Models,
-		fallback: parsed.Default,
-		warned:   map[string]struct{}{},
-	}, nil
+	return newTable(parsed.Models, parsed.Default), nil
 }
 
 // Empty returns a pricing table with no entries. Useful for tests and for
 // deployments that haven't configured pricing yet — Lookup always returns
 // (Entry{}, false).
 func Empty() *Table {
-	return &Table{
-		models: map[string]Entry{},
-		warned: map[string]struct{}{},
-	}
+	return newTable(map[string]Entry{}, Entry{})
 }
 
 // SetWarnHook registers a callback invoked the first time an unknown model
@@ -160,7 +210,8 @@ func (t *Table) Lookup(model string) (entry Entry, known bool) {
 	if t == nil {
 		return Entry{}, false
 	}
-	if e, ok := t.models[model]; ok {
+	snap := t.current()
+	if e, ok := snap.models[model]; ok {
 		return e, true
 	}
 	t.mu.Lock()
@@ -174,7 +225,7 @@ func (t *Table) Lookup(model string) (entry Entry, known bool) {
 	} else {
 		t.mu.Unlock()
 	}
-	return t.fallback, false
+	return snap.fallback, false
 }
 
 // IDs returns every model identifier the table was loaded with, sorted
@@ -186,8 +237,9 @@ func (t *Table) IDs() []string {
 	if t == nil {
 		return nil
 	}
-	out := make([]string, 0, len(t.models))
-	for id := range t.models {
+	snap := t.current()
+	out := make([]string, 0, len(snap.models))
+	for id := range snap.models {
 		out = append(out, id)
 	}
 	sort.Strings(out)

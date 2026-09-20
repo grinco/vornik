@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"vornik.io/vornik/internal/apikey"
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/authsession"
 	"vornik.io/vornik/internal/httpx/realip"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/ratelimit"
@@ -371,7 +372,7 @@ func (c AuthConfig) serveAuthEnabled(w http.ResponseWriter, r *http.Request, nex
 	// to programmatic callers, so this stays false for them.
 	hasSessionCookie := false
 	if c.SessionBackend != nil {
-		if _, err := r.Cookie("vornik_session"); err == nil {
+		if _, err := r.Cookie(authsession.SessionCookieName); err == nil {
 			hasSessionCookie = true
 		}
 	}
@@ -393,7 +394,18 @@ func (c AuthConfig) serveAuthEnabled(w http.ResponseWriter, r *http.Request, nex
 	// plugin) skip this gate entirely; browsers don't auto-attach those headers
 	// cross-origin. See isCSRFSafe for the decision ladder.
 	_, _, isBasic := r.BasicAuth()
-	if (isBasic || hasSessionCookie) && !isCSRFSafe(r) && !isGitSmartHTTP(r) {
+	// Two conditions, ONE gate. The ladder is the first: does this mutating
+	// cookie/Basic request look same-origin at all. The double-submit token
+	// is the second, and it only ever runs after the ladder passed — it
+	// exists to close the ladder's same-SITE-but-cross-ORIGIN acceptance
+	// (a sibling subdomain), which no header signal distinguishes. See
+	// csrfDoubleSubmitOK.
+	csrfBlocked := (isBasic || hasSessionCookie) && !isCSRFSafe(r)
+	doubleSubmitOK := !hasSessionCookie || csrfDoubleSubmitOK(r)
+	if !csrfBlocked && !doubleSubmitOK {
+		csrfBlocked = true
+	}
+	if csrfBlocked && !isGitSmartHTTP(r) {
 		// Log the denial with the signals that drove it — this gate is
 		// otherwise silent, which made the git-over-HTTPS 403 hard to
 		// diagnose (the request just 403s with no server-side trace).
@@ -406,7 +418,8 @@ func (c AuthConfig) serveAuthEnabled(w http.ResponseWriter, r *http.Request, nex
 			Str("sec_fetch_site", r.Header.Get("Sec-Fetch-Site")).
 			Str("origin", r.Header.Get("Origin")).
 			Str("host", r.Host).
-			Msg("CSRF gate blocked a cross-site mutating request (Basic/cookie, no same-origin signal); programmatic clients should use Authorization: Bearer or X-API-Key")
+			Bool("double_submit_ok", doubleSubmitOK).
+			Msg("CSRF gate blocked a cross-site mutating request (Basic/cookie, no same-origin signal, or a double-submit token that did not match); programmatic clients should use Authorization: Bearer or X-API-Key")
 		respondError(w, http.StatusForbidden, "CSRF_BLOCKED",
 			"cross-site mutating request via Basic Auth refused; use Authorization: Bearer for programmatic clients, or open the UI in the same origin")
 		return
@@ -423,7 +436,7 @@ func (c AuthConfig) serveAuthEnabled(w http.ResponseWriter, r *http.Request, nex
 	// Extract the session cookie BEFORE building the credential so
 	// SessionBackend (first in the chain) can validate it. A dead cookie yields
 	// ErrNoCredential and the chain falls through to the key backends.
-	if c, err := r.Cookie("vornik_session"); err == nil {
+	if c, err := r.Cookie(authsession.SessionCookieName); err == nil {
 		cred.SessionToken = c.Value
 	}
 	identity, err := auth.Chain(r.Context(), backends, cred)
@@ -512,7 +525,7 @@ func stampIdentityContext(ctx context.Context, identity *auth.Identity, apiKey s
 // with auth off — the limit is a property of the key, not the toggle).
 func (c AuthConfig) serveAuthDisabled(w http.ResponseWriter, r *http.Request, next http.Handler, dryRunDedup *sync.Map) {
 	if c.SessionBackend != nil {
-		if cookie, err := r.Cookie("vornik_session"); err == nil {
+		if cookie, err := r.Cookie(authsession.SessionCookieName); err == nil {
 			cred := auth.Credential{SessionToken: cookie.Value, Path: r.URL.Path}
 			if identity, err := auth.Chain(r.Context(), []auth.Backend{c.SessionBackend}, cred); err == nil {
 				r = r.WithContext(context.WithValue(r.Context(), identityKey, identity))
@@ -703,7 +716,7 @@ func shouldRedirectToLogin(r *http.Request, cfg AuthConfig) bool {
 // the user lands where they meant to go after authenticating.
 func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "vornik_session",
+		Name:     authsession.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

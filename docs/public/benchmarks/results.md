@@ -292,10 +292,26 @@ called tools correctly. It runs 30 software tasks through a multi-agent
 
 | Release | Tasks | Task success | Schema conformance | Tool-call validity | Steps with no output | Cost/task |
 |---|---|---|---|---|---|---|
-| `2026.8.9-70-g5d247f72` (shipped as **2026.9.0**) | 30 | 100.0% | 0.985 | 1.000 | 9.7% | $0.74 |
+| `2026.8.9-70-g5d247f72` (shipped as **2026.9.0**) | 30 | 100.0% | 0.985 | 1.000 | 9.7% | $0.29 |
 
 Efficiency, same arm: 667,801 tokens and 62.4 tool calls per task, 0 escalations,
-0 schema retries. Total spend $25.23.
+0 schema retries. Total spend $8.79.
+
+> **Cost corrected downwards, 2026-09-19.** This row first published $0.74 per
+> task and $25.23 total. Those figures were wrong and we are the ones who found
+> it: the observed model was absent from our pricing table, so every call was
+> billed at the table's `default` rate of $1.00/$3.00 per million tokens instead
+> of the model's real $0.35/$2.75. The corrected figures are recomputed from the
+> arm's own recorded token counts — 22,353,287 prompt and 351,933 completion —
+> and nothing else about the run changed.
+>
+> The true cost may be lower still. This arm reached the model over a path that
+> did not report prompt-cache reads, and a later pass on the same model measured
+> 79.5% of prompt tokens served from cache at a tenth of the input rate. We do
+> not know that share for this arm, so we have not applied it: the number above
+> is an upper bound, stated as one.
+>
+> Quality figures in this row are unaffected — pricing enters no scoring path.
 
 **Read both layers, because the first one alone flatters us.** Task success is
 100%, and underneath it **14 of 144 terminal steps (9.7%) produced no output at

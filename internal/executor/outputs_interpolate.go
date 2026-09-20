@@ -37,6 +37,16 @@ var outputRefRegex = regexp.MustCompile(`\$\{outputs\.([A-Za-z0-9_\-]+)\.([A-Za-
 //     surfaces in payloads as obviously-broken values rather
 //     than failing the step.
 //
+// THAT "" RULE IS THE PAYLOAD PATH'S ONLY, and saying so here is the point:
+// agent step PROMPTS resolve the same ${outputs.…} references through
+// interpolatePromptRefs (prompt_interpolate.go) and FAIL the step on an
+// unresolved one. The asymmetry is deliberate — a payload field is a
+// structured value an envelope schema validates downstream, so "" gets
+// caught; a prompt has no downstream schema, so "" would quietly hand the
+// model an empty contract it can satisfy by producing nothing. Do not
+// "harmonise" the two. See 2026-08-13-agent-quality-benchmark-design.md,
+// amendment 2026-09-18, D2.
+//
 // Recursive: descends into nested maps + slices.
 func interpolateOutputs(in any, stepResults map[string]json.RawMessage) any {
 	if in == nil {
@@ -114,6 +124,16 @@ func resolveStepField(stepResults map[string]json.RawMessage, step, fieldPath st
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil
 	}
+	return resolveDotted(doc, fieldPath)
+}
+
+// resolveDotted walks an already-decoded JSON value by a dot-separated field
+// path, returning nil when any segment is missing or a non-object is
+// traversed. Split out of resolveStepField so the schema-pinning path
+// (pinned_case_enum.go) reads a producer result by exactly the same rule the
+// ${outputs.<step>.<field>} resolver does, rather than growing a second walk
+// that could disagree with it.
+func resolveDotted(doc any, fieldPath string) any {
 	for _, seg := range strings.Split(fieldPath, ".") {
 		obj, isMap := doc.(map[string]any)
 		if !isMap {

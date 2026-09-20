@@ -314,6 +314,14 @@ type Channel struct {
 	configRuns   map[string]struct{}
 	// redemptionLimiter bounds pre-gate link attempts per speaker.
 	redemptionLimiter *chatauth.RedemptionLimiter
+	// unmatchedCommands tallies slash commands this channel was sent and does
+	// not answer — see unmatched_command.go for the 2026-09-15 incident it
+	// exists for.
+	unmatchedCommands *unmatchedCommands
+	// exposure removes link codes from text about to reach a model and burns
+	// them (§5.2b). Nil-safe: a channel built without one scrubs nothing,
+	// which is the pre-feature behaviour.
+	exposure *chatauth.ExposureGuard
 
 	postMessageRPS   int
 	postMessageBurst int
@@ -474,6 +482,7 @@ func New(cfg Config) (*Channel, error) {
 		voiceTracker:       newVoiceTracker(),
 		progress:           make(map[string]*progressSignal),
 		progressDelay:      progressDelay,
+		unmatchedCommands:  newUnmatchedCommands(unmatchedCommandsCap),
 	}
 	if c.voice.MaxOutboundDuration <= 0 {
 		c.voice.MaxOutboundDuration = slackAudioMaxDurationMs

@@ -740,10 +740,16 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			// Output-shape contract applies to warm runs too; missing
 			// required keys downgrade the apparent success into an
 			// INVALID_OUTPUT failure the gate evaluator can trust.
-			if len(roleConfig.RequiredOutputKeys) > 0 && len(result) > 0 {
-				if missing := validateRequiredOutputKeys(result, roleConfig.RequiredOutputKeys); len(missing) > 0 {
-					return "", nil, fmt.Errorf("schema violation: role %q result.json is missing required keys: %v",
-						step.Role, missing)
+			// D6: the enum check joins the required-keys check here rather
+			// than forming a second validation tier beside it. opts carries
+			// the schema this step's model was actually handed.
+			if len(result) > 0 {
+				var effective *registry.OutputSchema
+				if opts != nil {
+					effective = opts.EffectiveSchema
+				}
+				if msg := e.checkOutputContract(result, step.Role, roleConfig.RequiredOutputKeys, effective); msg != "" {
+					return "", nil, fmt.Errorf("%s", msg)
 				}
 			}
 			return cid, result, nil
@@ -1097,10 +1103,17 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// every required key missing whenever redaction broke the JSON, which is the
 	// misattribution documented at the scan above and pinned by
 	// TestValidateRequiredOutputKeys_rawPassesWhereRedactedFails.
-	if agentError == "" && len(roleConfig.RequiredOutputKeys) > 0 && len(rawResultBytes) > 0 {
-		if missing := validateRequiredOutputKeys(rawResultBytes, roleConfig.RequiredOutputKeys); len(missing) > 0 {
-			agentError = fmt.Sprintf("schema violation: role %q result.json is missing required keys: %v",
-				step.Role, missing)
+	if agentError == "" && len(rawResultBytes) > 0 {
+		// D6: enum enforcement joins this check. The enum half walks
+		// opts.EffectiveSchema — the schema the model was handed, which for a
+		// pinned_case_validation verifier carries the producer's ids and is
+		// nil on a recovery hop; the required-keys half is unaffected by it.
+		var effective *registry.OutputSchema
+		if opts != nil {
+			effective = opts.EffectiveSchema
+		}
+		if msg := e.checkOutputContract(rawResultBytes, step.Role, roleConfig.RequiredOutputKeys, effective); msg != "" {
+			agentError = msg
 		}
 	}
 

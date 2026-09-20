@@ -2019,9 +2019,62 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
     expires_at    TEXT NOT NULL,
     revoked_at    TEXT,
     ip            TEXT,
-    user_agent    TEXT
+    user_agent    TEXT,
+    -- ce-human-login-design 4: which CREDENTIAL minted this session. NULL for
+    -- an OIDC login, which has no originating credential; the API key id for a
+    -- CE credential->session exchange. Read by the per-request capping rule,
+    -- which is what makes "key revocation ends dependent sessions" true.
+    -- Deliberately NOT a foreign key: a hard-deleted key must not cascade away
+    -- the session history recording what it did, and the capping rule already
+    -- treats a missing key as a refusal.
+    origin_credential_id TEXT
 );
+
+-- Class-E slot reservations — config-assistant design 13.9a. The PRIMARY KEY is
+-- the cap: the Nth slot is handed out by a successful INSERT, and a
+-- duplicate-key error IS the refusal, identically on both drivers. day is TEXT
+-- (YYYY-MM-DD, UTC) so the two drivers compare the same bytes.
+CREATE TABLE IF NOT EXISTS class_e_slot_reservations (
+    credential_id TEXT NOT NULL,
+    day           TEXT NOT NULL,
+    slot          INTEGER NOT NULL,
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (credential_id, day, slot)
+);
+
+-- Key-claim attempts — oidc-identity-permissions-design 5.4. One row per
+-- ATTEMPT, counted over a sliding hour, so the bound holds across replicas and
+-- restarts rather than per process. No unique constraint: two genuine attempts
+-- in the same instant are two attempts.
+CREATE TABLE IF NOT EXISTS key_claim_attempts (
+    id           TEXT PRIMARY KEY,
+    key_id       TEXT NOT NULL,
+    attempted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_key_claim_attempts_window
+    ON key_claim_attempts (key_id, attempted_at DESC);
+
+-- agent-extension-package-design 3: one row per config row a package
+-- contributed, carrying the content hash AT INSTALL TIME. The hash is what
+-- lets uninstall tell an untouched file from an operator-edited one and refuse
+-- the second; a row id alone cannot. Keyed by (kind, row_id) because one
+-- deployed file has one owner — keying by package too would let two packages
+-- both claim a file and leave the conflict to be found at uninstall.
+CREATE TABLE IF NOT EXISTS package_contributions (
+    kind                    TEXT NOT NULL,
+    row_id                  TEXT NOT NULL,
+    package                 TEXT NOT NULL,
+    package_version         TEXT NOT NULL,
+    path                    TEXT NOT NULL,
+    content_hash_at_install TEXT NOT NULL,
+    installed_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (kind, row_id)
+);
+CREATE INDEX IF NOT EXISTS idx_package_contributions_package
+    ON package_contributions (package);
 CREATE INDEX IF NOT EXISTS idx_ui_sessions_hash ON ui_sessions (token_hash) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ui_sessions_user ON ui_sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_ui_sessions_origin_credential
+    ON ui_sessions (origin_credential_id) WHERE revoked_at IS NULL AND origin_credential_id IS NOT NULL;
 
 `

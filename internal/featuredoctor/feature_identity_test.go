@@ -16,6 +16,13 @@ type stubIdentityRepo struct {
 	err   error
 }
 
+// RevokeSessionsForCredential is part of the interface as of 2026-09-19 (CE
+// login's capping rule). This doctor check never revokes anything, so the stub
+// answers the no-op rather than growing a fake to assert against.
+func (s *stubIdentityRepo) RevokeSessionsForCredential(context.Context, string) error {
+	return nil
+}
+
 func (s *stubIdentityRepo) ListUsers(context.Context) ([]persistence.UserAdminView, error) {
 	return s.users, s.err
 }

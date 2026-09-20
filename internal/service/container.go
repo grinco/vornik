@@ -675,6 +675,23 @@ type Container struct {
 	// nil-safe — startGraphWorker / stopGraphWorker guard.
 	graphWorker  *graph.Worker
 	pricingTable *pricing.Table
+	// applyRoots maps a named apply root to its absolute path — today just
+	// "workspace" (config-apply-journal design §9.2b/c). Held on the container
+	// because BOTH the apply engine and verifyConfigGeneration must resolve an
+	// op the same way: the engine writes through it, and the verification
+	// re-reads through it. Two spellings of one mapping is how a write
+	// succeeds and its verification looks in the wrong tree.
+	applyRoots map[string]string
+
+	// exposureGuard is the one link-code scrub-and-burn guard both chat
+	// channels share (§5.2b); see container_linkcode_exposure.go.
+	exposureGuardOnce sync.Once
+	exposureGuard     *chatauth.ExposureGuard
+	// pricingPath is where pricingTable was loaded from, so a reload can
+	// re-read it. stagedPricing holds a parsed table between the reload's
+	// loader and activator phases (see container_pricing_reload.go).
+	pricingPath   string
+	stagedPricing *pricing.Table
 	// llmSpendFailures counts ledger writes that failed, across every billing
 	// component. Lazily created on first use by llmSpendFailureSink so the
 	// counter is registered once per process rather than once per component.
@@ -960,6 +977,7 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 	// without dollar cost); malformed YAML is fatal — silent cost
 	// miscounting is worse than a startup failure.
 	pricingPath := resolvePricingPath(c.ConfigPath)
+	c.pricingPath = pricingPath
 	pricingTable, err := pricing.Load(pricingPath)
 	if err != nil {
 		return nil, fmt.Errorf("load pricing table %q: %w", pricingPath, err)

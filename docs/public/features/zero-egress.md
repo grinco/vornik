@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/runtime/container.go
-      sha256: 5d7d0bdd73fd87fa87051d1cfd95a9ce1566597d63b164555609633e18ce589e
+      sha256: 6e76e27ede567b02236e55aea706eb35f732fc3cc4fc2a344356163c56fbca07
     - path: internal/runtime/manager.go
-      sha256: 94a969cc891fe8df7e833d38b15503ae7ca7f65d55f1ac834744cb568539c6a6
+      sha256: 48fb406517559b57add8d714f4554625bbb490da95147a96b57f65b28e0e59f4
 ---
 # Zero-egress / local-first execution
 
@@ -76,6 +76,25 @@ A typical setup runs reasoning/review roles on `daemon-only` and grants `egress`
 only to the few roles that must install dependencies. An invalid
 `default_network` value **fails closed to `daemon-only`**, so a typo can't
 silently restore egress.
+
+**Better than granting `egress`: declare the project's dependencies** and let
+the daemon provision them. A project with a `dependencies:` manifest gets its
+packages materialised into a content-addressed cache OUTSIDE the container and
+bind-mounted read-only, so the agent imports them without ever reaching an
+index — and the role stays on `daemon-only`:
+
+```yaml
+# in the project's config
+dependencies:
+  - ecosystem: pip
+    lockfile: requirements.lock     # hash-pinned
+```
+
+Every role with a workspace gets the mount; it is not a grant. That matters
+most for the roles that are not coders: a REVIEWER is handed a diff and never
+runs an install step, so without this it cannot run the suite it is reviewing
+and cannot tell "the tests pass" from "the tests did not run". `vornikctl
+doctor` reports, per project, whether each declared set is materialised.
 
 Two guardrails to know:
 

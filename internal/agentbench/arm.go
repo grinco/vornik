@@ -61,11 +61,30 @@ import (
 //	    disjoint report still scores zero, so the bump covers only the extras
 //	    rule. Figures below v6 are not comparable with those at or above it,
 //	    which is precisely why this number moves.
+//	v7  2026-09-19. D3': the unit is the SUBTASK. The producer's authority
+//	    moves to `analysis.subtasks`, whose union is the denominator, and the
+//	    numerator is assembled from EVERY visit of the verifier — per case,
+//	    the verdict from the most recent visit that mentioned it — instead of
+//	    from the snapshot's single-visit mirror. A multi-visit verifier was
+//	    `unscorable` at v6 and is scored at v7, so the two are not comparable
+//	    on any execution where the rework loop ran.
+//
+//	    It is ALSO the first bump that changes the scorer's INPUTS rather than
+//	    its rule, which is why `MinRescorableHarness` exists: a v6 journal
+//	    cannot be re-scored to v7, because the per-visit bodies live in the
+//	    ledger and the bench database is wiped by the next arm. The 2026.9.4
+//	    and 2026.9.5-d6 baselines are therefore a closed set rather than the
+//	    start of a series.
+//
+//	    Single-visit executions score IDENTICALLY at v6 and v7, which is why
+//	    the bump can land before any workflow emits the grouped shape: what
+//	    changed is what the scorer CAN read, and a figure that does not move
+//	    is still a figure produced by a different scorer.
 //
 // v1 was never bumped through any of those, which is the failure this comment
 // exists to prevent: the mechanism refused nothing because nobody moved the
 // number it keys on.
-const HarnessVersion = "6"
+const HarnessVersion = "7"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.

@@ -70,7 +70,7 @@ func (a *Accounts) ClaimKey(ctx context.Context, userID, keyID, secret string, a
 	// touched, because this is the one function every claim door calls. It
 	// used to sit in the REST handlers only, which the browser form went
 	// around entirely (audit 2026-09-15 CA-09).
-	if !a.claims.allow(keyID) {
+	if !a.allowClaimAttempt(ctx, keyID) {
 		return ErrKeyClaimRateLimited
 	}
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"vornik.io/vornik/internal/projectdeps"
 )
 
 // networkHostAllowed reports whether `network: host` roles are permitted.
@@ -118,6 +120,25 @@ type ContainerConfig struct {
 	// git commands from inside the container fail with "not a git repository".
 	// Leave empty for non-git or non-worktree workspaces.
 	ProjectGitDir string `json:"projectGitDir,omitempty"`
+
+	// DependencyMounts are the project's materialised dependency trees,
+	// bind-mounted READ-ONLY under /app/deps (LLD
+	// 2026-09-19-project-dependency-provisioning-design.md §5.3).
+	//
+	// Read-only is load-bearing: a writable cache lets one task's failed
+	// install corrupt another task's dependencies, and the corruption
+	// would present as a test failure in an unrelated project.
+	//
+	// EVERY role with a workspace gets the mount — it is not a grant and
+	// not a per-role allowlist entry. The dependencies are a property of
+	// the PROJECT, and a reviewer that can read the code but not its
+	// libraries is the defect this exists to remove. Tool grants are
+	// unchanged: being able to import a library is not being allowed to
+	// run a shell.
+	//
+	// Empty for a project with no manifest, which then gets no mount and
+	// no env injection at all.
+	DependencyMounts []projectdeps.Mount `json:"dependencyMounts,omitempty"`
 
 	// TimeoutSeconds is the maximum execution time.
 	// 0 means no timeout (handled by executor).

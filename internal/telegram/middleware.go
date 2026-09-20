@@ -18,6 +18,10 @@ import (
 // migration window, and lands on the worklist while it does.
 func (b *Bot) SetIdentityShim(s *chatauth.Shim) { b.identityShim = s }
 
+// SetLinkCodeExposureGuard wires §5.2b's scrub-and-burn. Nil — the default —
+// leaves text untouched, which is the pre-feature behaviour.
+func (b *Bot) SetLinkCodeExposureGuard(g *chatauth.ExposureGuard) { b.exposure = g }
+
 // legacyAccess reads what the hand-maintained list says about a user, in the
 // shape the shim consumes. Kept separate from IsAllowed so the legacy rule —
 // including "an empty list DENIES unless allow_unlisted_users" — stays in one

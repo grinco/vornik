@@ -68,6 +68,19 @@ type DoctorHandlers struct {
 	// assess" rather than failing. See doctor_model_calls.go for why this exists.
 	callStats *chat.CallStats
 
+	// slashCommands supplies each Slack channel's configured command and the
+	// commands it refused, for checkSlackSlashCommand. Optional: nil means the
+	// check reports that nothing is wired, which is a different statement from
+	// "no mismatches" and is made as one.
+	slashCommands SlashCommandReporter
+
+	// depsInventory supplies each project's resolved dependency manifest
+	// for checkProjectDependencies. Optional: nil means the check reports
+	// SKIPPED, because an unmaterialised cache and a project with no
+	// dependencies are indistinguishable from inside an agent and must
+	// not be indistinguishable here.
+	depsInventory DependencyInventory
+
 	db             *sql.DB
 	configDir      string
 	configPath     string // path config.yaml was loaded from, for checkConfigSecretHygiene
@@ -227,6 +240,11 @@ type DoctorHandlers struct {
 	// subuidProvisioned; tests inject a fake so they never touch the
 	// filesystem or PATH.
 	subuidOKFunc func() bool
+	// imageLabelsFunc is the injectable seam for reading an image's OCI
+	// labels. nil uses realImageLabels. Split from bakedUIDFunc because it
+	// answers WITHOUT starting a container, which is what lets the check
+	// complete on a 1.3GB image (CE issue 59).
+	imageLabelsFunc func(ctx context.Context, image string) (map[string]string, error)
 
 	// The three seams below back checkImageFreshness (see
 	// doctor_image_freshness.go). Each is nil-safe and defaults to the
@@ -248,6 +266,14 @@ type DoctorHandlers struct {
 	// imageRevisionFunc because the two answer different questions: the label
 	// says which SOURCE an image came from, the digest says which BUILD.
 	imageDigestFunc func(ctx context.Context, image string) (string, error)
+	// publishedDigestsFunc reads the per-architecture manifest digests a
+	// registry currently serves for a tag, WITHOUT pulling. Nil ⇒ the
+	// imagemanifest SkopeoIndexReader the release recorder already uses; a
+	// second reader here would be the two-implementations hazard tenet §5
+	// names. Returns an error when the registry cannot be reached, skopeo is
+	// absent, or the shared budget is exhausted — each of which is a
+	// NOT VERIFIED outcome with its own reason, never an OK.
+	publishedDigestsFunc func(ctx context.Context, tag string) (map[string]string, error)
 	// daemonRevisionFunc reports the commit this daemon was built from.
 	// Nil ⇒ version.BuildRevision with the -dirty suffix applied.
 	daemonRevisionFunc func() (string, bool)
@@ -268,6 +294,16 @@ func (h *DoctorHandlers) SetChatCallStats(s *chat.CallStats) {
 		return
 	}
 	h.callStats = s
+}
+
+// SetSlashCommandReporter wires the Slack channels' own tally of refused slash
+// commands into checkSlackSlashCommand. Late-bound for the same reason
+// SetChatCallStats is: the channels are constructed after the API handlers.
+func (h *DoctorHandlers) SetSlashCommandReporter(r SlashCommandReporter) {
+	if h == nil {
+		return
+	}
+	h.slashCommands = r
 }
 
 func (h *DoctorHandlers) SetAPIMetrics(m *APIMetrics) {
@@ -495,7 +531,9 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
-	report.Checks = append(report.Checks, h.checkProjectConfigSkew())
+	report.Checks = append(report.Checks, h.checkProjectConfigSkew(fix))
+	report.Checks = append(report.Checks, h.checkSlackSlashCommand())
+	report.Checks = append(report.Checks, h.checkProjectDependencies())
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
@@ -576,7 +614,9 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkFallbackRungs(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
-	report.Checks = append(report.Checks, h.checkProjectConfigSkew())
+	report.Checks = append(report.Checks, h.checkProjectConfigSkew(fix))
+	report.Checks = append(report.Checks, h.checkSlackSlashCommand())
+	report.Checks = append(report.Checks, h.checkProjectDependencies())
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())

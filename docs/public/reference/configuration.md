@@ -28,6 +28,12 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|---|
 | `control_plane` | struct | Control-plane worker knobs (self-healing incident detection). | — |
 
+## registry
+
+| Key | Type | Description | Environment override |
+|---|---|---|---|
+| `registry` | struct | Config-tree loading policy (what a rejected project file does at boot). | — |
+
 ## named_secrets
 
 | Key | Type | Description | Environment override |
@@ -407,6 +413,8 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `auth.external_base_url` | string | Public origin of the daemon (scheme://host[:port]). Required when a login provider is configured. | — |
 | `auth.session.lifetime` | string | Fixed session expiry. | — |
 | `auth.session.idle_timeout` | string | Cut sessions idle longer than this. | — |
+| `auth.session.credential_exchange` | bool | Open POST /api/v1/auth/session, exchanging an API key for a browser session cookie. | — |
+| `auth.session.allow_insecure_exchange` | bool | Permit session cookies over plaintext HTTP. Development only; a cookie in the clear is the whole session. | — |
 | `auth.providers.github.client_id` | string | GitHub OAuth App client ID. | — |
 | `auth.providers.github.client_secret_file` | string | Path to the GitHub OAuth client secret (preferred over inline). | — |
 | `auth.providers.github.org` | string | Restrict/soft-gate login to a GitHub org. | — |

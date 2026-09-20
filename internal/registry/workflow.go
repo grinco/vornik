@@ -670,6 +670,9 @@ func (w *Workflow) Validate(filename string) error {
 	if err := w.validateRetryClasses(filename); err != nil {
 		return err
 	}
+	if err := w.validatePromptOutputRefs(filename); err != nil {
+		return err
+	}
 
 	// Validate entrypoint exists
 	if _, exists := w.Steps[w.Entrypoint]; !exists {

@@ -129,6 +129,26 @@ type adoptionStats struct {
 	// queries first because that is the surface with real attribution today.
 	Keys []keyRow
 
+	// KeysTotal is how many credentials the board found before the 20-row cap,
+	// and KeysHidden how many the cap dropped.
+	//
+	// The board truncated silently. §5's rule is that a panel states what it
+	// does not cover, and that applies to the ROW COUNT as much as to the
+	// coverage percentage: on an install with more credentials than the cap, a
+	// reader looking for a specific key found nothing and no explanation — the
+	// "large audience, no new keys" report is partly just this. Seeding quiet
+	// credentials made disclosure mandatory rather than merely right, because
+	// those rows sort last and are therefore always the ones cut.
+	KeysTotal  int
+	KeysHidden int
+
+	// KeysWithActivity counts the rows backed by ledger activity, as opposed
+	// to those seeded from authentication alone. The summary tile reported
+	// len(Keys) as "active credentials"; once quiet credentials appear as rows
+	// that label would be false, and a tile that overstates adoption is the
+	// same failure as one that hides it.
+	KeysWithActivity int
+
 	Rows []actorRow
 }
 
@@ -181,6 +201,24 @@ type keyRow struct {
 	// adoption is people using more of the product, not one person using one
 	// feature harder.
 	Projects int
+
+	// LastSeen is the most recent evidence this credential is alive, taken
+	// from api_keys.last_used_at — which the auth middleware touches on EVERY
+	// successful request, not just the ones that reach a ledger.
+	//
+	// Customer report 2026-09-18 ("the last accessed date is not
+	// incrementing"): every other field here comes from the three activity
+	// ledgers, so a credential doing REST / UI / chat / A2A work moved none of
+	// them and looked frozen. Authentication is the broadest signal of life the
+	// system records, and it was the one signal this panel did not read.
+	LastSeen *time.Time
+
+	// NoMeasuredActivity marks a row seeded from a credential that
+	// authenticated but produced no ledger rows in the window. Rendered as
+	// "authenticated, no measured activity" rather than omitted: absence reads
+	// as "nobody is using it", which is the §5 misreading in the opposite
+	// direction and was exactly the customer's complaint.
+	NoMeasuredActivity bool
 }
 
 // activityTotals counts what the product did, whether or not a task was
@@ -761,16 +799,55 @@ func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, pr
 	// rather than a lookup per row: the leaderboard is capped at 20 rows but
 	// the audit rows behind it are thousands.
 	names := map[string]string{}
+	// lastUsed carries api_keys.last_used_at for every visible credential, and
+	// realKeys is the subset that deserves a row of its own even with no ledger
+	// activity. Both are filled in the same pass the names come from — the
+	// panel was already reading these rows and using only the name.
+	lastUsed := map[string]time.Time{}
+	realKeys := map[string]string{}
 	for _, pid := range projects {
 		keys, err := s.apiKeyRepo.ListByProject(ctx, pid)
 		if err != nil {
 			continue
 		}
 		for _, k := range keys {
-			if k != nil {
-				names[k.ID] = k.Name
+			if k == nil {
+				continue
 			}
+			names[k.ID] = k.Name
+			if k.LastUsedAt != nil {
+				lastUsed[k.ID] = *k.LastUsedAt
+			}
+			if k.RevokedAt != nil {
+				// Revoked: gone, not quiet. Showing it would pad the board
+				// with history.
+				continue
+			}
+			if strings.HasPrefix(k.Name, persistence.TaskKeyNamePrefix) ||
+				strings.HasPrefix(k.Name, warmAgentKeyNamePrefix) ||
+				strings.HasPrefix(k.ID, systemKeyIDPrefix) {
+				// The system's own per-task and warm-pool credentials. These
+				// are FOLDED below; seeding them individually would bury every
+				// human row — this deployment holds 623 of them against 14
+				// real keys.
+				continue
+			}
+			realKeys[k.ID] = k.Name
 		}
+	}
+	// Seed a row for every real credential with no ledger activity, so a key
+	// that authenticated is visible as such. See keyRow.NoMeasuredActivity.
+	seen := map[string]bool{}
+	for _, row := range st.Keys {
+		seen[row.KeyID] = true
+	}
+	for id, name := range realKeys {
+		if seen[id] {
+			continue
+		}
+		st.Keys = append(st.Keys, keyRow{
+			KeyID: id, Label: name, NoMeasuredActivity: true,
+		})
 	}
 	// NO early return on an empty name map. The prefix fallback below does not
 	// need names, and returning here is what made the first two attempts at this
@@ -839,6 +916,10 @@ func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, pr
 			if name != "" {
 				row.Label = name
 			}
+			if ts, ok := lastUsed[row.KeyID]; ok {
+				t := ts
+				row.LastSeen = &t
+			}
 			resolved = append(resolved, row)
 		}
 	}
@@ -850,16 +931,45 @@ func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, pr
 	// Re-rank: folding changes the ordering, and an agent bucket that now
 	// out-queries every human must sort where its volume puts it rather than
 	// wherever its first fragment happened to land.
+	//
+	// Credentials with NO measured activity sort below every credential that
+	// has some, and among themselves by most recently authenticated. They are
+	// on the board to be seen, not to compete: a quiet key ranking above a
+	// working one would make the board answer a different question than the
+	// one it claims to.
 	sort.Slice(st.Keys, func(i, j int) bool {
-		if st.Keys[i].RAGQueries != st.Keys[j].RAGQueries {
-			return st.Keys[i].RAGQueries > st.Keys[j].RAGQueries
+		a, b := st.Keys[i], st.Keys[j]
+		if a.NoMeasuredActivity != b.NoMeasuredActivity {
+			return b.NoMeasuredActivity
 		}
-		if st.Keys[i].CostUSD != st.Keys[j].CostUSD {
-			return st.Keys[i].CostUSD > st.Keys[j].CostUSD
+		if a.NoMeasuredActivity && b.NoMeasuredActivity {
+			switch {
+			case a.LastSeen != nil && b.LastSeen != nil && !a.LastSeen.Equal(*b.LastSeen):
+				return a.LastSeen.After(*b.LastSeen)
+			case a.LastSeen != nil && b.LastSeen == nil:
+				return true
+			case a.LastSeen == nil && b.LastSeen != nil:
+				return false
+			}
+			return a.KeyID < b.KeyID
 		}
-		return st.Keys[i].KeyID < st.Keys[j].KeyID
+		if a.RAGQueries != b.RAGQueries {
+			return a.RAGQueries > b.RAGQueries
+		}
+		if a.CostUSD != b.CostUSD {
+			return a.CostUSD > b.CostUSD
+		}
+		return a.KeyID < b.KeyID
 	})
+	st.KeysTotal = len(st.Keys)
 	st.Keys = limitKeyRows(st.Keys, 20)
+	st.KeysHidden = st.KeysTotal - len(st.Keys)
+	st.KeysWithActivity = 0
+	for _, r := range st.Keys {
+		if !r.NoMeasuredActivity {
+			st.KeysWithActivity++
+		}
+	}
 }
 
 func limitKeyRows(rows []keyRow, limit int) []keyRow {

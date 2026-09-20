@@ -13,13 +13,20 @@ import (
 // order is: base prompt → gate suffix → hint prefix → fork override prefix,
 // and the fork override is one-shot (flips forkOverrideApplied so re-entries
 // run with the unmodified-by-fork prompt).
+
+// NOTE (2026-09-18): assembleStepPrompt gained an error return when agent step
+// prompts started resolving ${outputs.<step>.<field>} references. Every case
+// below uses a prompt with no reference, so the error is always nil; it is
+// discarded rather than asserted because an unexpected error would empty the
+// returned prompt and fail these assertions loudly anyway.
+
 func TestAssembleStepPrompt(t *testing.T) {
 	e := &Executor{}
 
 	t.Run("base prompt only", func(t *testing.T) {
 		applied := false
-		got := e.assembleStepPrompt(&persistence.Execution{}, "step1",
-			registry.WorkflowStep{Prompt: "do the thing"}, "", &applied)
+		got, _ := e.assembleStepPrompt(&persistence.Execution{}, "step1",
+			registry.WorkflowStep{Prompt: "do the thing"}, "", &applied, nil)
 		if got != "do the thing" {
 			t.Fatalf("want unchanged base prompt, got %q", got)
 		}
@@ -34,7 +41,7 @@ func TestAssembleStepPrompt(t *testing.T) {
 			Prompt: "review it",
 			Gates:  []registry.WorkflowGate{{Condition: "review.approved == true", Target: "done"}},
 		}
-		got := e.assembleStepPrompt(&persistence.Execution{}, "step1", step, "", &applied)
+		got, _ := e.assembleStepPrompt(&persistence.Execution{}, "step1", step, "", &applied, nil)
 		if !strings.HasPrefix(got, "review it") {
 			t.Fatalf("gate suffix must follow the base prompt, got %q", got)
 		}
@@ -45,8 +52,8 @@ func TestAssembleStepPrompt(t *testing.T) {
 
 	t.Run("hint prefix prepended", func(t *testing.T) {
 		applied := false
-		got := e.assembleStepPrompt(&persistence.Execution{}, "step1",
-			registry.WorkflowStep{Prompt: "base"}, "<hint>x</hint>\n", &applied)
+		got, _ := e.assembleStepPrompt(&persistence.Execution{}, "step1",
+			registry.WorkflowStep{Prompt: "base"}, "<hint>x</hint>\n", &applied, nil)
 		if got != "<hint>x</hint>\nbase" {
 			t.Fatalf("hint must be prepended to the base prompt, got %q", got)
 		}
@@ -60,8 +67,8 @@ func TestAssembleStepPrompt(t *testing.T) {
 			ForkedFromStepID:     &forkedStep,
 			ForkedPromptOverride: &override,
 		}
-		got := e.assembleStepPrompt(exec, "step1",
-			registry.WorkflowStep{Prompt: "base"}, "", &applied)
+		got, _ := e.assembleStepPrompt(exec, "step1",
+			registry.WorkflowStep{Prompt: "base"}, "", &applied, nil)
 		want := "OPERATOR GUIDANCE\n\n---\n\nbase"
 		if got != want {
 			t.Fatalf("fork override prepend: want %q, got %q", want, got)
@@ -71,8 +78,8 @@ func TestAssembleStepPrompt(t *testing.T) {
 		}
 
 		// Second visit (flag already true) must NOT prepend again.
-		again := e.assembleStepPrompt(exec, "step1",
-			registry.WorkflowStep{Prompt: "base"}, "", &applied)
+		again, _ := e.assembleStepPrompt(exec, "step1",
+			registry.WorkflowStep{Prompt: "base"}, "", &applied, nil)
 		if again != "base" {
 			t.Fatalf("fork override is one-shot; re-entry must use the base prompt, got %q", again)
 		}
@@ -86,8 +93,8 @@ func TestAssembleStepPrompt(t *testing.T) {
 			ForkedFromStepID:     &other,
 			ForkedPromptOverride: &override,
 		}
-		got := e.assembleStepPrompt(exec, "step1",
-			registry.WorkflowStep{Prompt: "base"}, "", &applied)
+		got, _ := e.assembleStepPrompt(exec, "step1",
+			registry.WorkflowStep{Prompt: "base"}, "", &applied, nil)
 		if got != "base" {
 			t.Fatalf("override must not apply on a non-forked step, got %q", got)
 		}

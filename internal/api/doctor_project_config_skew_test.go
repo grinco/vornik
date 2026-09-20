@@ -32,7 +32,7 @@ func TestCheckProjectConfigSkew_CleanTreeReportsWhatItExamined(t *testing.T) {
 		"b.yaml": "projectId: b\n",
 	})}
 
-	got := h.checkProjectConfigSkew()
+	got := h.checkProjectConfigSkew(false)
 	if got.Status != "OK" {
 		t.Fatalf("Status = %s (%s), want OK", got.Status, got.Message)
 	}
@@ -49,7 +49,7 @@ func TestCheckProjectConfigSkew_UnknownKeyIsAnErrorNamingTheProject(t *testing.T
 		"assistant.yaml": "projectId: assistant\nautonomy:\n  feed_cadence_budget: 5\n",
 	})}
 
-	got := h.checkProjectConfigSkew()
+	got := h.checkProjectConfigSkew(false)
 	// ERROR, not WARNING: the project does not exist right now. This is an
 	// outage being reported, not a risk being flagged.
 	if got.Status != "ERROR" {
@@ -72,7 +72,7 @@ func TestCheckProjectConfigSkew_UnknownKeyIsAnErrorNamingTheProject(t *testing.T
 // NOT CHECKED must not render as CHECKED AND CLEAN. This check exists because
 // an absent signal was read as a healthy one; it must not repeat that.
 func TestCheckProjectConfigSkew_UnwiredConfigDirSkipsLoudly(t *testing.T) {
-	got := (&DoctorHandlers{}).checkProjectConfigSkew()
+	got := (&DoctorHandlers{}).checkProjectConfigSkew(false)
 	if got.Status != "SKIPPED" {
 		t.Fatalf("Status = %s, want SKIPPED with no config dir", got.Status)
 	}
@@ -93,11 +93,77 @@ func TestCheckProjectConfigSkew_UnreadableFileIsNotCountedAsClean(t *testing.T) 
 		t.Skip("running as root; mode 000 is still readable")
 	}
 
-	got := (&DoctorHandlers{configDir: root}).checkProjectConfigSkew()
+	got := (&DoctorHandlers{configDir: root}).checkProjectConfigSkew(false)
 	if got.Status == "OK" {
 		t.Fatalf("an unreadable project file must not produce a clean result: %+v", got)
 	}
 	if !strings.Contains(strings.Join(got.Items, "\n"), "NOT examined") {
 		t.Errorf("the unreadable file must be named as not examined: %v", got.Items)
+	}
+}
+
+// §13.4: --fix repairs a misspelt key and nothing else. Without the flag the
+// file is untouched — a doctor that edits a customer's config when asked only
+// to look is the failure this bound exists to prevent.
+func TestCheckProjectConfigSkew_FixRepairsAMisspeltKeyOnly(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(projects, "demo.yaml")
+	const src = "projectId: demo\ndisplay_name: Demo\nswarmId: dev-swarm\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without --fix: reported, not touched.
+	if got := (&DoctorHandlers{configDir: root}).checkProjectConfigSkew(false); got.Status != "ERROR" {
+		t.Fatalf("want ERROR without --fix, got %s", got.Status)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != src {
+		t.Fatalf("the check edited the file without --fix:\n%s", after)
+	}
+
+	// With --fix: repaired, and the repair is reported.
+	got := (&DoctorHandlers{configDir: root}).checkProjectConfigSkew(true)
+	if got.Status != "OK" {
+		t.Fatalf("want OK after repair, got %s: %s\n%v", got.Status, got.Message, got.Items)
+	}
+	healed, _ := os.ReadFile(path)
+	if !strings.Contains(string(healed), "displayName: Demo") {
+		t.Fatalf("the key was not repaired:\n%s", healed)
+	}
+	if !strings.Contains(got.Message, "repaired") || len(got.Items) == 0 {
+		t.Fatalf("the repair was not reported: %s %v", got.Message, got.Items)
+	}
+}
+
+// A file with a misspelling AND a key unknown under every spelling is NOT
+// fixed, and must not be reported as fixed — the misspelling is repaired, the
+// unknown key stands, and the check stays ERROR.
+func TestCheckProjectConfigSkew_FixDoesNotClaimAPartialRepairIsClean(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(projects, "demo.yaml")
+	src := "projectId: demo\ndisplay_name: Demo\nswarmId: dev-swarm\nbrandNewKeyFromTheFuture: 1\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&DoctorHandlers{configDir: root}).checkProjectConfigSkew(true)
+	if got.Status != "ERROR" {
+		t.Fatalf("a partially repaired file was reported as %s", got.Status)
+	}
+	healed, _ := os.ReadFile(path)
+	if !strings.Contains(string(healed), "displayName: Demo") {
+		t.Fatalf("the misspelling was not repaired:\n%s", healed)
+	}
+	if !strings.Contains(string(healed), "brandNewKeyFromTheFuture: 1") {
+		t.Fatalf("an unknown key was removed — that is the repair §11 refuses:\n%s", healed)
 	}
 }

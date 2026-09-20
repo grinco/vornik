@@ -130,6 +130,23 @@ func (c *Container) initRegistry() error {
 			Msg("registry loaded with validation warnings; invalid projects skipped")
 	}
 
+	// §13.1: a file the loader could not read leaves its project DARK. By
+	// default the daemon starts anyway — the loader has already printed the
+	// diagnosis and project_config_skew reports it at ERROR, and refusing by
+	// default would turn one dark project into a dark deployment. A deployment
+	// that prefers fail-closed says so with the key.
+	if rejections := reg.Rejections(); len(rejections) > 0 {
+		if err := registry.BootRejectionError(rejections, c.Config.Registry.RefuseStartOnRejectedProject); err != nil {
+			return err
+		}
+		c.Logger.Error().
+			Int("rejected_files", len(rejections)).
+			Str("config_dir", configDir).
+			Msg("deployed tree has files this binary could not load; the projects they define are DARK. " +
+				"`vornikctl doctor` names them (project_config_skew). Set " +
+				"registry.refuse_start_on_rejected_project to fail closed instead.")
+	}
+
 	c.Registry = reg
 	taskRepo := c.repos.Tasks
 	execRepo := c.repos.Executions
@@ -162,6 +179,14 @@ func (c *Container) initRegistry() error {
 			}
 			c.stagedConfig = staged
 			c.stagedProvenance = prov
+		}
+		// Re-parse pricing.yaml in the same phase and under the same rule: a
+		// malformed table aborts the whole reload before activation. It was
+		// restart-only until 2026-09-19, and a `config reload` that reported
+		// success while costs kept billing at the previous rates is what put
+		// it here (17-config-and-hot-reload.md).
+		if err := c.stagePricingTable(); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -215,6 +240,11 @@ func (c *Container) initRegistry() error {
 		// the live subsystems. Done last, after the registry activates, so a
 		// registry-activation failure doesn't leave config half-applied.
 		c.applyHotConfig()
+		// Rates last, beside the other hot-applied values: the swap is atomic
+		// and in-place, so every holder of the table pointer — executor cost
+		// recorder, judge runner, chat catalogs — bills the new rates from its
+		// next call.
+		c.applyStagedPricing()
 		return nil
 	})
 	c.ConfigReloader = reloader

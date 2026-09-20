@@ -352,16 +352,20 @@ type Bot struct {
 	accountLinker AccountLinker
 	// redemptionLimiter bounds pre-authorization link attempts per speaker.
 	redemptionLimiter *chatauth.RedemptionLimiter
-	receiver          conversation.Receiver
-	memorySearcher    dispatcher.MemorySearcher
-	memoryCorrector   dispatcher.MemoryCorrector
-	auditRepo         dispatcher.AuditRepository         // optional; enables audit log for dispatcher tool calls
-	llmUsageRepo      persistence.TaskLLMUsageRepository // optional; enables budget enforcement in create_task
-	pricingTable      *pricing.Table                     // optional; enables cost calculation on dispatcher usage rows
-	rateLimiter       ratelimit.ProjectLimiter           // optional; enables rate-limit enforcement in create_task
-	defaultModel      string                             // VORNIK_LLM_MODEL fallback used by dispatcher cost forecast
-	llmClient         chat.Provider                      // LLM client used for in-bot operations like /summarize
-	compactor         chat.Compactor                     // optional; enables read-path conversation compaction (else legacy truncation)
+	// exposure removes link codes from text about to reach a model and burns
+	// them (§5.2b). Nil-safe: a bot built without one scrubs nothing, which is
+	// the pre-feature behaviour.
+	exposure        *chatauth.ExposureGuard
+	receiver        conversation.Receiver
+	memorySearcher  dispatcher.MemorySearcher
+	memoryCorrector dispatcher.MemoryCorrector
+	auditRepo       dispatcher.AuditRepository         // optional; enables audit log for dispatcher tool calls
+	llmUsageRepo    persistence.TaskLLMUsageRepository // optional; enables budget enforcement in create_task
+	pricingTable    *pricing.Table                     // optional; enables cost calculation on dispatcher usage rows
+	rateLimiter     ratelimit.ProjectLimiter           // optional; enables rate-limit enforcement in create_task
+	defaultModel    string                             // VORNIK_LLM_MODEL fallback used by dispatcher cost forecast
+	llmClient       chat.Provider                      // LLM client used for in-bot operations like /summarize
+	compactor       chat.Compactor                     // optional; enables read-path conversation compaction (else legacy truncation)
 	// intentJudgeRepo persists two-tier judge verdicts. nil
 	// disables the judge entirely (heuristic + LLM both skipped).
 	intentJudgeRepo persistence.IntentVerdictRepository
@@ -3297,6 +3301,12 @@ func (b *Bot) handleReceiverTurn(r conversation.Receiver, msg *Message) {
 
 	start := time.Now()
 	cm := MessageToChannelMessage(msg)
+	// §5.2b: a link code that reaches the receiver path was not typed as a
+	// redemption (/link handles that before here), so it is about to reach a
+	// model and a transcript. Scrub it and burn it — the reply the speaker sees
+	// is unchanged either way, which is what keeps the store consultation from
+	// becoming the redemption oracle §5.2 refuses to build.
+	cm.Text = b.exposure.Scrub(ctx, "telegram", cm.Text)
 	err := r.Receive(ctx, cm)
 	dur := time.Since(start)
 	if err != nil {

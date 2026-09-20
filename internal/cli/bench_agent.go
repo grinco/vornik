@@ -959,7 +959,35 @@ func runBenchAgentReport(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(w, "sigma_d\t%.4f (n=%d)\n", p.SigmaD, p.SigmaN)
 		_, _ = fmt.Fprintf(w, "resolvable delta\t%.4f at %d pairs\n", p.ResolvableDelta, p.AvailablePairs)
 	}
+	printScoreCoverage(w, j.TaskScores)
 	return w.Flush()
+}
+
+// printScoreCoverage prints the graded mean WITH the denominator it was
+// computed over, never without.
+//
+// A mean over a shrunken set is not an improvement on a wrong mean: an arm
+// reporting 0.84 while seventeen of twenty tasks fell out is the same silent
+// wrong number in a cleaner status. The two exclusion reasons stay separate
+// because they say different things — not_applicable is a workflow declaring no
+// contract, unscorable is a contract this scorer could not evaluate (a repeated
+// producer or verifier; 06-executor.md 2026-09-19).
+func printScoreCoverage(w io.Writer, scores []agentbench.TaskScore) {
+	coverage := agentbench.SummariseScoreCoverage(scores, quality.ScoreKindPinnedCaseValidation)
+	if coverage.ContractDeclaring == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "\nQUALITY\t\n")
+	if mean, ok := agentbench.MeanScoredTaskScore(scores, quality.ScoreKindPinnedCaseValidation); ok {
+		_, _ = fmt.Fprintf(w, "%s\t%.4f over %s\n", agentbench.PinnedCaseValidationMetric, mean, coverage)
+	} else {
+		_, _ = fmt.Fprintf(w, "%s\tno scored task; %s\n", agentbench.PinnedCaseValidationMetric, coverage)
+	}
+	// Beside the number, never in a footnote: an arm that never ran the rework
+	// loop is measuring a straight line, and a reader of the mean alone would
+	// take it for evidence about a workflow whose defining feature is
+	// iteration.
+	_, _ = fmt.Fprintf(w, "\t%s\n", coverage.ReworkCoverage())
 }
 
 // loadMergedJournal reads one or more journal batches as a single experiment.
@@ -1167,6 +1195,11 @@ func runBenchAgentCompare(cmd *cobra.Command, args []string) error {
 			"signed mean delta = %.4f; magnitude = %.4f; sigma_d = %.4f; pairs = %d\n",
 			ra.Arm, rb.Arm, metricA, verdict, comparison.MeanDelta, comparison.Magnitude,
 			comparison.SigmaD, comparison.PairCount)
+		// The delta's denominator, per arm. A pair count says how many tasks
+		// were compared; it does not say how many the scorer could not read.
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s coverage: %s\n  %s coverage: %s\n",
+			ra.Arm, agentbench.SummariseScoreCoverage(a.TaskScores, quality.ScoreKindPinnedCaseValidation),
+			rb.Arm, agentbench.SummariseScoreCoverage(b.TaskScores, quality.ScoreKindPinnedCaseValidation))
 		return nil
 	}
 

@@ -78,6 +78,22 @@ handed**, and says nothing yet about code quality. A later arm that moves this
 number has most likely changed §12.11.7's contract legibility, not the model.
 Read `extraCaseCount` and the `absent` count before reading the score.
 
+> **What `extraCaseCount` can mean changed on 2026-09-18 (D6).** The daemon now
+> refuses a case id outside the set the verifier was handed, at receipt, before
+> the scorer ever sees it. On any arm run after that, **`extraCaseCount` is
+> zero by construction** and is no longer evidence about the agent or the
+> provider. It remains readable on the 2026.9.4 journals here, which predate
+> the backstop.
+>
+> The provider-enforcement signal is now
+> `vornik_executor_output_enum_violation_total`, read beside
+> `vornik_executor_pinned_case_enum_installed_total`: violations **with**
+> installs mean something on the provider side ignored or replaced the emitted
+> schema; violations **without** installs mean the daemon never pinned and the
+> defect is ours. Neither number subdivides further — a provider that coerced
+> to its own schema and a daemon-side validator bug are indistinguishable in
+> the first case.
+
 ## Adding the next one
 
 1. Run the arm with its own pre-registration naming both arms.

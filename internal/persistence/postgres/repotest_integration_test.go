@@ -1082,3 +1082,23 @@ func TestLLMExchange_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunLLMExchangeSuite(t, NewLLMExchangeRepository(db.DB), NewExecutionRepository(db.DB), NewTaskRepository(db.DB))
 }
+
+func TestClassESlotSuite(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunClassESlotSuite(t, NewClassESlotRepository(db.DB))
+}
+
+func TestKeyClaimAttemptSuite(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunKeyClaimAttemptSuite(t, NewKeyClaimAttemptRepository(db.DB))
+}
+
+func TestPackageContributionSuite(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunPackageContributionSuite(t, NewPackageContributionRepository(db.DB))
+}
+
+func TestCredentialSessionSuite(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunCredentialSessionSuite(t, NewUISessionRepository(db.DB), NewIdentityRepository(db.DB))
+}

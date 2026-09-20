@@ -280,10 +280,25 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			// (Track B); behaviour is identical. forkOverrideApplied is
 			// threaded by pointer because the helper flips it on the
 			// first visit to a forked step.
-			opts, roleConfig := e.prepareAgentStepInput(
+			opts, roleConfig, prepErr := e.prepareAgentStepInput(
 				ctx, task, execution, plan, currentStepID, step,
 				stepArtifacts, lastResultMessage, &state, &forkOverrideApplied,
 			)
+			if prepErr != nil {
+				// Today this is only an unresolved ${outputs.<step>.<field>}
+				// in the step prompt. Load-time validation already rejects a
+				// reference to a step the workflow does not define, so
+				// reaching here means the referenced step genuinely produced
+				// no readable value on this path. Fail loudly rather than
+				// send the model a prompt with an empty contract in it —
+				// that is the failure this mechanism exists to prevent.
+				e.logger.Error().
+					Err(prepErr).
+					Str("execution_id", execution.ID).
+					Str("step_id", currentStepID).
+					Msg("step input preparation failed")
+				return "", nil, completedSteps, prepErr
+			}
 			// Resume guard (Track-B Phase 2): detect a re-entry after this
 			// step's delegated children already ran. routeAlreadyHandled
 			// means skip the LLM + spawn and synthesise the children's
@@ -2047,13 +2062,16 @@ func (e *Executor) prepareAgentStepInput(
 	lastResultMessage string,
 	state *executionState,
 	forkOverrideApplied *bool,
-) (*agentInputOpts, *registry.SwarmRole) {
+) (*agentInputOpts, *registry.SwarmRole, error) {
 	// Feature #3 Phase C — consume any pending operator hints for this
 	// step. Returns the concatenated <operator-hint>...</operator-hint>
 	// blocks ready to prepend; empty string when no hints (or repo
 	// unwired). Each consumed hint publishes a `hint_applied` live event.
 	hintPrefix := e.consumeHintsForStep(ctx, task.ID, execution.ID, currentStepID)
-	stepPrompt := e.assembleStepPrompt(execution, currentStepID, step, hintPrefix, forkOverrideApplied)
+	stepPrompt, err := e.assembleStepPrompt(execution, currentStepID, step, hintPrefix, forkOverrideApplied, state)
+	if err != nil {
+		return nil, nil, err
+	}
 	opts := &agentInputOpts{
 		InputArtifacts: stepArtifacts,
 		PreviousResult: lastResultMessage,
@@ -2097,7 +2115,18 @@ func (e *Executor) prepareAgentStepInput(
 	// https://docs.vornik.io
 	opts.ComplexityTier = state.ComplexityTier
 	roleConfig := e.resolveRoleOpts(plan, step, task, opts)
-	return opts, roleConfig
+	// D5: when this step is the verifier of a pinned_case_validation workflow,
+	// narrow its emitted schema to the exact case ids the producer pinned, so a
+	// wrong id is undecodable rather than merely discouraged. Must run AFTER
+	// resolveRoleOpts, which builds the schema copies this rewrites.
+	if installed := applyPinnedCaseEnum(opts, plan, currentStepID, roleConfig, state); installed > 0 {
+		// D6.4: without this, a later violation reads as provider
+		// non-enforcement even when the daemon simply never pinned.
+		if e.metrics != nil && e.metrics.PinnedCaseEnumInstalledTotal != nil {
+			e.metrics.PinnedCaseEnumInstalledTotal.WithLabelValues(roleConfig.Name).Inc()
+		}
+	}
+	return opts, roleConfig, nil
 }
 
 // assembleStepPrompt builds the prompt sent to an agent step: the step's
@@ -2113,7 +2142,8 @@ func (e *Executor) assembleStepPrompt(
 	step registry.WorkflowStep,
 	hintPrefix string,
 	forkOverrideApplied *bool,
-) string {
+	state *executionState,
+) (string, error) {
 	// When a step has gates, append response format instructions to the
 	// prompt so the agent knows what structured JSON to produce.
 	stepPrompt := step.Prompt
@@ -2135,7 +2165,20 @@ func (e *Executor) assembleStepPrompt(
 			Str("step_id", currentStepID).
 			Msg("fork: applied prompt override on forked step's first iteration")
 	}
-	return stepPrompt
+	// LAST, so a ${outputs.<step>.<field>} reference works wherever it was
+	// written — the step prompt, an operator hint, or a fork override — and
+	// none of the composition stages can mask one. An unresolved reference
+	// fails the step rather than substituting empty: see interpolatePromptRefs
+	// (benchmark design, amendment 2026-09-18, D2).
+	var stepResults map[string]json.RawMessage
+	if state != nil {
+		stepResults = state.StepResults
+	}
+	resolved, err := interpolatePromptRefs(stepPrompt, stepResults)
+	if err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 // resolveRoleOpts resolves the step's role from the swarm config and fills

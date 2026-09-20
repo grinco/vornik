@@ -26,11 +26,12 @@ func NewUISessionRepository(db DBTX) *UISessionRepository {
 // as NULL so future retention filters (WHERE ip IS NULL) work correctly.
 func (r *UISessionRepository) CreateSession(ctx context.Context, s *persistence.UISession) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent, origin_credential_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		s.ID, s.TokenHash, s.UserID, s.Provider,
 		s.CreatedAt, s.LastSeenAt, s.ExpiresAt,
 		sql.NullString{String: s.IP, Valid: s.IP != ""},
-		sql.NullString{String: s.UserAgent, Valid: s.UserAgent != ""})
+		sql.NullString{String: s.UserAgent, Valid: s.UserAgent != ""},
+		sql.NullString{String: s.OriginCredentialID, Valid: s.OriginCredentialID != ""})
 	return mapDBError(err)
 }
 
@@ -38,13 +39,13 @@ func (r *UISessionRepository) CreateSession(ctx context.Context, s *persistence.
 // tokenHash, or ErrSessionNotFound when no row matches.
 func (r *UISessionRepository) GetActiveByTokenHash(ctx context.Context, tokenHash string) (*persistence.UISession, error) {
 	var s persistence.UISession
-	var ip, ua sql.NullString
+	var ip, ua, origin sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`,
+		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id FROM ui_sessions WHERE token_hash = $1 AND revoked_at IS NULL`,
 		tokenHash).Scan(
 		&s.ID, &s.TokenHash, &s.UserID, &s.Provider,
 		&s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.RevokedAt,
-		&ip, &ua)
+		&ip, &ua, &origin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, persistence.ErrSessionNotFound
 	}
@@ -53,6 +54,7 @@ func (r *UISessionRepository) GetActiveByTokenHash(ctx context.Context, tokenHas
 	}
 	s.IP = ip.String
 	s.UserAgent = ua.String
+	s.OriginCredentialID = origin.String
 	return &s, nil
 }
 
@@ -124,7 +126,7 @@ func (r *UISessionRepository) ListActiveByUser(ctx context.Context, userID strin
 	// nothing hard-deletes them), inflating the count and surfacing stale
 	// login-time IPs. Reported 2026-06-23.
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent
+		`SELECT id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id
 FROM ui_sessions
 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 ORDER BY last_seen_at DESC`, userID)
@@ -135,13 +137,14 @@ ORDER BY last_seen_at DESC`, userID)
 	var out []*persistence.UISession
 	for rows.Next() {
 		var s persistence.UISession
-		var ip, ua sql.NullString
+		var ip, ua, origin sql.NullString
 		if err := rows.Scan(&s.ID, &s.TokenHash, &s.UserID, &s.Provider,
-			&s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.RevokedAt, &ip, &ua); err != nil {
+			&s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt, &s.RevokedAt, &ip, &ua, &origin); err != nil {
 			return nil, mapDBError(err)
 		}
 		s.IP = ip.String
 		s.UserAgent = ua.String
+		s.OriginCredentialID = origin.String
 		out = append(out, &s)
 	}
 	if err := rows.Err(); err != nil {

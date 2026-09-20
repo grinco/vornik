@@ -306,7 +306,11 @@ func newLinkCode() (string, error) {
 		}
 		sb.WriteByte(linkCodeAlphabet[n.Int64()])
 	}
-	return sb.String(), nil
+	// Marked at ISSUANCE, which is what makes the class close rather than
+	// shrink: recognition is a property of codes minted from here on, and
+	// pre-marker codes keep their old behaviour until they expire — a window
+	// bounded by the 10-minute TTL, not by a migration (§5.2b).
+	return MarkLinkCode(sb.String()), nil
 }
 
 // hashLinkCode normalises then hashes. Normalisation is why a human can type
@@ -329,14 +333,15 @@ func newLinkCode() (string, error) {
 // TestHashLinkCode_NormalisationCannotCollideTwoCodes pins that dependency, so
 // widening the alphabet fails loudly instead of creating a collision.
 func hashLinkCode(code string) string {
-	var b strings.Builder
-	b.Grow(len(code))
-	for _, r := range strings.ToUpper(code) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		}
-	}
-	sum := sha256.Sum256([]byte(b.String()))
+	normalised := filterAlnumUpper(code)
+	// The marker is stripped HERE, the same way the legibility dashes are, so
+	// there is ONE implementation of the code rule rather than two that can
+	// drift (§5.2b). A marked code and its bare body therefore hash alike, and
+	// a code issued before the marker shipped redeems unchanged — an old body
+	// can never begin with the marker, because 'L' is absent from
+	// linkCodeAlphabet.
+	normalised = linkCodeBodyForRedemption(normalised)
+	sum := sha256.Sum256([]byte(normalised))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -399,3 +404,44 @@ func LinkCodeIDOf(lc *persistence.LinkCode) string {
 	}
 	return lc.CodeHash[:16]
 }
+
+// BurnExposedLinkCode consumes a code that has appeared somewhere it should not
+// have — pasted into a chat message that was about to reach a model, rather
+// than typed as a redemption (§5.2b step 2).
+//
+// WHY CONSUMING IS NOT AN ORACLE. The store IS asked about the token here, and
+// §5.2's whole point is that nobody may probe whether a code exists. It holds
+// because the consultation changes nothing the speaker can observe: the caller
+// answers with the same generic notice whether the token was live, expired or a
+// random string of the right shape. A prober learns only that their token was
+// code-shaped, which they knew already, having constructed it.
+//
+// WHY BURN AT ALL. By the time this runs, the code is in the channel's history
+// and possibly the platform's logs. Leaving it live spends the remainder of its
+// TTL on a secret that is no longer secret. The cost lands only on a legitimate
+// user who mistyped the keyword: they request another code, and the notice says
+// so.
+//
+// It reuses ConsumeLinkCode rather than adding a delete, so the burn is the
+// same atomic claim a redemption makes — and the row keeps its evidence, marked
+// with the channel below rather than a real binding.
+func (a *Accounts) BurnExposedLinkCode(ctx context.Context, code string) (bool, error) {
+	if a == nil || a.linkCodes == nil {
+		return false, ErrLinkCodesUnavailable
+	}
+	_, err := a.linkCodes.ConsumeLinkCode(ctx, hashLinkCode(code), LinkCodeChannelExposed, "")
+	if err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			// Unknown, expired or already used — indistinguishable here by
+			// design, and none of them needs burning.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// LinkCodeChannelExposed marks a code consumed because it LEAKED, not because
+// it was redeemed. It is a channel name no real channel uses, so a row carrying
+// it is unambiguous to anyone reading the table later.
+const LinkCodeChannelExposed = "exposed"

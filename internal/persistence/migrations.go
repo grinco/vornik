@@ -8124,4 +8124,168 @@ DROP INDEX IF EXISTS idx_memory_chunks_series;
 ALTER TABLE project_memory_chunks DROP COLUMN IF EXISTS series_key;
 `,
 	},
+	{
+		Version: 191,
+		Name:    "class_e_slot_reservations",
+		// Atomic admission for the class-E daily cap — config-assistant design
+		// §13.9a.
+		//
+		// The cap counted exhaustively and re-counted after the insert, then
+		// withdrew a row that landed over it (CA-17). That bounds the overshoot;
+		// it does not prevent one, and the repair had a hole of its own: SetStatus
+		// can fail AFTER the offending row is inserted — a cancelled request is
+		// enough — leaving an actionable DRAFT in the operator's inbox while the
+		// response says it was withdrawn.
+		//
+		// THE UNIQUE CONSTRAINT IS THE CAP. A reserver INSERTs slot N; a
+		// duplicate-key error means the slot is taken, identically on Postgres
+		// and SQLite, and mapDBError already distinguishes it. The alternative —
+		// count and insert inside one transaction — needs SERIALIZABLE and a
+		// retry loop on Postgres and a different argument on SQLite, and a safety
+		// property whose proof differs per driver is the shape that has cost this
+		// repository a JSONB byte-exactness bug and a LIKE pattern that matched
+		// nothing on one driver for weeks.
+		//
+		// NO RELEASE PATH, deliberately. A request that dies after reserving and
+		// before filing consumes its slot, so the failure mode is UNDER-admission
+		// by at most the number of crashed requests — which under a crash loop is
+		// the whole day's cap. That is the control firing, not failing: a
+		// credential emitting reservations faster than it files proposals is
+		// indistinguishable from the leaked-credential burst the cap exists to
+		// bound. Adding release-on-failure means first deciding that a request
+		// really crashed, which is the consensus problem this design chose a
+		// UNIQUE constraint to avoid.
+		//
+		// day is TEXT (YYYY-MM-DD, UTC) rather than DATE so the two drivers store
+		// and compare the same bytes; the cap's window is a UTC calendar day, and
+		// a date type would invite a timezone to enter through the driver.
+		Up: `
+CREATE TABLE IF NOT EXISTS class_e_slot_reservations (
+    credential_id TEXT NOT NULL,
+    day           TEXT NOT NULL,
+    slot          INTEGER NOT NULL,
+    created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (credential_id, day, slot)
+);
+COMMENT ON TABLE class_e_slot_reservations IS 'Config-assistant design 13.9a: one row per admitted class-E proposal slot. The PRIMARY KEY is the cap — the Nth slot is handed out by a successful INSERT, and a duplicate-key error is a refusal. No release path by design; an unused slot is under-admission, which is the safe direction.';
+`,
+		Down: `
+DROP TABLE IF EXISTS class_e_slot_reservations;
+`,
+	},
+	{
+		Version: 192,
+		Name:    "key_claim_attempts",
+		// Cluster-wide key-claim attempts — oidc-identity-permissions-design
+		// §5.4, follow-up to CA-09.
+		//
+		// The 10-attempts-per-key-per-hour bound lives in authz.Accounts.
+		// ClaimKey, so every door shares one bucket and a fourth door cannot be
+		// added past it. The BUCKET was process memory, so a replicated
+		// deployment bounded attempts per replica and a restart cleared it.
+		// That was equally true of the HTTP limiter it replaced, so it is not a
+		// regression — it is the half that was written down as remaining.
+		//
+		// A row per ATTEMPT, not a counter: the bound is a sliding window, and
+		// a counter cannot expire its oldest entry without a second column that
+		// says when. Rows are pruned by the same window they are counted over.
+		//
+		// The bucket is keyed by the DECLARED key id and shared across
+		// claimants and source addresses, deliberately (§5.4): the attack is
+		// guessing ONE key's secret from many addresses, which a per-IP or
+		// per-claimant bucket would not bound at all.
+		//
+		// No unique constraint: two genuine attempts on the same key in the
+		// same instant are two attempts, and collapsing them would under-count
+		// exactly the burst this exists to catch.
+		Up: `
+CREATE TABLE IF NOT EXISTS key_claim_attempts (
+    id           TEXT PRIMARY KEY,
+    key_id       TEXT NOT NULL,
+    attempted_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_key_claim_attempts_window
+    ON key_claim_attempts (key_id, attempted_at DESC);
+COMMENT ON TABLE key_claim_attempts IS 'oidc-identity-permissions-design 5.4: one row per key-claim ATTEMPT, counted over a sliding hour so the bound holds across replicas and restarts. Keyed by the declared key id and shared across claimants and addresses, because the attack is guessing one key from many addresses.';
+`,
+		Down: `
+DROP TABLE IF EXISTS key_claim_attempts;
+`,
+	},
+	{
+		Version: 193,
+		Name:    "package_contributions",
+		// Provenance for extension packages — agent-extension-package-design
+		// §3, slice 1.
+		//
+		// ONE ROW PER CONTRIBUTED ROW, WITH THE CONTENT HASH AT INSTALL TIME.
+		// The hash is what makes uninstall's refusal enforceable rather than
+		// merely asserted: a row id alone says "this package put something
+		// here", and cannot say whether what is there NOW is still what the
+		// package put. The prior art has exactly this blind spot — the skill
+		// registry's ledger records materialised FILENAMES and no hashes — so
+		// inheriting its shape would inherit a guarantee nothing can check.
+		//
+		// The primary key is (kind, row_id), not (package, kind, row_id): ONE
+		// deployed file has one owner. Keying by package as well would let two
+		// packages each claim workflows/incident-triage.md and leave the
+		// conflict to be discovered at uninstall, when one of them removes a
+		// file the other believes it owns.
+		//
+		// content_hash_at_install is never updated. A package shipping a new
+		// version uninstalls and installs again (§5: no upgrade verb in slice
+		// 1), and an UPDATE here would silently re-bless an operator's edit as
+		// the package's own content — destroying the only evidence uninstall
+		// has.
+		Up: `
+CREATE TABLE IF NOT EXISTS package_contributions (
+    kind                    TEXT NOT NULL,
+    row_id                  TEXT NOT NULL,
+    package                 TEXT NOT NULL,
+    package_version         TEXT NOT NULL,
+    path                    TEXT NOT NULL,
+    content_hash_at_install TEXT NOT NULL,
+    installed_at            TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (kind, row_id)
+);
+CREATE INDEX IF NOT EXISTS idx_package_contributions_package
+    ON package_contributions (package);
+COMMENT ON TABLE package_contributions IS 'agent-extension-package-design 3: one row per contributed config row, carrying the content hash at install time so uninstall can tell an untouched file from an operator-edited one and refuse the second. Keyed by (kind, row_id) because one deployed file has one owner.';
+`,
+		Down: `
+DROP TABLE IF EXISTS package_contributions;
+`,
+	},
+	{
+		Version: 194,
+		Name:    "ui_sessions_origin_credential",
+		// CE human login — 2026-09-19-ce-human-login-design.md §4.
+		//
+		// Which CREDENTIAL minted this browser session. NULL for an EE OIDC
+		// login, which has no originating credential and must not be made to
+		// invent one; the API key id for a CE credential→session exchange.
+		//
+		// It exists so the capping rule (§5) can ask, on every request,
+		// whether the key that minted this session is still live and still
+		// mapped to this user. Without the column that question has no
+		// subject, and "key revocation ends dependent sessions" would be a
+		// sentence with nothing behind it.
+		//
+		// NOT a foreign key to api_keys. A revoked key's ROW survives
+		// revocation (revoked_at is a soft delete), but a key that is later
+		// hard-deleted must not cascade-delete the session history that
+		// records what it did — the audit value of a session row outlives the
+		// credential. The capping rule already treats a missing key as a
+		// refusal, so a dangling id is the safe direction.
+		Up: `
+ALTER TABLE ui_sessions ADD COLUMN IF NOT EXISTS origin_credential_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_ui_sessions_origin_credential
+    ON ui_sessions (origin_credential_id) WHERE revoked_at IS NULL AND origin_credential_id IS NOT NULL;
+COMMENT ON COLUMN ui_sessions.origin_credential_id IS 'ce-human-login-design 4: the API key that minted this session, NULL for an OIDC login. Read by the per-request capping rule and by RevokeSessionsForCredential.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_ui_sessions_origin_credential;
+ALTER TABLE ui_sessions DROP COLUMN IF EXISTS origin_credential_id;
+`,
+	},
 }

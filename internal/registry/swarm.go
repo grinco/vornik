@@ -527,6 +527,17 @@ func (s *Swarm) Validate(filename string) error {
 					Message: "must be empty when outputSchema is set; declare plausibility rules under outputSchema.plausibility instead.",
 				}
 			}
+			// D6: an onViolation typo must be a refused config, not a
+			// constraint that silently stopped applying. "enforce" is not
+			// "warn", and guessing which was meant is how a control ends up
+			// reporting "examined and clean" while binding nothing.
+			if err := role.OutputSchema.ValidateOnViolationTree(""); err != nil {
+				return SwarmValidationError{
+					File:    filename,
+					Field:   fmt.Sprintf("roles[%d].outputSchema", i),
+					Message: err.Error(),
+				}
+			}
 			s.Roles[i].RequiredOutputKeys = role.OutputSchema.DeriveRequiredOutputKeys()
 			s.Roles[i].PlausibilityRules = role.OutputSchema.DerivePlausibilityRules()
 		}

@@ -88,6 +88,19 @@ type IdentityRepository interface {
 	// user. Zero active sessions is not an error. Used by the disable
 	// path (A2) and available for a standalone out-of-band "kick now".
 	RevokeSessionsForUser(ctx context.Context, userID string) error
+	// RevokeSessionsForCredential revokes every active session minted by
+	// keyID — ce-human-login-design §5.1, the half of the capping rule that
+	// survives if someone later reintroduces caching on the freshness path.
+	//
+	// Best-effort by count, like RevokeSessionsForUser: zero active
+	// sessions is not an error, because a key that never opened a browser
+	// session is the ordinary case (every machine credential).
+	//
+	// It is keyed on origin_credential_id, so an OIDC session — which has
+	// none — is never matched by any key's revocation. That is correct
+	// rather than incidental: an EE login is not capped by a credential
+	// because no credential minted it.
+	RevokeSessionsForCredential(ctx context.Context, keyID string) error
 
 	CreateGroup(ctx context.Context, g *Group) error
 	GetGroupByName(ctx context.Context, name string) (*Group, error)

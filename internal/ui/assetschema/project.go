@@ -223,6 +223,14 @@ var ProjectDeferredPaths = []string{
 	// wrong is caught at registry load (duplicate slug, bad cadence), not
 	// silently accepted, so the raw-YAML escape hatch is not unsafe here.
 	"autonomy.feeds",
+	// Dependency manifest (2026-09-19) — a []projectdeps.Entry{ecosystem,
+	// lockfile}, the same list-of-structs shape as autonomy.feeds above and
+	// deferred for the same reason: no scalar form Kind. Editing it wrong is
+	// caught at registry load — an unknown ecosystem, a lockfile escaping the
+	// project tree, or an `install:` field are all refused by name — and the
+	// project_dependencies doctor check reports a manifest that cannot be
+	// materialised, so the raw-YAML hatch is not unsafe here.
+	"dependencies",
 	// GitHub App channel + outbound credentials.
 	"github_app.app_id", "github_app.private_key_path", "github_app.installation_id",
 	"github_app.api_base_url", "github_app.webhook_secret_env", "github_app.repo_allowlist",

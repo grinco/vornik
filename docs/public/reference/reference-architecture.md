@@ -7,7 +7,7 @@ sources:
     - path: internal/memory/reranker.go
       sha256: fa57cbdcf4bbbb803d0074c2eb3740dc0d509d92a9b91d1cf3495b9cf8dc3ad8
     - path: internal/config/config.go
-      sha256: e283f5d9fe095e662ab00050259c813f3de09088d37e0dc27fdea1403cce3c75
+      sha256: e4cb79d4d3b07b5f13db70f9d5419b31b6e0945556e50cc084f0b8276ce5d418
 ---
 # Reference architecture
 
@@ -92,6 +92,19 @@ vornik reads configuration from **two separate places**:
 | ------------------- | ---------------------------------------------------------- | ------------------- |
 | `config.yaml`       | daemon-wide settings: database, server, subsystem toggles   | **No** — restart    |
 | the **registry tree** | `projects/`, `swarms/`, `workflows/`                      | Yes — `config reload` |
+
+**A file in the registry tree that this binary cannot read leaves its project
+DARK, and by default the daemon starts anyway.** The loader prints which file
+and why, and `vornikctl doctor` reports it at ERROR (`project_config_skew`) — so
+a degraded start is loud, not silent. Refusing to start by default would turn
+one unreadable project into an unavailable deployment, which is the larger
+outage. A deployment that prefers the opposite sets
+`registry.refuse_start_on_rejected_project: true`.
+
+`vornikctl config keys` lists every project key this binary accepts, which is
+the question behind most upgrade surprises: a key your config uses that is not
+in that list is why a project vanished. Deploy the binary that knows a key
+BEFORE the config that uses it, and remove the key BEFORE downgrading.
 
 The registry tree is resolved through a **fallback chain**, not a single variable,
 and the CLI's chain differs from the daemon's. `VORNIK_CONFIGS_DIR` is honoured only
@@ -299,6 +312,13 @@ skill access).
 
 **Reference when enabled:** every key scoped to one project with the narrowest
 capabilities its job needs. **Never print or log a key.**
+
+**Browser sessions.** Enterprise signs people in through an identity provider.
+Community can trade an API key for a bounded browser session
+(`auth.session.credential_exchange`, off by default) — the session records which
+key minted it, and revoking that key ends the session on its next request rather
+than at a cache expiry. A session never carries more than its originating
+credential currently has.
 
 **Sharp edge:** after enabling auth, an endpoint that returns empty lists rather than
 a 401 usually means a visibility filter is missing an admin-class bypass — the data is

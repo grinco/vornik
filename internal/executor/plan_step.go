@@ -688,30 +688,7 @@ func (e *Executor) runLeadPlanning(
 	// corrective-hint retry). Each layer catches what the layer
 	// below misses.
 	if recoveryContext != nil {
-		opts.ResponseSchema = recoveryModeResponseSchema()
-		opts.ResponseFormat = "json_schema"
-		// NO result-emission tool on a recovery hop. Enforcement is the
-		// response schema plus the prompt-level safeguards (recovery banner,
-		// pruned menu, corrective-hint retry).
-		//
-		// A recovery-mode emission tool was added and reverted on 2026-08-19.
-		// The reason it is not here is that it never demonstrably BOUND — its
-		// tool name appears in no log line from any run that offered it — while
-		// the thing that actually fixed recovery was the shape work in
-		// recoveryModeResponseSchema + ParseLeadOutcome's flat-checkpoint lift.
-		// An enforcement mechanism with no observable effect is not worth the
-		// second surface.
-		//
-		// CORRECTION, same day: the revert was first justified by claiming the
-		// tool caused `tool_call_wrapper` schema leakage (0 signals in 48 recover
-		// attempts before, 6 in 67 after). That comparison was CONFOUNDED and the
-		// claim was wrong. All such signals occur on ONE workflow — the
-		// recovery-probe harness fixture, which induces a 1s timeout and hands
-		// the lead a large container-error payload — and none at all on
-		// plan-and-write (31 recover attempts) or research (17). The signals
-		// tracked the fixture, which post-dates the tool, not the tool. Leakage
-		// continued after the revert.
-		opts.ResultEmissionTool = nil
+		applyRecoverySchemaOverride(opts)
 	}
 
 	leadStep := registry.WorkflowStep{
@@ -1732,4 +1709,53 @@ func (e *Executor) missingDeclaredOutputs(resultBytes []byte, worktreeDir string
 		}
 	}
 	return missing
+}
+
+// applyRecoverySchemaOverride swaps the lead's generic role schema for the
+// recovery one: `outcome` constrained to [checkpoint, external_wait,
+// closure_request], no result-emission tool.
+//
+// Extracted from runLeadPlanning (2026-09-18, D6) so the EffectiveSchema
+// decision below is assertable on its own rather than only through a fully
+// scaffolded lead run.
+//
+// NO result-emission tool on a recovery hop. Enforcement is the response
+// schema plus the prompt-level safeguards (recovery banner, pruned menu,
+// corrective-hint retry).
+//
+// A recovery-mode emission tool was added and reverted on 2026-08-19. The
+// reason it is not here is that it never demonstrably BOUND — its tool name
+// appears in no log line from any run that offered it — while the thing that
+// actually fixed recovery was the shape work in recoveryModeResponseSchema +
+// ParseLeadOutcome's flat-checkpoint lift. An enforcement mechanism with no
+// observable effect is not worth the second surface.
+//
+// CORRECTION, same day: the revert was first justified by claiming the tool
+// caused `tool_call_wrapper` schema leakage (0 signals in 48 recover attempts
+// before, 6 in 67 after). That comparison was CONFOUNDED and the claim was
+// wrong. All such signals occur on ONE workflow — the recovery-probe harness
+// fixture, which induces a 1s timeout and hands the lead a large
+// container-error payload — and none at all on plan-and-write (31 recover
+// attempts) or research (17). The signals tracked the fixture, which post-dates
+// the tool, not the tool. Leakage continued after the revert.
+func applyRecoverySchemaOverride(opts *agentInputOpts) {
+	if opts == nil {
+		return
+	}
+	opts.ResponseSchema = recoveryModeResponseSchema()
+	opts.ResponseFormat = "json_schema"
+	opts.ResultEmissionTool = nil
+	// D6.1b: recoveryModeResponseSchema() is a hand-built JSON-Schema map with
+	// no dialect tree, and applyRoleSchemaOpts has already put the ROLE's tree
+	// on opts. Leaving it would enforce the role's enums against output
+	// produced under a completely different schema — a step failed for a
+	// contract it was never given, which is the 2026-08-16 defect class this
+	// sits downstream of.
+	//
+	// Clearing it suppresses the ENUM sub-check on recovery hops only;
+	// requiredOutputKeys still runs. The recovery schema's own `outcome` enum
+	// stays unenforced daemon-side, exactly as it is today — expressing it as
+	// a dialect tree is a second surface with its own history and is filed
+	// separately rather than folded in here.
+	opts.EffectiveSchema = nil
 }

@@ -28,17 +28,17 @@ func NewUISessionRepository(db DBTX) *UISessionRepository {
 // Compile-time interface pin.
 var _ persistence.UISessionRepository = (*UISessionRepository)(nil)
 
-const uiSessionColumns = `id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent`
+const uiSessionColumns = `id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, revoked_at, ip, user_agent, origin_credential_id`
 
 // CreateSession inserts a new session row. Empty IP/UserAgent are stored
 // as NULL so retention filters over them behave as on Postgres.
 func (r *UISessionRepository) CreateSession(ctx context.Context, s *persistence.UISession) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO ui_sessions (id, token_hash, user_id, provider, created_at, last_seen_at, expires_at, ip, user_agent, origin_credential_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.TokenHash, s.UserID, s.Provider,
 		sqliteTime(s.CreatedAt), sqliteTime(s.LastSeenAt), sqliteTime(s.ExpiresAt),
-		nullStr(s.IP), nullStr(s.UserAgent))
+		nullStr(s.IP), nullStr(s.UserAgent), nullStr(s.OriginCredentialID))
 	return mapIdentityDBError(err)
 }
 
@@ -163,9 +163,9 @@ func scanUISession(sc rowScanner) (*persistence.UISession, error) {
 	var s persistence.UISession
 	var created, lastSeen, expires sqlTime
 	var revoked sqlNullTime
-	var ip, ua sql.NullString
+	var ip, ua, origin sql.NullString
 	if err := sc.Scan(&s.ID, &s.TokenHash, &s.UserID, &s.Provider,
-		&created, &lastSeen, &expires, &revoked, &ip, &ua); err != nil {
+		&created, &lastSeen, &expires, &revoked, &ip, &ua, &origin); err != nil {
 		return nil, err
 	}
 	s.CreatedAt, s.LastSeenAt, s.ExpiresAt = created.Time, lastSeen.Time, expires.Time
@@ -173,6 +173,6 @@ func scanUISession(sc rowScanner) (*persistence.UISession, error) {
 		t := revoked.Time
 		s.RevokedAt = &t
 	}
-	s.IP, s.UserAgent = ip.String, ua.String
+	s.IP, s.UserAgent, s.OriginCredentialID = ip.String, ua.String, origin.String
 	return &s, nil
 }

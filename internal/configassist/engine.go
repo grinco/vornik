@@ -153,10 +153,14 @@ type Engine struct {
 	Assistant chat.Provider
 	Judge     chat.Provider
 	Proposals ProposalStore
-	Applier   Applier
-	Usage     UsageRecorder
-	Logger    zerolog.Logger
-	Now       func() time.Time
+	// Slots hands out class-E admission slots (design §13.9a). Nil on a
+	// deployment that predates the table: admission then falls back to the
+	// exhaustive count alone, which is where it was before.
+	Slots   SlotStore
+	Applier Applier
+	Usage   UsageRecorder
+	Logger  zerolog.Logger
+	Now     func() time.Time
 	// Peer and Audit back the opt-in architect consultation (WP7). Both
 	// may be nil: the tool is then not advertised (Peer nil) or refuses
 	// before any network call (Audit nil — test 38).
@@ -386,7 +390,18 @@ func (e *Engine) Propose(ctx context.Context, req Request) (*Result, error) {
 	res.Diff = diff.String()
 	if bc.Class == ClassE {
 		res.Permissions = EffectivePermissionDiff(ops, original)
+		// TWO GATES, and only the second one decides. classECap is the
+		// exhaustive same-day count (CA-17): it refuses a credential that is
+		// already visibly over, and its count doubles as the reservation's
+		// starting slot so the common case takes one INSERT. The RESERVATION is
+		// what makes the cap true under concurrency — the count can be stale by
+		// the time it is read, a UNIQUE constraint cannot (design §13.9a).
 		if r := e.classECap(ctx, req, cfg, now); r != nil {
+			res.Refusal = r
+			return res, nil
+		}
+		filedToday, _ := e.classEToday(ctx, req.Actor.CredentialID, now)
+		if r := e.reserveClassESlot(ctx, req.Actor.CredentialID, cfg.ClassEDailyCap, filedToday, now); r != nil {
 			res.Refusal = r
 			return res, nil
 		}
@@ -411,20 +426,16 @@ func (e *Engine) Propose(ctx context.Context, req Request) (*Result, error) {
 	}
 	res.Proposal = p
 
-	// Class-E quota, second half: the admission check above ran BEFORE the
-	// model call, and admission itself is per project and per process, so
-	// concurrent requests across projects or replicas can each pass it and
-	// then all file. Re-count after the insert and withdraw our own row if
-	// it landed over the cap — the count is now authoritative because the
-	// row is in the ledger (audit 2026-09-15 CA-17). This bounds the
-	// overshoot to rows that are immediately REJECTED and can never be
-	// approved, instead of leaving it unbounded.
-	if bc.Class == ClassE {
-		if r := e.withdrawIfOverClassECap(ctx, req, cfg, p, now); r != nil {
-			res.Proposal, res.Refusal = nil, r
-			return res, nil
-		}
-	}
+	// REMOVED 2026-09-19: the post-insert re-count and withdrawal that used to
+	// stand here.
+	//
+	// It existed because the pre-flight count could not bind under concurrency,
+	// so a row that landed over the cap was withdrawn after the fact. Admission
+	// is now decided by a UNIQUE constraint BEFORE anything is filed (design
+	// §13.9a), so there is no over-cap row to withdraw — and removing it also
+	// closes the hole in the repair itself: SetStatus can fail after the insert
+	// (a cancelled request is enough), leaving an actionable DRAFT in the
+	// operator's inbox while the response said it was withdrawn.
 
 	// Auto-apply (design §6, §7.1): classes A/B only, opt-in per project,
 	// judged PASS, operator entrypoints only. C/D/E never (tests 8, 19); chat and
@@ -737,34 +748,6 @@ func (e *Engine) classEToday(ctx context.Context, credentialID string, now time.
 		}
 	}
 	return count, nil
-}
-
-// withdrawIfOverClassECap re-counts after the insert and rejects the row we
-// just filed when the credential is over its daily quota. Returns the
-// refusal to hand back, or nil when the proposal stands.
-//
-// A failure to re-count is NOT treated as permission to keep the row: the
-// quota exists to bound a leaked credential, so an unreadable ledger
-// withdraws the proposal too.
-func (e *Engine) withdrawIfOverClassECap(ctx context.Context, req Request, cfg config.AssistantConfig, p *persistence.ControlPlaneProposal, now time.Time) *Refusal {
-	if p == nil || cfg.ClassEDailyCap <= 0 {
-		return nil
-	}
-	count, err := e.classEToday(ctx, req.Actor.CredentialID, now)
-	if err == nil && count <= cfg.ClassEDailyCap {
-		return nil
-	}
-	reason := fmt.Sprintf("over the class-E daily cap of %d for this credential", cfg.ClassEDailyCap)
-	if err != nil {
-		reason = "the class-E ledger could not be re-read after filing: " + err.Error()
-	}
-	if serr := e.Proposals.SetStatus(ctx, p.ID, persistence.ProposalStatusRejected, ProposedBy); serr != nil {
-		// The row is filed and we could not withdraw it. Say so: it is
-		// class E, so a human must approve it before anything happens, but
-		// an operator reviewing the inbox needs to know it is over quota.
-		e.Logger.Error().Err(serr).Str("proposal", p.ID).Msg("class-E proposal exceeded its daily cap and could not be withdrawn; it remains in the inbox pending human review")
-	}
-	return &Refusal{Code: RefuseClassECap, Message: reason + "; the proposal was withdrawn, not queued (a burst of class-E proposals is what a leaked credential looks like)"}
 }
 
 func evidenceClass(evidence string) string {

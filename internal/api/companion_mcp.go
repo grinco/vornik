@@ -908,6 +908,21 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 	// workflow definition. Unknown / ad-hoc workflows (nil lookup)
 	// are NOT blocked — preserve the prior behaviour for IDs the
 	// catalog doesn't know.
+	// Staged-artifact size guard (2026-09-15). Checked BEFORE the workflow
+	// lookups below because it needs neither: bytes the caller is sending
+	// against a context this daemon configures. See
+	// companion_artifact_budget.go for the run it is named after.
+	if s.config != nil && len(args.InputArtifacts) > 0 {
+		total := 0
+		for _, a := range args.InputArtifacts {
+			// base64 inflates by 4/3; the staged file is what the agent reads.
+			total += len(a.Content) * 3 / 4
+		}
+		agentLLM := s.config.Runtime.AgentLLM
+		if err := checkStagedArtifactBudget(args.Workflow, total, agentLLM.ContextSize, agentLLM.MaxTokens); err != nil {
+			return "", err
+		}
+	}
 	if s.projectRegistry != nil {
 		wf := s.projectRegistry.GetWorkflow(args.Workflow)
 		if wf != nil && wf.RequireInputArtifacts && len(args.InputArtifacts) == 0 {

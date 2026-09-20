@@ -43,6 +43,29 @@ type SteeringOperatorAlertConfig struct {
 	Address string `yaml:"address" json:"address"`
 }
 
+// RegistryConfig is the deployed-tree loading policy — loader-validator
+// agreement design §13.1.
+type RegistryConfig struct {
+	// RefuseStartOnRejectedProject makes a file the loader could not read a
+	// FATAL boot error instead of a dark project.
+	//
+	// DEFAULT FALSE, and the default is the decision. At boot there is no
+	// last-known-good to keep, so refusing turns one dark project into a dark
+	// deployment — a larger outage than the one it prevents. A degraded boot is
+	// not silent: the loader prints the skew diagnosis and the
+	// project_config_skew doctor check reports it at ERROR.
+	//
+	// It exists as a key because that judgement is not universal. A regulated
+	// deployment may prefer a daemon that does not start over one serving a
+	// configuration it cannot fully load, and that is the kind of thing such a
+	// customer states in advance rather than discovers.
+	//
+	// The RELOAD refusal (§12) is unconditional by contrast, and the asymmetry
+	// is deliberate: there, refusing can never leave the operator worse off,
+	// because the running configuration keeps serving.
+	RefuseStartOnRejectedProject bool `yaml:"refuse_start_on_rejected_project" json:"refuse_start_on_rejected_project" doc:"Refuse to START when a deployed config file cannot be loaded, instead of starting with that project dark. Default false."`
+}
+
 // ClusterConfig holds cluster-diagnostics knobs. ExpectedEndpoints declares
 // externals the daemon can't infer from its own profile (notably the public
 // webhook ingress URL) so the cluster monitor + `vornikctl cluster check` can
@@ -333,6 +356,8 @@ type Config struct {
 	// (self_heal_enabled=false) leaves the Tune detector filing generic
 	// failed-rate proposals exactly as before.
 	ControlPlane ControlPlaneConfig `yaml:"control_plane" json:"control_plane" doc:"Control-plane worker knobs (self-healing incident detection)."`
+
+	Registry RegistryConfig `yaml:"registry" json:"registry" doc:"Config-tree loading policy (what a rejected project file does at boot)."`
 
 	// NamedSecrets are operator-declared secrets injected into agent
 	// containers ONLY for the projects each one allows — a per-secret
@@ -1057,6 +1082,28 @@ type SessionSettings struct {
 	// IdleTimeout cuts sessions idle longer than this. Empty/0 =
 	// disabled.
 	IdleTimeout string `yaml:"idle_timeout" json:"idle_timeout" doc:"Cut sessions idle longer than this."`
+
+	// CredentialExchange opens POST /api/v1/auth/session, which trades an
+	// authenticated API key for a bounded browser session
+	// (ce-human-login-design §4). OFF by default.
+	//
+	// It is an explicit switch rather than something inferred from "the
+	// identity core is present", because turning on a LOGIN SURFACE is a
+	// deployment decision and should read as one in the config file. A
+	// deployment that leaves it off answers 503 on the route, which says
+	// "this door is not offered here" and leaks nothing about any
+	// credential.
+	CredentialExchange bool `yaml:"credential_exchange" json:"credential_exchange" since:"2026.9.6" doc:"Open POST /api/v1/auth/session, exchanging an API key for a browser session cookie."`
+
+	// AllowInsecureExchange permits minting session cookies over plaintext
+	// HTTP. Leave it false wherever TLS terminates in front of the daemon,
+	// which is every supported topology.
+	//
+	// A session cookie in the clear IS the session: anything on the path
+	// can take it and become that account for the cookie's lifetime. This
+	// exists so a local development box can be told so knowingly, and its
+	// name is deliberately unpleasant to type into a production file.
+	AllowInsecureExchange bool `yaml:"allow_insecure_exchange" json:"allow_insecure_exchange" since:"2026.9.6" doc:"Permit session cookies over plaintext HTTP. Development only; a cookie in the clear is the whole session."`
 }
 
 // ProviderSettings — one optional block per login provider.

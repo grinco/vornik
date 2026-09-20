@@ -25,6 +25,18 @@ const (
 	ScoreStatusMissingContract ScoreStatus = "missing_contract"
 	ScoreStatusInvalidEvidence ScoreStatus = "invalid_evidence"
 	ScoreStatusNotApplicable   ScoreStatus = "not_applicable"
+	// ScoreStatusUnscorable marks an execution this contract CANNOT be
+	// evaluated against — a property of the scorer's reach, not of the agent's
+	// work. It is excluded from the metric's denominator and from the gate's
+	// contract signal, exactly as not_applicable is, but it is a DISTINCT
+	// value: not_applicable means "this workflow declares no contract", and
+	// folding a scorer gap into a configuration fact would hide it.
+	//
+	// It is deliberately NOT invalid_evidence. That status scores a measured
+	// zero, which says "no evidence was produced" — a different false statement
+	// from the one being avoided, and one that would drag an arm's mean on a
+	// defect of ours rather than of the run.
+	ScoreStatusUnscorable ScoreStatus = "unscorable"
 )
 
 // Score diagnostics are stable machine-readable reasons for non-clean verdicts.
@@ -50,6 +62,14 @@ const (
 	DiagnosticCorruptStateSnapshot    = "corrupt_state_snapshot"
 	DiagnosticCorruptWorkflowSnapshot = "corrupt_workflow_snapshot"
 	DiagnosticUnsupportedScorePolicy  = "unsupported_score_policy"
+	// DiagnosticMultiVisitLastOnly: the policy's producer or verifier step was
+	// visited more than once, so the snapshot's stepResults mirror holds only
+	// the LAST visit and scoring it against a whole-task denominator would be a
+	// claim about the execution made from a fraction of it. The execution
+	// record keeps every visit (one execution_step_outcomes row each, carrying
+	// result_hash) — this scorer is handed the snapshot alone and cannot reach
+	// them, which is why it refuses rather than reconstructs.
+	DiagnosticMultiVisitLastOnly = "multi_visit_last_only"
 )
 
 // ScoringPolicy is the workflow-pinned description of where the scorer reads
@@ -89,7 +109,14 @@ type ExecutionScore struct {
 	// own is a bookkeeping slip, and one covering none of them under its own
 	// numbering is a verifier that validated nothing. Until 2026-09-17 a single
 	// extra id voided the whole report and both scored a measured zero.
-	ExtraCaseCount int                      `json:"extraCaseCount,omitempty"`
+	ExtraCaseCount int `json:"extraCaseCount,omitempty"`
+	// ProducerVisits / VerifierVisits are how many times each named step ran.
+	// Carried so an unscorable verdict is auditable from the record alone —
+	// "it was visited three times" is the whole diagnosis — and so a later
+	// per-visit reader has the count without re-deriving it. Zero means the
+	// snapshot predates visitCounts.
+	ProducerVisits int                      `json:"producerVisits,omitempty"`
+	VerifierVisits int                      `json:"verifierVisits,omitempty"`
 	Diagnostic     string                   `json:"diagnostic,omitempty"`
 	CaseEvidence   []NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
 	// ObligationEvidence is the contract_satisfaction analogue of
@@ -100,9 +127,29 @@ type ExecutionScore struct {
 
 type scoreState struct {
 	StepResults map[string]json.RawMessage `json:"stepResults"`
+	// VisitCounts is how many times the executor entered each step. Written
+	// by the executor on every checkpoint; ABSENT on snapshots that predate
+	// the field, which are treated as single-visit — those executions were.
+	VisitCounts map[string]int `json:"visitCounts,omitempty"`
 }
 
+// PinnedProducerFieldPath is the dot-separated path, inside the producer
+// step's result.json, at which decodePinnedProducer finds the pinned case ids.
+//
+// It is exported because a scoring verifier's step prompt is handed that same
+// value through a ${outputs.<producerStep>.<field>} reference, and the whole
+// point of that mechanism is that the verifier's input and the scorer's
+// denominator are the SAME bytes. A shipped-config contract test asserts the
+// prompt's reference uses this constant, and TestPinnedProducerFieldPathMatchesEnvelope
+// asserts this constant still resolves to what producerEnvelope decodes — so a
+// rename of either side fails a test rather than silently splitting the two.
+//
+// Struct tags cannot be constants in Go, which is exactly why the paired test
+// exists rather than a comment asking the next person to keep them in step.
+const PinnedProducerFieldPath = "analysis.test_case_ids"
+
 type producerEnvelope struct {
+	// Tags must spell out PinnedProducerFieldPath — see the constant.
 	Analysis *struct {
 		TestCaseIDs     []string `json:"test_case_ids"`
 		TestCasesPinned *int     `json:"test_cases_pinned"`
@@ -161,6 +208,29 @@ func ScoreExecution(policy *ScoringPolicy, stateSnapshot []byte) (ExecutionScore
 	if err := json.Unmarshal(stateSnapshot, &state); err != nil {
 		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, DiagnosticMalformedEvidence, 0), nil
 	}
+	// A repeated producer or verifier makes the mirror a fraction of the
+	// execution, and nothing downstream could tell. Checked BEFORE the evidence
+	// is read, because the evidence is not wrong — it is incomplete in a way
+	// reading it more carefully cannot detect.
+	//
+	// Only the two steps this policy names matter. dev-pipeline's `implement`
+	// loops by design, and a looping step nobody scores is not a problem.
+	producerVisits := state.VisitCounts[policy.ProducerStep]
+	verifierVisits := state.VisitCounts[policy.VerifierStep]
+	if producerVisits > 1 || verifierVisits > 1 {
+		out := scoreZero(policy.Kind, ScoreStatusUnscorable, DiagnosticMultiVisitLastOnly, 0)
+		out.ProducerVisits = producerVisits
+		out.VerifierVisits = verifierVisits
+		// The denominator IS readable, and carrying it is the difference
+		// between "we could not score this" and "there was nothing here".
+		if raw, ok := state.StepResults[policy.ProducerStep]; ok {
+			if ids, _, diag := decodePinnedProducer(raw); diag == "" {
+				out.PinnedCaseCount = len(ids)
+			}
+		}
+		return out, nil
+	}
+
 	producerRaw, producerOK := state.StepResults[policy.ProducerStep]
 	verifierRaw, verifierOK := state.StepResults[policy.VerifierStep]
 	switch {

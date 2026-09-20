@@ -29,7 +29,16 @@ type TaskScore struct {
 	// ids the producer did not pin. Journalled so the slip is visible on the
 	// scoreboard and not only inside the scorer, which is where it hid until
 	// 2026-09-17.
-	ExtraCaseCount int                              `json:"extraCaseCount,omitempty"`
+	ExtraCaseCount int `json:"extraCaseCount,omitempty"`
+	// ProducerVisits / VerifierVisits are how many times the scored steps ran.
+	// Journalled because a number computed over straight-line executions is not
+	// evidence about a workflow whose defining feature is iteration, and
+	// nothing in the journal said which kind of run produced it. dev-pipeline
+	// is built around implement -> test -> review -> implement with
+	// maxStepVisits 12, and every scored task in the 2026.9.4 arm visited each
+	// step exactly once.
+	ProducerVisits int                              `json:"producerVisits,omitempty"`
+	VerifierVisits int                              `json:"verifierVisits,omitempty"`
 	Diagnostic     string                           `json:"diagnostic,omitempty"`
 	CaseEvidence   []quality.NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
 	ExecutionIDs   []string                         `json:"executionIds"`
@@ -59,6 +68,7 @@ func ScoreTask(taskID string, repeat int, policy *quality.ScoringPolicy, executi
 		TaskID: taskID, Repeat: repeat, Kind: verdict.Kind, Status: verdict.Status,
 		Score: *verdict.Score, PassedCaseCount: verdict.PassedCaseCount,
 		PinnedCaseCount: verdict.PinnedCaseCount, ExtraCaseCount: verdict.ExtraCaseCount,
+		ProducerVisits: verdict.ProducerVisits, VerifierVisits: verdict.VerifierVisits,
 		Diagnostic:   verdict.Diagnostic,
 		CaseEvidence: verdict.CaseEvidence,
 		ExecutionIDs: append([]string(nil), executionIDs...),
@@ -162,6 +172,21 @@ func taskRepeatScores(scores []TaskScore, kind quality.ScoreKind) (map[string]ma
 		if score.Kind != kind {
 			continue
 		}
+		// EXCLUDED, not zeroed. Both statuses carry a numeric 0.0 because the
+		// journal needs one, and both mean "there is no measurement here" —
+		// not_applicable because the workflow declares no contract,
+		// unscorable because this scorer could not evaluate the one it does
+		// (a repeated producer or verifier leaves the snapshot's stepResults
+		// mirror holding a fraction of the execution; 06-executor.md
+		// 2026-09-19). Averaging either in as a zero publishes a defect of
+		// OURS as a score of the RUN.
+		//
+		// invalid_evidence and missing_contract deliberately keep counting as
+		// zero: those are the agent or the contract failing, which is what the
+		// metric exists to measure.
+		if score.Status == quality.ScoreStatusUnscorable || score.Status == quality.ScoreStatusNotApplicable {
+			continue
+		}
 		if score.TaskID == "" || score.Repeat < 1 || math.IsNaN(score.Score) || math.IsInf(score.Score, 0) || score.Score < 0 || score.Score > 1 {
 			return nil, fmt.Errorf("invalid task score %#v", score)
 		}
@@ -202,4 +227,124 @@ func sampleStdDev(values []float64, mean float64) float64 {
 		sumSquares += d * d
 	}
 	return math.Sqrt(sumSquares / float64(len(values)-1))
+}
+
+// ScoreCoverage is the denominator a mean was computed over, with what fell out
+// of it and why.
+//
+// A mean over a shrunken set is not better than a wrong mean unless the reader
+// can see how much fell out — publishing "0.84" while seventeen of twenty tasks
+// were excluded is the same silent-wrong-number failure in a cleaner status
+// (review-20260919-c82a A2-3). The two exclusions stay SEPARATE because they
+// say different things: not_applicable is a workflow declaring no contract,
+// unscorable is a contract this scorer could not evaluate.
+type ScoreCoverage struct {
+	// ContractDeclaring is every task/repeat carrying this scoring kind —
+	// the honest denominator to quote the other numbers against.
+	ContractDeclaring int `json:"contractDeclaring"`
+	Scored            int `json:"scored"`
+	Unscorable        int `json:"unscorable"`
+	NotApplicable     int `json:"notApplicable"`
+	// ReworkExercised is how many contract-declaring task/repeats visited the
+	// verifier more than once — i.e. actually ran the rework loop the workflow
+	// is built around. Zero means the arm measured a straight line, which is a
+	// fact about the MEASUREMENT and belongs beside the number rather than in
+	// someone's memory.
+	ReworkExercised int `json:"reworkExercised"`
+	// VisitsKnown is how many of them carried visit counts at all. A journal
+	// written before visits were recorded reports ReworkExercised 0 for a
+	// reason that has nothing to do with the arm, and a zero that means "not
+	// measured" must not read as "measured, and it never looped".
+	VisitsKnown int `json:"visitsKnown"`
+}
+
+// SummariseScoreCoverage counts the statuses behind a metric so the scoreboard
+// can print the denominator beside the mean.
+func SummariseScoreCoverage(scores []TaskScore, kind quality.ScoreKind) ScoreCoverage {
+	var c ScoreCoverage
+	for _, score := range scores {
+		if score.Kind != kind {
+			continue
+		}
+		switch score.Status {
+		case quality.ScoreStatusNotApplicable:
+			c.NotApplicable++
+		case quality.ScoreStatusUnscorable:
+			c.Unscorable++
+			c.ContractDeclaring++
+		default:
+			c.Scored++
+			c.ContractDeclaring++
+		}
+		if score.Status == quality.ScoreStatusNotApplicable {
+			continue
+		}
+		if score.VerifierVisits > 0 || score.ProducerVisits > 0 {
+			c.VisitsKnown++
+			if score.VerifierVisits > 1 {
+				c.ReworkExercised++
+			}
+		}
+	}
+	return c
+}
+
+// String renders the coverage the way the scoreboard prints it. Reasons are
+// named, never merged: "3 excluded" would leave the reader unable to tell a
+// configuration fact from a scorer gap.
+func (c ScoreCoverage) String() string {
+	out := fmt.Sprintf("%d of %d contract-declaring tasks", c.Scored, c.ContractDeclaring)
+	if c.Unscorable > 0 {
+		out += fmt.Sprintf("; %d unscorable", c.Unscorable)
+	}
+	if c.NotApplicable > 0 {
+		out += fmt.Sprintf("; %d not_applicable (no contract)", c.NotApplicable)
+	}
+	return out
+}
+
+// ReworkCoverage states whether this arm exercised the rework loop at all.
+//
+// THE TRIPWIRE. dev-pipeline is built around implement -> test -> review ->
+// implement, with per-visit gates, a failing-test path, a reviewer-rejection
+// path and a checkpoint/resume branch the autonomy loop depends on. Every
+// scored task in the 2026.9.4 arm ran a single visit of each, so none of that
+// was measured — on every task, every repeat — and nothing said so. A headline
+// computed over straight-line passes is not evidence about a workflow whose
+// defining feature is iteration, and the arm could silently go on being
+// straight-line-only.
+//
+// Reported rather than refused: a straight-line arm is still a valid
+// measurement of the straight-line case, and refusing it would stop a release
+// over a property of the TASK SET. What it may not do is look like a
+// measurement of the loop.
+func (c ScoreCoverage) ReworkCoverage() string {
+	switch {
+	case c.VisitsKnown == 0:
+		return "rework loop: NOT MEASURED — this journal carries no visit counts"
+	case c.ReworkExercised == 0:
+		return fmt.Sprintf(
+			"rework loop: NOT EXERCISED — 0 of %d scored executions revisited the verifier, "+
+				"so this arm measures a straight line and says nothing about the failing-test, "+
+				"reviewer-rejection or checkpoint/resume paths", c.VisitsKnown)
+	default:
+		return fmt.Sprintf("rework loop: exercised by %d of %d scored executions",
+			c.ReworkExercised, c.VisitsKnown)
+	}
+}
+
+// MeanScoredTaskScore is the mean over the SCORED task/repeat rows only —
+// unscorable and not_applicable rows are excluded by taskRepeatScores, not
+// counted as zero. ok is false when nothing was scorable, which a caller must
+// print as "no scored task" rather than as 0.000.
+func MeanScoredTaskScore(scores []TaskScore, kind quality.ScoreKind) (float64, bool) {
+	byTask, err := taskRepeatScores(scores, kind)
+	if err != nil || len(byTask) == 0 {
+		return 0, false
+	}
+	values := make([]float64, 0, len(byTask))
+	for _, repeats := range byTask {
+		values = append(values, meanScore(repeats))
+	}
+	return meanFloat(values), true
 }

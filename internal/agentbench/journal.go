@@ -221,6 +221,12 @@ type Journal struct {
 	TaskRuns   []TaskRun         `json:"taskRuns,omitempty"`
 }
 
+// SHA256 is the journal's content identity, for a journal that exists only in
+// memory and therefore has no file to hash — the merge of a batched run's
+// chunks being the case that needs it. A per-file hash could only name one of
+// the inputs that produced it.
+func (j Journal) SHA256() string { return digestJSON(j) }
+
 // Write serialises the journal.
 func (j Journal) Write(w io.Writer) error {
 	enc := json.NewEncoder(w)
@@ -435,12 +441,52 @@ func MergeJournals(journals ...Journal) (Journal, error) {
 			out.Manifest.UntrustworthyReason = fmt.Sprintf("merged batch %q: %s",
 				j.Manifest.RunID, j.Manifest.UntrustworthyReason)
 		}
+		// The tier map is per-BATCH: a chunked run's manifest names only the
+		// tasks that batch ran, so chunk tb0 of the 2026-09-21 hard-tier pass
+		// listed two of the ten tasks. Without the union, BuildCalibration
+		// refused a merged run with `task run "gate-b" has no journaled tier`
+		// — true about a map that lost the entry, and read as though the run
+		// had never journaled it.
+		//
+		// Conflicts refuse and name the task. The tier-policy hash in
+		// CheckMergeable above already catches a tier change mid-run; this
+		// makes the error say WHICH task moved instead of only that a hash
+		// differed.
+		merged, err := unionTaskTiers(out.Manifest.TaskTiers, j.Manifest.TaskTiers)
+		if err != nil {
+			return Journal{}, fmt.Errorf("refusing to merge %q into %q: %w",
+				j.Manifest.RunID, out.Manifest.RunID, err)
+		}
+		out.Manifest.TaskTiers = merged
+
 		out.Records = append(out.Records, j.Records...)
 		out.TaskScores = append(out.TaskScores, j.TaskScores...)
 		out.TaskRuns = append(out.TaskRuns, j.TaskRuns...)
 	}
 	out.Manifest.RunID = fmt.Sprintf("%s+%d", journals[0].Manifest.RunID, len(journals)-1)
 	return out, nil
+}
+
+// unionTaskTiers combines two batches' tier maps, refusing a task that appears
+// at two tiers. It never mutates either input: `out` in MergeJournals starts
+// as journals[0], whose map is the caller's.
+func unionTaskTiers(a, b map[string]TaskTier) (map[string]TaskTier, error) {
+	if len(b) == 0 {
+		return a, nil
+	}
+	merged := make(map[string]TaskTier, len(a)+len(b))
+	for id, tier := range a {
+		merged[id] = tier
+	}
+	for id, tier := range b {
+		if existing, ok := merged[id]; ok && existing != tier {
+			return nil, fmt.Errorf("task %q is %q in one batch and %q in another: "+
+				"a tier change mid-run makes the batches different experiments",
+				id, existing, tier)
+		}
+		merged[id] = tier
+	}
+	return merged, nil
 }
 
 func short(h string) string {

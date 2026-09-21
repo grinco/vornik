@@ -770,16 +770,7 @@ func (e *Executor) runLeadPlanning(
 	// pattern.
 	if recoveryContext != nil {
 		if recoveryViolation {
-			outcomeLabel := "missing"
-			if parsedOK && parsedOutcome != nil {
-				outcomeLabel = string(parsedOutcome.Outcome)
-				if parsedOutcome.Outcome == LeadOutcomeCheckpoint && parsedOutcome.Checkpoint != nil {
-					// e.g. "checkpoint:review" — the corrective hint
-					// branches on the "checkpoint" prefix to explain that
-					// recovery checkpoints must be kind=decision.
-					outcomeLabel = "checkpoint:" + string(parsedOutcome.Checkpoint.Kind)
-				}
-			}
+			outcomeLabel := recoveryOutcomeLabel(resultBytes)
 			retryCID, retryStepID, retryCompletedOK, retryHandoffErr := e.retryRecoveryContractViolation(
 				ctx, task, execution, plan, stepID, leadStep, timeout, opts, recoveryContext, outcomeLabel,
 			)
@@ -1758,4 +1749,68 @@ func applyRecoverySchemaOverride(opts *agentInputOpts) {
 	// a dialect tree is a second surface with its own history and is filed
 	// separately rather than folded in here.
 	opts.EffectiveSchema = nil
+}
+
+// recoveryOutcomeLabel describes the outcome a recovery hop actually emitted,
+// for the corrective hint and the violation report.
+//
+// It exists because the caller used to discard the parser's error —
+// `parsedOutcome, parsedOK, _ := ParseLeadOutcome(resultBytes)` — and then
+// label an unparseable result "missing". For an UNRECOGNISED outcome that is
+// false twice over: the value was present, and ParseLeadOutcome had already
+// identified it exactly (`unknown outcome "frobnicate"`). The label threw away
+// a diagnosis the system had produced and replaced it with a different claim,
+// which is the same defect class as a refusal message that misstates its own
+// reason.
+//
+// "missing" is kept for the case it is true of: no `outcome` and no `plan`.
+//
+// A case variant is NOT special-cased, deliberately. ParseLeadOutcome
+// lower-cases before validating, so "CHECKPOINT" normalises to checkpoint and
+// is accepted; reporting it as unusual was the false-alarm mode that
+// disqualified a proposed receipt-time enum check on this field (four design
+// rounds, withdrawn 2026-09-21 — the parser is already strict and already
+// names what it refuses).
+func recoveryOutcomeLabel(resultBytes []byte) string {
+	parsed, ok, err := ParseLeadOutcome(resultBytes)
+	if ok && parsed != nil {
+		if parsed.Outcome == LeadOutcomeCheckpoint && parsed.Checkpoint != nil {
+			// e.g. "checkpoint:review" — the corrective hint branches on the
+			// "checkpoint" prefix to explain that recovery checkpoints must be
+			// kind=decision.
+			return "checkpoint:" + string(parsed.Checkpoint.Kind)
+		}
+		return string(parsed.Outcome)
+	}
+	// The parser refused. Its message already carries the offending value for
+	// an unknown outcome, so surface that rather than inventing a label.
+	if err != nil {
+		if name, found := unknownOutcomeName(err.Error()); found {
+			return name
+		}
+	}
+	return "missing"
+}
+
+// unknownOutcomeName lifts the offending value out of ParseLeadOutcome's
+// `unknown outcome "x"` error, so the label names what the model emitted
+// instead of asserting it was absent.
+//
+// Reads the message rather than a typed error because ParseLeadOutcome returns
+// fmt.Errorf values; a typed error would be the better shape and is not worth
+// changing a parser's signature for one label. If the message stops matching,
+// the label falls back to "missing" and the test for the unrecognised case
+// fails — which is the intended way to find out.
+func unknownOutcomeName(msg string) (string, bool) {
+	const prefix = `unknown outcome "`
+	i := strings.Index(msg, prefix)
+	if i < 0 {
+		return "", false
+	}
+	rest := msg[i+len(prefix):]
+	j := strings.Index(rest, `"`)
+	if j <= 0 {
+		return "", false
+	}
+	return rest[:j], true
 }

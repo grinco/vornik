@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -763,5 +764,110 @@ func TestShortGoldReport_SaysNothingWhenEveryEntryIsComplete(t *testing.T) {
 	}
 	if got := shortGoldReport(m); got != "" {
 		t.Fatalf("shortGoldReport() = %q, want empty — t1 is complete and t2 is excluded", got)
+	}
+}
+
+// TestBenchAgentCalibrate_AcceptsTheChunksOfOneBatchedRun covers the shape
+// every real calibration pass has: agentbench-reproduce.sh writes one journal
+// per (repeat chunk x task batch), so a 10-repeat 10-task pass leaves 50 files
+// and `calibrate <journal>` could read none of them. The chunks must merge,
+// their per-batch tier maps must union, and the artifact must come out as if
+// the run had never been chunked.
+func TestBenchAgentCalibrate_AcceptsTheChunksOfOneBatchedRun(t *testing.T) {
+	dir := t.TempDir()
+	resetAgentFlags()
+	arm := agentbench.ArmFields{HarnessVersion: agentbench.HarnessVersion, BinarySHA256: "bin",
+		ConfigSHA256: "cfg", Models: map[string]string{"worker": "model"},
+		AgentImages: map[string]string{"worker": "sha256:image"}, ContextPolicy: "policy",
+		TaskSetSHA256: "tasks", TierPolicySHA256: "tiers", ScoringPolicySHA256: "scores",
+		Probes: []string{"schema-following"}}
+
+	// Two task batches x three repeat chunks, each journal carrying ONLY its
+	// own batch's tasks in TaskTiers — the per-batch map that made a merged
+	// run fail with `task run "gate-b" has no journaled tier`.
+	var paths []string
+	for chunk := range 3 {
+		for batch, ids := range [][]string{{"gate-a"}, {"gate-b"}} {
+			tiers := map[string]agentbench.TaskTier{}
+			for _, id := range ids {
+				tiers[id] = agentbench.TaskTierGate
+			}
+			j := agentbench.Journal{Manifest: agentbench.RunManifest{
+				RunID: fmt.Sprintf("run-c%d-tb%d", chunk, batch), Arm: arm,
+				ArmKey: arm.Key(), TaskTiers: tiers}}
+			for _, id := range ids {
+				// Repeat carries the offset, so the three chunks cover 1,2,3.
+				repeat := chunk + 1
+				passed := repeat != 1
+				j.TaskRuns = append(j.TaskRuns, agentbench.TaskRun{TaskID: id, Repeat: repeat,
+					Succeeded: passed, ErrorText: map[bool]string{false: "criteria not met"}[passed]})
+			}
+			paths = append(paths, writeAgentBenchJSON(t,
+				dir, fmt.Sprintf("c%d-tb%d.json", chunk, batch), j))
+		}
+	}
+
+	benchAgentCalibrationOutPath = filepath.Join(dir, "calibration.json")
+	var out bytes.Buffer
+	cmd := *benchAgentCalibrateCmd
+	cmd.SetOut(&out)
+	if err := runBenchAgentCalibrate(&cmd, paths); err != nil {
+		t.Fatalf("calibrate the chunks of one run: %v", err)
+	}
+
+	raw, err := os.ReadFile(benchAgentCalibrationOutPath)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var artifact agentbench.CalibrationManifest
+	if err := json.Unmarshal(raw, &artifact); err != nil {
+		t.Fatalf("decode artifact: %v", err)
+	}
+	if len(artifact.Tasks) != 2 {
+		t.Fatalf("artifact covers %d tasks, want both batches: %+v", len(artifact.Tasks), artifact.Tasks)
+	}
+	for _, task := range artifact.Tasks {
+		if task.Attempts != 3 {
+			t.Fatalf("task %q has %d attempts, want the 3 repeat chunks", task.TaskID, task.Attempts)
+		}
+	}
+	// Identity must still pin what it was built from.
+	if artifact.SourceJournalSHA256 == "" || len(artifact.SourceJournalSHA256) != 64 {
+		t.Fatalf("sourceJournalSha256 = %q", artifact.SourceJournalSHA256)
+	}
+}
+
+// A repeat index that did not survive chunking must not be tallied as several
+// attempts, and the error must name the flag that prevents it.
+func TestBenchAgentCalibrate_RefusesChunksThatRestampedTheRepeatIndex(t *testing.T) {
+	dir := t.TempDir()
+	resetAgentFlags()
+	arm := agentbench.ArmFields{HarnessVersion: agentbench.HarnessVersion, BinarySHA256: "bin",
+		ConfigSHA256: "cfg", Models: map[string]string{"worker": "model"},
+		AgentImages: map[string]string{"worker": "sha256:image"}, ContextPolicy: "policy",
+		TaskSetSHA256: "tasks", TierPolicySHA256: "tiers", ScoringPolicySHA256: "scores",
+		Probes: []string{"schema-following"}}
+
+	var paths []string
+	for chunk := range 3 {
+		j := agentbench.Journal{Manifest: agentbench.RunManifest{
+			RunID: fmt.Sprintf("run-c%d-tb0", chunk), Arm: arm, ArmKey: arm.Key(),
+			TaskTiers: map[string]agentbench.TaskTier{"gate-a": agentbench.TaskTierGate}}}
+		// Every chunk stamps repeat 1: the defect itself.
+		j.TaskRuns = append(j.TaskRuns, agentbench.TaskRun{
+			TaskID: "gate-a", Repeat: 1, Succeeded: chunk != 0,
+			ErrorText: map[bool]string{true: "criteria not met"}[chunk == 0]})
+		paths = append(paths, writeAgentBenchJSON(t, dir, fmt.Sprintf("c%d.json", chunk), j))
+	}
+
+	benchAgentCalibrationOutPath = filepath.Join(dir, "calibration.json")
+	cmd := *benchAgentCalibrateCmd
+	cmd.SetOut(&bytes.Buffer{})
+	err := runBenchAgentCalibrate(&cmd, paths)
+	if err == nil {
+		t.Fatal("three chunks all stamped repeat 1 produced a calibration artifact")
+	}
+	if !strings.Contains(err.Error(), "repeat-offset") {
+		t.Fatalf("error must name the fix: %v", err)
 	}
 }

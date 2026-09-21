@@ -23,7 +23,7 @@ func TestRescoreInputGap(t *testing.T) {
 			// Naming the missing INPUT, not the version gap: "harness 6
 			// journals cannot be re-scored" tells an operator nothing
 			// they can act on.
-			wantSay: "per-visit result bodies",
+			wantSay: minRescorableHarnessReason,
 		},
 		{
 			name:    "a journal at the floor can",
@@ -89,5 +89,57 @@ func TestRescoreInputGap(t *testing.T) {
 func TestMinRescorableHarnessIsNotAheadOfTheCurrentOne(t *testing.T) {
 	if gap := rescoreInputGap(HarnessVersion, true); gap != "" {
 		t.Fatalf("the CURRENT harness version is below the re-scorable floor: %s", gap)
+	}
+}
+
+// TestRescoreInputGap_ReasonTravelsWithTheFloor is the regression test for a
+// message that told the operator something false.
+//
+// The refusal hard-coded the 6->7 rationale — "harness N assembles the
+// pinned-case numerator from the per-visit result bodies … which a journal at
+// harness M does not carry" — into a sentence parameterised by version. That
+// claim was true of harness-6 journals and is FALSE of harness-7 ones: harness
+// 7 is precisely the version that introduced per-visit accumulation, so a
+// harness-7 journal does carry those bodies. Raise the floor to 8 and the
+// refusal would have been correct (a version floor) for a stated reason that
+// is a lie, sending anyone who hit it to look for a storage problem that does
+// not exist.
+//
+// Caught as suggestion 6 of review-20260921-0f42 while reviewing the D4
+// amendment; independent of D4 and survives its no-bump decision.
+func TestRescoreInputGap_ReasonTravelsWithTheFloor(t *testing.T) {
+	// The floor's justification must be declared beside the floor, so that
+	// whoever raises one is looking at the other.
+	if minRescorableHarnessReason == "" {
+		t.Fatal("the floor has no declared reason, so its refusal cannot state a true one")
+	}
+
+	gap := rescoreInputGap("1", true)
+	if gap == "" {
+		t.Fatal("a journal below the floor was not refused")
+	}
+
+	// It must name the boundary it is actually refusing at, so the operator
+	// can tell WHICH crossing failed rather than inferring it.
+	for _, want := range []string{MinRescorableHarness, HarnessVersion, "1"} {
+		if !strings.Contains(gap, want) {
+			t.Fatalf("refusal %q does not name %q", gap, want)
+		}
+	}
+
+	// And it must carry the floor's own reason rather than a rationale
+	// hard-coded for one historical bump.
+	if !strings.Contains(gap, minRescorableHarnessReason) {
+		t.Fatalf("refusal %q does not carry the floor's declared reason %q",
+			gap, minRescorableHarnessReason)
+	}
+
+	// The specific lie: the refusal must never assert that a journal AT or
+	// ABOVE the floor lacks the inputs the floor was raised for. Harness 7
+	// introduced the per-visit bodies, so no refusal may claim a harness-7
+	// journal does not carry them.
+	atFloor := rescoreInputGap(MinRescorableHarness, true)
+	if strings.Contains(atFloor, "does not carry") {
+		t.Fatalf("refusal at the floor claims missing inputs: %q", atFloor)
 	}
 }

@@ -54,8 +54,10 @@ configuration, not a recording — so they can gate before any gold pass.
 
 Build a task calibration artifact from a repeated journal
 
+Several journals are merged before the artifact is derived, which is the form a long pass takes: one journal per repeat chunk and task batch, so a 10-repeat 10-task calibration leaves 50 files. The merge refuses inputs that are not one run — a differing arm, pre-registration, or tier policy — and refuses a repeat index that collided across chunks.
+
 ```
-vornikctl bench agent calibrate <journal> [flags]
+vornikctl bench agent calibrate <journal>... [flags]
 ```
 
 | Flag | Default | Description |
@@ -247,6 +249,7 @@ vornikctl bench agent run [flags]
 | `--noise-floor` |  | release noise-floor artifact pinned by the pre-registration |
 | `--preregistration` |  | REQUIRED: committed manifest stating the arms, metric, intended delta and computed n |
 | `--project` |  | project to run in |
+| `--repeat-offset` | `0` | shift the repeat index this invocation stamps, so a run split across several invocations produces globally unique (task, repeat) pairs. Pass chunk_index * repeat_batch. Without it every chunk numbers its repeats from 1, and calibration refuses the collision rather than counting one repeat many times |
 | `--repeats` | `1` | runs per task; repeats shrink a task's contribution to sigma_d but add no pairs |
 | `--run-id` |  | identifier for this run |
 | `--swarm` |  | swarm whose roles execute the tasks |

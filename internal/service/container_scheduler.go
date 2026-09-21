@@ -135,6 +135,19 @@ func (c *Container) initScheduler() error {
 		runtimeOptions = append(runtimeOptions, runtime.WithPrometheusRegistry(registry))
 	}
 
+	// Agent containers ran unbounded until 2026-09-21: MemoryLimit was
+	// declared and plumbed to podman and set by nothing, so one agent taking
+	// 2.99 GB could take the box down — and did, four times. Resolved here
+	// rather than at the ContainerConfig construction sites because the
+	// manager is the single point the field reaches podman, so a site that
+	// forgets it still gets the limit.
+	var memLimitErr error
+	runtimeOptions, memLimitErr = c.applyAgentMemoryLimit(
+		runtimeOptions, runtime.HostTotalMemory, runtime.HostAvailableMemory)
+	if memLimitErr != nil {
+		return memLimitErr
+	}
+
 	runtimeManager, err := runtime.New(runtimeOptions...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize runtime manager: %w", err)

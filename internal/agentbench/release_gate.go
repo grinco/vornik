@@ -165,7 +165,17 @@ func calibrationTallies(runs []TaskRun, tiers map[string]TaskTier) (map[string]*
 			byTask[run.TaskID] = tally
 		}
 		if tally.seen[run.Repeat] {
-			return nil, fmt.Errorf("duplicate task/repeat pair %s/%d", run.TaskID, run.Repeat)
+			// The cause is almost always a batched run whose chunks restamped
+			// their repeat index: `bench agent run` numbers repeats from 1, so
+			// agentbench-reproduce.sh --repeat-batch 1 invoked ten times wrote
+			// ten runs all claiming repeat 1. That is indistinguishable from
+			// one run journaled ten times, which is why this refuses — but
+			// twice in 2026-09 a ten-hour pass reached this message and the
+			// message did not say what to do about it.
+			return nil, fmt.Errorf("duplicate task/repeat pair %s/%d: if these journals "+
+				"came from one batched run, its chunks restamped the repeat index — "+
+				"re-run passing --repeat-offset (chunk index x repeat batch) so each "+
+				"chunk's repeats are globally unique", run.TaskID, run.Repeat)
 		}
 		tally.seen[run.Repeat] = true
 		if run.Succeeded {
@@ -569,11 +579,65 @@ func ValidateReleaseRunPlan(pre PreRegistration, arm ArmFields, taskTiers map[st
 	return nil
 }
 
-// EvaluateReleaseGate evaluates only journaled evidence against artifacts
+// ungroundedNumeratorRefusal is why the gate cannot return PASS or FAIL on
+// pinned_case_validation, decided by the operator on 2026-09-21.
+//
+// Both halves of the metric are authored by the system under test. The analyst
+// chooses the denominator — measured at 8 to 18 pinned cases for one task
+// across runs, with dh-05 scoring sd exactly 0.0000 over a denominator that
+// more than doubled. And the verifier SELF-REPORTS the numerator:
+// PinnedCaseEvidence is one verifier-emitted testing.cases[] entry, and
+// nothing in the scoring path executes anything.
+//
+// Across both hard-tier calibration passes — 200 task runs, 2,585 case rows —
+// no case was ever reported `failed`. Every point below 1.0 is a case the
+// verifier never mentioned, never one it judged as failing.
+//
+// REFUSED and not FAIL: FAIL asserts a measured regression, and there is no
+// measurement here to regress. The gate's own rule is that missing evidence is
+// REFUSED, and an unverified self-report is missing evidence about exactly the
+// thing the gate claims to decide.
+//
+// This makes the gate inactive, because ReleaseGatePolicy.Validate pins the
+// metric to pinned_case_validation and there is no other. That is the correct
+// state and matches this package's standing position that shipping code which
+// refuses beats blessing numbers it cannot justify. Grounding the numerator in
+// execution is filed as a feature in https://docs.vornik.io; when it lands, this
+// refusal is what should be deleted.
+const ungroundedNumeratorRefusal = "pinned_case_validation cannot decide a release: its " +
+	"numerator is the SELF-REPORT of the agent under test (testing.cases[] is verifier-emitted " +
+	"and nothing in the scoring path executes the tests), and across 200 task runs and 2,585 " +
+	"case rows no case was ever reported failed. Its denominator is analyst-authored and varied " +
+	"8 to 18 on one task. Tripwire outcomes above still decide; the scored comparison does not. " +
+	"See https://docs.vornik.io, grounding the pinned-case numerator in execution"
+
+// EvaluateReleaseGate validates the evidence, lets the tripwire tier decide,
+// and then REFUSES rather than returning a scored verdict. See
+// ungroundedNumeratorRefusal.
+func EvaluateReleaseGate(baseline, candidate Journal, calibration CalibrationManifest, noise NoiseFloorManifest, policy ReleaseGatePolicy) ReleaseGateDecision {
+	tiers, err := validateReleaseJournalPair(baseline, candidate, calibration, noise, policy)
+	if err != nil {
+		return ReleaseGateDecision{Status: GateStatusRefused, Reason: err.Error()}
+	}
+	// The tripwire tier is pass/fail on task OUTCOME and reads no scores, so
+	// it can still legitimately decide.
+	if tripwireDecision := releaseTripwireDecision(baseline, candidate, tiers.tripwire); tripwireDecision != nil {
+		return *tripwireDecision
+	}
+	return ReleaseGateDecision{Status: GateStatusRefused, Reason: ungroundedNumeratorRefusal}
+}
+
+// scoredReleaseDecision evaluates only journaled evidence against artifacts
 // committed by both arms before execution. Integrity errors are REFUSED;
 // measured regressions are FAIL; PASS requires both complete and sufficiently
 // powered evidence.
-func EvaluateReleaseGate(baseline, candidate Journal, calibration CalibrationManifest, noise NoiseFloorManifest, policy ReleaseGatePolicy) ReleaseGateDecision {
+//
+// It is the scored half of the gate, and UNREACHABLE from
+// EvaluateReleaseGate while pinned_case_validation's numerator is a
+// self-report, and is kept — with its tests — so that grounding the numerator
+// is the deletion of a refusal rather than the rewrite of an arithmetic nobody
+// has exercised in the meantime.
+func scoredReleaseDecision(baseline, candidate Journal, calibration CalibrationManifest, noise NoiseFloorManifest, policy ReleaseGatePolicy) ReleaseGateDecision {
 	refuse := func(format string, args ...any) ReleaseGateDecision {
 		return ReleaseGateDecision{Status: GateStatusRefused, Reason: fmt.Sprintf(format, args...)}
 	}

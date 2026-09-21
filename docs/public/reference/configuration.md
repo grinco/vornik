@@ -118,6 +118,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|---|
 | `runtime.run_as_user` | string | Override the container user (uid, uid:gid, or user:group). Use to force non-root on root-default images. | `VORNIK_RUNTIME_RUN_AS_USER` |
 | `runtime.default_network` | string | Default network policy for agent roles: host, none, or daemon-only (zero egress; requires server.unix_socket). | — |
+| `runtime.agent_memory_limit` | string | Per-agent-container memory cap (e.g. 2GiB). Absent derives from host memory and concurrency; "none" disables the limit. | — |
 | `runtime.agent_llm.endpoint` | string | OpenAI-compatible base URL for the LLM agents call. Falls back to the chat section when empty. | — |
 | `runtime.agent_llm.api_key` | string | API key for the agent LLM endpoint. | — |
 | `runtime.agent_llm.model` | string | Default model for agents. | — |

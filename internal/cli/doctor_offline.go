@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 	reportpkg "vornik.io/vornik/internal/report"
+	"vornik.io/vornik/internal/stepoutcome"
 	"vornik.io/vornik/internal/storage"
 )
 
@@ -65,6 +68,7 @@ func finishOfflineDoctorReport(ctx context.Context, cfg *config.Config, cfgPath 
 		offlineCheckDatabase(ctx, cfg, &report)
 	}
 	offlineCheckJournal(ctx, &report)
+	offlineCheckConfigClasses(cfgPath, &report)
 
 	failed := 0
 	for _, c := range report.Checks {
@@ -226,6 +230,47 @@ func migrationHead() int {
 // daemon's chat report path uses. Two copies of "which lines count as an error
 // and how many do we keep" is how the terminal path and the chat path drift into
 // carrying different evidence (operator instruction 2026-08-03).
+// offlineCheckConfigClasses is the pre-cutover half of config_class_compat.
+//
+// It exists because the ONLINE check (internal/api) answers "would the binary
+// running now refuse this tree", and the question that actually prevents the
+// 2026-09-17 incident is "will the binary I am ABOUT TO INSTALL refuse it".
+// Only the new binary can answer that, and at that moment the daemon is down —
+// so the answer has to come from the offline path, which is what
+// UPDATING.md step 4b invokes.
+//
+// Shares registry.ScanDeployedTreeForDeadClasses with the online check, so the
+// two cannot drift into diagnosing different things.
+func offlineCheckConfigClasses(cfgPath string, r *doctorReport) {
+	dir := resolveConfigsDir(cfgPath)
+	if dir == "" {
+		// "could not evaluate", never ok — an unevaluated check reporting ok
+		// is the silent-control failure this vocabulary exists to prevent.
+		r.Checks = append(r.Checks, doctorCheck{
+			Name: "config_class_compat", Status: "skipped",
+			Message: "no configs directory resolved, skipping",
+		})
+		return
+	}
+	scan := registry.ScanDeployedTreeForDeadClasses(dir)
+	if len(scan.Findings) > 0 {
+		r.Checks = append(r.Checks, doctorCheck{
+			Name: "config_class_compat", Status: "fail",
+			Message: fmt.Sprintf("%d deployed workflow step(s) name a step error class THIS "+
+				"binary rejects; starting it against this tree would fail the whole daemon "+
+				"and flap on Restart=on-failure. Valid classes: %s",
+				len(scan.Findings), strings.Join(stepoutcome.ErrorClasses(), ", ")),
+			Items: append(scan.Findings, scan.Skipped...),
+		})
+		return
+	}
+	r.Checks = append(r.Checks, doctorCheck{
+		Name: "config_class_compat", Status: "ok",
+		Message: "this binary accepts every retry class in " + dir,
+		Items:   scan.Skipped,
+	})
+}
+
 func offlineCheckJournal(ctx context.Context, r *doctorReport) {
 	c := reportpkg.JournalTail(ctx)
 	r.Checks = append(r.Checks, doctorCheck{

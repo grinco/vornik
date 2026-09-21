@@ -538,3 +538,47 @@ func TestConsecutiveInfraFailuresBeforeAbort_IsNotOne(t *testing.T) {
 			consecutiveInfraFailuresBeforeAbort)
 	}
 }
+
+// TestRunner_RepeatOffsetMakesChunkedRepeatsGloballyUnique is the other half of
+// the 2026-09-20/21 defect: agentbench-reproduce.sh --repeat-batch 1 invokes
+// the runner once per chunk, and the runner numbered repeats from 1 every time.
+// Two ten-hour passes produced 200 task runs all stamped `repeat: 1`, which
+// calibration refuses as duplicates because ten runs claiming to be repeat 1
+// are indistinguishable from one run journaled ten times.
+func TestRunner_RepeatOffsetMakesChunkedRepeatsGloballyUnique(t *testing.T) {
+	chunkRepeats := func(offset, repeats int) []int {
+		r := &Runner{Tasks: &fakeTasks{}, Traces: &fakeTraces{}, Probes: []Probe{SchemaProbe{}}}
+		cfg := validConfig()
+		cfg.Repeats, cfg.RepeatOffset = repeats, offset
+		j, err := r.Run(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("run(offset=%d): %v", offset, err)
+		}
+		var got []int
+		for _, run := range j.TaskRuns {
+			got = append(got, run.Repeat)
+		}
+		return got
+	}
+
+	// The default is unchanged: no offset means repeats still start at 1, so
+	// every existing caller and journal keeps its numbering.
+	if got := chunkRepeats(0, 2); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("offset 0 gave repeats %v, want [1 2]", got)
+	}
+
+	// Three chunks of one repeat, the shape that lost the index. With the
+	// offset they cover 1,2,3 instead of 1,1,1.
+	var all []int
+	for chunk := range 3 {
+		all = append(all, chunkRepeats(chunk*1, 1)...)
+	}
+	if len(all) != 3 || all[0] != 1 || all[1] != 2 || all[2] != 3 {
+		t.Fatalf("chunked repeats = %v, want [1 2 3]", all)
+	}
+
+	// A chunk carrying several repeats offsets by the batch size, not by one.
+	if got := chunkRepeats(4, 2); len(got) != 2 || got[0] != 5 || got[1] != 6 {
+		t.Fatalf("offset 4 with 2 repeats gave %v, want [5 6]", got)
+	}
+}

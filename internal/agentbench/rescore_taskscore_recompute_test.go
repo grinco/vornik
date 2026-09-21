@@ -107,7 +107,7 @@ func TestRescore_RefusesTaskScoresFromBeforeTheInputChange(t *testing.T) {
 	if err == nil {
 		t.Fatal("RescoreWithTasks() = nil error, want the input-gap refusal")
 	}
-	for _, want := range []string{"per-visit result bodies", "run a fresh arm"} {
+	for _, want := range []string{minRescorableHarnessReason, "run a fresh arm"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("err = %q, want it to say %q", err, want)
 		}

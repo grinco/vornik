@@ -61,6 +61,29 @@ type Manager struct {
 	// allowHostUserns controls whether fallback to --userns=host is permitted.
 	allowHostUserns bool
 
+	// agentMemoryLimit is the default --memory applied to every agent
+	// container that does not carry its own.
+	//
+	// THE DEFAULT LIVES HERE, not at the ContainerConfig construction sites,
+	// and that placement is the guard. Two of the three sites build bare
+	// ContainerConfig literals, so "every site sets the field" is an
+	// aspiration no test can assert — and a fourth site would have been one
+	// literal away from running unbounded, which is the defect this whole
+	// change exists to close. With the default at the single point the field
+	// reaches podman, forgetting is harmless: unbounded now requires the
+	// explicit `agent_memory_limit: "none"`.
+	//
+	// "none" (or "unbounded"), NOT the empty string. An ABSENT key and
+	// `agent_memory_limit: ""` decode identically in YAML, so empty is the
+	// DERIVE path and cannot also be the escape hatch. An earlier version of
+	// this comment said `""` unbounds, which would have sent an operator
+	// reaching for the escape under pressure to a still-bounded daemon
+	// (review-20260921-bfb8 F1).
+	//
+	// 0 here means no limit, reachable only from that explicit setting or
+	// from a host whose total memory could not be read.
+	agentMemoryLimit int64
+
 	// runAsUser is the value passed to podman --user for every container it
 	// starts. Empty means trust the image's USER directive. A typical value
 	// is "1000:1000" to guarantee non-root even if an image regresses.
@@ -120,6 +143,41 @@ func WithAllowHostUserns(allow bool) ManagerOption {
 
 // WithRunAsUser sets the value passed as podman --user for every container.
 // Empty (the default) means trust the image's USER directive.
+// WithAgentMemoryLimit sets the default per-container memory limit in bytes.
+//
+// Zero leaves containers unbounded — the historical behaviour — and is
+// reachable from `agent_memory_limit: "none"` or from an unreadable host
+// total. NOT from an empty value, which derives: see Manager.agentMemoryLimit.
+//
+// A non-positive argument is IGNORED rather than applied, so a caller cannot
+// accidentally unbound a manager by passing a computed zero.
+func WithAgentMemoryLimit(bytes int64) ManagerOption {
+	return func(m *Manager) {
+		if bytes > 0 {
+			m.agentMemoryLimit = bytes
+		}
+	}
+}
+
+// effectiveMemoryLimit resolves the limit for one container: its own value
+// when it carries a positive one, otherwise the manager's default.
+//
+// A NON-POSITIVE per-container value falls through to the default rather than
+// disabling it. A negative would otherwise fail the `> 0` test below and run
+// unbounded — the same silent-unbounded shape ParseMemoryLimit refuses at
+// config load, and it must not be reachable through the struct either.
+func (m *Manager) effectiveMemoryLimit(config *ContainerConfig) int64 {
+	if config != nil && config.MemoryLimit > 0 {
+		return config.MemoryLimit
+	}
+	return m.agentMemoryLimit
+}
+
+// AgentMemoryLimitForTest exposes the resolved default so a wiring test in
+// another package can prove the limit reached the manager, rather than only
+// that some option was appended.
+func (m *Manager) AgentMemoryLimitForTest() int64 { return m.agentMemoryLimit }
+
 func WithRunAsUser(user string) ManagerOption {
 	return func(m *Manager) {
 		m.runAsUser = strings.TrimSpace(user)
@@ -312,8 +370,8 @@ func (m *Manager) buildPreImageArgs(config *ContainerConfig) []string {
 	if config.CPUQuota > 0 {
 		args = append(args, "--cpu-quota", strconv.FormatInt(config.CPUQuota, 10))
 	}
-	if config.MemoryLimit > 0 {
-		args = append(args, "--memory", strconv.FormatInt(config.MemoryLimit, 10))
+	if limit := m.effectiveMemoryLimit(config); limit > 0 {
+		args = append(args, "--memory", strconv.FormatInt(limit, 10))
 	}
 
 	// Volume mounts for agent runtime contract.
@@ -824,6 +882,11 @@ type podmanInspectData struct {
 type podmanInspectState struct {
 	Status   string `json:"Status"`
 	ExitCode int    `json:"ExitCode"`
+	// OOMKilled is the kernel's verdict on whether this container was killed
+	// for exceeding its memory limit. Authoritative, and the reason the OOM
+	// counter does not infer from exit 137: a container stopped with
+	// force=true exits 137 too.
+	OOMKilled bool `json:"OOMKilled"`
 }
 
 type podmanInspectConfig struct {
@@ -856,6 +919,7 @@ func parseInspectData(data *podmanInspectData) *Container {
 
 	// Extract labels
 	if data.Config.Labels != nil {
+		container.OOMKilled = data.State.OOMKilled
 		container.ProjectID = data.Config.Labels[LabelProjectID]
 		container.Role = data.Config.Labels[LabelRole]
 		container.TaskID = data.Config.Labels[LabelTaskID]
@@ -997,6 +1061,10 @@ func (m *Manager) WaitForExit(ctx context.Context, containerID string, timeout t
 				Str("container_id", containerID).
 				Int("exit_code", exitCode).
 				Msg("podman container exited with non-zero code")
+			// The non-zero path is where a memory kill arrives. The verdict
+			// comes from the kernel via inspect, not from the exit code —
+			// see noteOOMKill.
+			m.noteContainerExit(ctx, containerID, exitCode)
 			return exitCode, nil
 		}
 		// When ctx is done, the os/exec layer SIGKILLs the podman wait
@@ -1045,8 +1113,50 @@ func (m *Manager) WaitForExit(ctx context.Context, containerID string, timeout t
 		Int("exit_code", exitCode).
 		Msg("podman container exited")
 
+	m.noteContainerExit(ctx, containerID, exitCode)
 	return exitCode, nil
 }
+
+// noteContainerExit reads the kernel's OOM verdict for a container that has
+// exited and records it.
+//
+// Inspects only on a NON-ZERO exit: a clean exit cannot have been OOM-killed,
+// and an inspect on every container exit would add a podman fork to the hot
+// path to answer a question whose answer is almost always no.
+//
+// A failed inspect loses the verdict, not the container: the count is dropped
+// rather than guessed, because a guess here is exactly the exit-code inference
+// this replaced. A missing ROLE, by contrast, still counts — losing the kill is
+// worse than losing its attribution.
+//
+// Uses a context detached from the caller's. WaitForExit's own ctx may carry
+// the step timeout, and on that path it is already cancelled when the
+// container's exit is observed, so an inspect on it would fail every time and
+// silently drop the verdict on the path most likely to coincide with memory
+// pressure (review-20260921-bfb8 F3).
+func (m *Manager) noteContainerExit(ctx context.Context, containerID string, exitCode int) {
+	if exitCode == 0 {
+		return
+	}
+	inspectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inspectOnExitTimeout)
+	defer cancel()
+
+	container, err := m.InspectContainer(inspectCtx, containerID)
+	if err != nil || container == nil {
+		m.logger.Debug().
+			Err(err).
+			Str("container_id", containerID).
+			Int("exit_code", exitCode).
+			Msg("could not read the OOM verdict for an exited container")
+		return
+	}
+	m.noteOOMKill(container.OOMKilled, container.Role)
+}
+
+// inspectOnExitTimeout bounds the OOM-verdict inspect. Short, because the
+// verdict is a nice-to-have on a path that has already produced its result and
+// must not delay it.
+const inspectOnExitTimeout = 5 * time.Second
 
 func contextWithOptionalTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if parent == nil {

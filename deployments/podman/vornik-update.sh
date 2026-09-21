@@ -16,6 +16,9 @@
 #   2. Fetches + checks out the target ref in the source checkout (~/vornik).
 #   3. Rebuilds vornik + vornikctl in the golang container (version-stamped).
 #   4. Smoke-checks the new binary (-version) before touching the service.
+#   4b. Runs the NEW binary's config-class preflight against the DEPLOYED tree
+#       and refuses the cutover on a dead step error class (2026-09-17: a
+#       stale class flapped a daemon on Restart=on-failure).
 #   5. Stops the service, installs the new binaries, starts it. Because the
 #      unit is Type=notify, systemd only reports "ready" AFTER the DB
 #      migrations applied and health checks passed.
@@ -401,6 +404,58 @@ fi
 NEW_VER_LINE="$("$REPO_DIR/.bin/vornik" -version 2>&1 | head -1 || true)"
 grep -qi vornik <<<"$NEW_VER_LINE" || die "new binary failed its -version smoke check: '$NEW_VER_LINE' (nothing swapped)"
 log "New binary: $NEW_VER_LINE"
+
+# ---------------------------------------------------------------------------
+# 4b. Config-class preflight with the NEW binary, against the DEPLOYED tree.
+#
+#     The strict loader refuses an unknown step error class and the refusal is
+#     fatal to the WHOLE daemon, not scoped to the offending workflow. On
+#     2026-09-17 a service started on a HEAD build whose class set had shed
+#     `container_non_zero_exit`, failed, and then flapped on
+#     Restart=on-failure until stopped.
+#
+#     The tree was valid for the OLD binary, so no check running before the
+#     swap could have known — which is why this runs the NEW binary's doctor,
+#     here, rather than relying on step 6's doctor, which runs AFTER the swap
+#     and can only diagnose what already happened.
+#
+#     Advisory when the check cannot run (an older binary without it, or no
+#     config dir): a preflight that blocks upgrades because it cannot evaluate
+#     itself is worse than the drift it looks for.
+# ---------------------------------------------------------------------------
+if "$REPO_DIR/.bin/vornikctl" doctor --help 2>&1 | grep -q -- --offline; then
+    CLASS_OUT="$("$REPO_DIR/.bin/vornikctl" doctor --offline --json 2>/dev/null || true)"
+    if grep -q '"config_class_compat"' <<<"$CLASS_OUT" 2>/dev/null; then
+        if python3 - "$CLASS_OUT" <<'PYEOF' 2>/dev/null; then
+import json, sys
+try:
+    report = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+# The OFFLINE doctor's vocabulary is lowercase ("ok"/"fail"/"skipped"); the
+# ONLINE one is uppercase ("OK"/"ERROR"/"SKIPPED"). This first matched only
+# "ERROR" and so would never have fired on the path it actually invokes —
+# caught by testing the NEGATIVE case, not the happy one. Accept both, because
+# which vocabulary `doctor --offline` emits is not this script's business.
+for check in report.get("checks", []):
+    if check.get("name") != "config_class_compat":
+        continue
+    if str(check.get("status", "")).lower() in ("fail", "error"):
+        print(check.get("message", ""))
+        for item in check.get("items", []):
+            print("  " + item)
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+            die "config-class preflight FAILED: the deployed config tree names a step error class the NEW binary rejects. The daemon would fail to start and flap after the swap. Fix the named workflow(s), then re-run. NOTHING SWAPPED."
+        fi
+        log "Config-class preflight: the new binary accepts the deployed tree"
+    else
+        log "Config-class preflight: new binary has no config_class_compat check, skipping"
+    fi
+else
+    log "Config-class preflight: new vornikctl has no doctor --offline, skipping"
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Cutover: stop, install, start (Type=notify -> migrations apply on boot).

@@ -81,10 +81,27 @@ import (
 //	    changed is what the scorer CAN read, and a figure that does not move
 //	    is still a figure produced by a different scorer.
 //
+//	v8 (2026-09-21) — AGENT CONTAINERS ARE BOUNDED. Until now
+//	    ContainerConfig.MemoryLimit was declared, plumbed to podman, and set by
+//	    nothing, so every agent container ran with the whole host available;
+//	    one agent taking 2.99 GB took the box down four times. A per-container
+//	    limit now applies, derived from host memory and max_concurrent_tasks.
+//
+//	    This is a RESOURCE-ENVELOPE change, and it moves two journaled
+//	    quantities: duration_ms, because a bounded container can be slower,
+//	    and success, because a task that exceeds its limit is OOM-killed where
+//	    it previously completed. Container limits are NOT an ArmFields axis, so
+//	    CheckComparable would not refuse a pair straddling this change — the
+//	    version is the only guard, which is why it moves.
+//
+//	    Unlike v7, nothing about the SCORING changed: the same journal scores
+//	    identically either side. What changed is what the run was allowed to
+//	    consume, which is a property of the measurement and not of the scorer.
+//
 // v1 was never bumped through any of those, which is the failure this comment
 // exists to prevent: the mechanism refused nothing because nobody moved the
 // number it keys on.
-const HarnessVersion = "7"
+const HarnessVersion = "8"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.

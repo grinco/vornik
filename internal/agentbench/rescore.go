@@ -201,7 +201,27 @@ func rescoreSnapshotFor(ctx context.Context, store ExecutionStateStore, ts TaskS
 // The previous design text asserted this refusal already existed. It did not;
 // `review-20260919-43d1` F6 caught the assertion, and this is the refusal it
 // was asserting.
-const MinRescorableHarness = "7"
+const MinRescorableHarness = "8"
+
+// minRescorableHarnessReason is WHY the floor sits where it does, declared
+// beside it so that whoever raises one is looking at the other.
+//
+// It exists because the refusal used to hard-code the 6->7 rationale into a
+// sentence parameterised by version: "harness N assembles the pinned-case
+// numerator from the per-visit result bodies, which a journal at harness M
+// does not carry". True of a harness-6 journal, FALSE of a harness-7 one —
+// harness 7 is the version that introduced per-visit accumulation, so a
+// harness-7 journal carries exactly what the message said it lacked. Raising
+// the floor to 8 would have refused correctly, by version, for a stated reason
+// that is a lie, and sent the reader looking for a storage problem that does
+// not exist.
+//
+// So the reason is a property of the FLOOR, not of the refusal. Raise the
+// floor, change this string: the test asserts the refusal carries it verbatim,
+// which is what makes forgetting visible.
+const minRescorableHarnessReason = "harness 8 bounds every agent container's memory, so a " +
+	"journal written before it recorded a run that could consume the whole host; re-stamping " +
+	"it as harness 8 would claim a resource envelope the run never had"
 
 // rescoreInputGap reports why a journal at the given harness version cannot be
 // re-scored by the current one, or "" when it can.
@@ -243,10 +263,18 @@ func rescoreInputGap(journalHarness string, carriesTaskScores bool) string {
 			"compared against the re-scorable floor (" + MinRescorableHarness + ")"
 	}
 	if journal < floor {
-		return "harness " + HarnessVersion + " assembles the pinned-case numerator from " +
-			"the per-visit result bodies in the execution ledger, which a journal at " +
-			"harness " + journalHarness + " does not carry; its probe verdicts could be " +
-			"re-derived from traces, but its TASK SCORES cannot — run a fresh arm instead"
+		// States the boundary FIRST (which crossing refused, and at what
+		// floor) and the reason SECOND, from the floor's own declaration —
+		// so the sentence stays true when the floor moves.
+		// "must not", not "cannot": at some boundaries the inputs are absent
+		// and at others they are present but describe a different run. Both
+		// refuse; only the first is an impossibility, and claiming the wrong
+		// one is how the previous message came to be false.
+		return "journal harness " + journalHarness + " is below the re-scorable floor (" +
+			MinRescorableHarness + ") for current harness " + HarnessVersion + ": " +
+			minRescorableHarnessReason + ". Its probe verdicts could still be re-derived " +
+			"from traces, but its TASK SCORES must not be re-stamped under this harness — " +
+			"run a fresh arm instead"
 	}
 	return ""
 }

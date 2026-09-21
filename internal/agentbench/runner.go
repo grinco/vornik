@@ -105,6 +105,25 @@ type RunConfig struct {
 	// contribution to sigma_d; they do not add pairs.
 	Repeats int
 
+	// RepeatOffset shifts the repeat index this invocation stamps, so a run
+	// split across several invocations produces globally unique
+	// (task, repeat) pairs. Repeats are numbered RepeatOffset+1 … +Repeats.
+	//
+	// Zero for an unchunked run, which is why the default changes nothing.
+	// agentbench-reproduce.sh passes chunk_index * repeat_batch.
+	//
+	// It exists because a long pass has to be chunked — an unbounded agent
+	// container kills it otherwise, and --repeat-batch 1 makes a kill cost one
+	// repeat instead of all ten — and chunking without this silently destroyed
+	// the index calibration keys on. Two ten-hour hard-tier passes
+	// (2026-09-20 harness 6, 2026-09-21 harness 7) journaled 200 task runs all
+	// at repeat 1, and neither could be calibrated.
+	//
+	// WHICH chunk produced which index carries no meaning and must not be read
+	// as one. A repeat index is an identity: the paired arithmetic needs the
+	// repeats distinguishable, not ordered.
+	RepeatOffset int
+
 	// DaemonBuild is the commit the daemon under test was built from, recorded
 	// beside the harness's own so a journal shows both halves of what produced
 	// its numbers. Optional: an unidentifiable daemon is still worth running,
@@ -191,11 +210,14 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 			continue
 		}
 		for i := 0; i < repeats; i++ {
-			taskRun, records := r.runOnce(ctx, cfg, spec, i+1)
+			// The TaskRun and its TaskScore must carry the SAME index, or the
+			// gate's per-(task,repeat) join silently matches nothing.
+			repeat := cfg.RepeatOffset + i + 1
+			taskRun, records := r.runOnce(ctx, cfg, spec, repeat)
 			j.TaskRuns = append(j.TaskRuns, taskRun)
 			j.Records = append(j.Records, records...)
 			if spec.Scoring != nil {
-				taskScore, scoreErr := r.scoreTaskRepeat(ctx, spec, i+1, records)
+				taskScore, scoreErr := r.scoreTaskRepeat(ctx, spec, repeat, records)
 				if scoreErr != nil {
 					j.Manifest.Untrustworthy = true
 					j.Manifest.UntrustworthyReason = scoreErr.Error()

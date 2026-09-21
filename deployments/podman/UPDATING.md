@@ -101,6 +101,19 @@ cd ~/vornik/deployments/podman
    is `VORNIK_TRADING_ENV` (default `~/.config/vornik/secrets/trading.env`).
 4. **Smoke check** — runs the new binary's `-version` before touching the
    service; a binary that can't start is caught before any swap.
+4b. **Config-class preflight** — runs the NEW binary's
+   `vornikctl doctor --offline` against the DEPLOYED config dir and refuses the
+   cutover on an ERROR from `config_class_compat`.
+
+   This step exists because the strict loader refuses an unknown step error
+   class and the refusal is fatal to the WHOLE daemon, not scoped to the
+   workflow. On 2026-09-17 a service started on a HEAD build whose class set
+   had shed `container_non_zero_exit`, failed, and then flapped on
+   `Restart=on-failure` until stopped. The tree was valid for the OLD binary,
+   so nothing before cutover could have known — which is precisely why the
+   check has to run from the NEW binary, here, and not at step 6.
+
+   Step 6's `doctor` runs AFTER the swap. It diagnoses; it cannot prevent.
 5. **Cutover** — stops the service, installs the new binaries, starts it.
    Because the unit is `Type=notify`, systemd reports "ready" only after DB
    migrations applied and health checks passed.

@@ -70,6 +70,15 @@ type Container struct {
 
 	// ExitCode is the container exit code (if exited).
 	ExitCode int `json:"exitCode,omitempty"`
+
+	// OOMKilled is the kernel's verdict on whether this container was killed
+	// for exceeding its memory limit.
+	//
+	// Authoritative, and the reason nothing infers a memory kill from exit
+	// 137: SIGKILL produces 137 whoever sent it, so a container stopped with
+	// force=true is indistinguishable from one the kernel killed if the exit
+	// code is all you have.
+	OOMKilled bool `json:"oomKilled,omitempty"`
 }
 
 // ContainerConfig defines the configuration for starting a new container.
@@ -96,8 +105,25 @@ type ContainerConfig struct {
 	// 0 means no limit.
 	CPUQuota int64 `json:"cpuQuota,omitempty"`
 
-	// MemoryLimit is the memory limit in bytes.
-	// 0 means no limit.
+	// MemoryLimit is this container's memory limit in bytes.
+	//
+	// 0 means USE THE CONFIGURED DEFAULT (runtime.agent_memory_limit,
+	// resolved by the Manager), not "no limit". The meaning changed on
+	// 2026-09-21: it previously meant unbounded, and nothing in the tree ever
+	// set it, so every agent container ran with the whole host available and
+	// one agent taking 2.99 GB took the box down four times.
+	//
+	// The default lives on the Manager rather than here precisely so that a
+	// construction site which forgets this field still gets a limit — two of
+	// the three sites build bare ContainerConfig literals, so "every site
+	// sets it" was never a property a test could assert.
+	//
+	// PER-CONTAINER UNBOUNDED IS NO LONGER EXPRESSIBLE. Unbounding is global,
+	// via `agent_memory_limit: "none"`, and negative values are rejected at
+	// config load rather than treated as unbounded. A caller that wants one
+	// heavy role exempted cannot say so through this field today; that needs
+	// a per-container sentinel, which is deliberately not added until there
+	// is a role that needs it.
 	MemoryLimit int64 `json:"memoryLimit,omitempty"`
 
 	// InputDir is the host path for /app/input mount.

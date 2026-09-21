@@ -49,6 +49,7 @@ var (
 	benchAgentRunID              string
 	benchAgentArm                string
 	benchAgentRepeats            int
+	benchAgentRepeatOffset       int
 	benchAgentContextPol         string
 	benchAgentDaemonBinary       string
 	benchAgentDaemonConfig       string
@@ -162,10 +163,15 @@ var benchAgentCompareCmd = &cobra.Command{
 }
 
 var benchAgentCalibrateCmd = &cobra.Command{
-	Use:   "calibrate <journal>",
+	Use:   "calibrate <journal>...",
 	Short: "Build a task calibration artifact from a repeated journal",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runBenchAgentCalibrate,
+	Long: "Several journals are merged before the artifact is derived, which is the " +
+		"form a long pass takes: one journal per repeat chunk and task batch, so a " +
+		"10-repeat 10-task calibration leaves 50 files. The merge refuses inputs that " +
+		"are not one run — a differing arm, pre-registration, or tier policy — and " +
+		"refuses a repeat index that collided across chunks.",
+	Args: cobra.MinimumNArgs(1),
+	RunE: runBenchAgentCalibrate,
 }
 
 var benchAgentNoiseFloorCmd = &cobra.Command{
@@ -220,6 +226,11 @@ func init() {
 	benchAgentRunCmd.Flags().StringVar(&benchAgentArm, "arm", "", "name of the arm being run")
 	benchAgentRunCmd.Flags().IntVar(&benchAgentRepeats, "repeats", 1,
 		"runs per task; repeats shrink a task's contribution to sigma_d but add no pairs")
+	benchAgentRunCmd.Flags().IntVar(&benchAgentRepeatOffset, "repeat-offset", 0,
+		"shift the repeat index this invocation stamps, so a run split across several "+
+			"invocations produces globally unique (task, repeat) pairs. Pass "+
+			"chunk_index * repeat_batch. Without it every chunk numbers its repeats from 1, "+
+			"and calibration refuses the collision rather than counting one repeat many times")
 	benchAgentRunCmd.Flags().StringVar(&benchAgentContextPol, "context-policy", "",
 		"REQUIRED: names the policy under test (suppression set, advert gating, ceiling). "+
 			"It is the independent variable, so a run that does not name it cannot be compared")
@@ -589,6 +600,7 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		Tasks:           agentbench.SortTasks(tasks),
 		Gold:            gold,
 		Repeats:         benchAgentRepeats,
+		RepeatOffset:    benchAgentRepeatOffset,
 		DaemonBuild:     agentbench.BinaryBuild(benchAgentDaemonBinary),
 	})
 	if err != nil {
@@ -1216,13 +1228,9 @@ func runBenchAgentCompare(cmd *cobra.Command, args []string) error {
 }
 
 func runBenchAgentCalibrate(cmd *cobra.Command, args []string) error {
-	journal, err := loadJournal(args[0])
+	journal, journalHash, err := loadCalibrationSource(args)
 	if err != nil {
 		return err
-	}
-	journalHash, err := sha256File(args[0])
-	if err != nil {
-		return fmt.Errorf("hash calibration journal: %w", err)
 	}
 	artifact, err := agentbench.BuildCalibration(journal, journalHash)
 	if err != nil {
@@ -1233,6 +1241,50 @@ func runBenchAgentCalibrate(cmd *cobra.Command, args []string) error {
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\nsha256 %s\n", benchAgentCalibrationOutPath, artifact.SHA256())
 	return nil
+}
+
+// loadCalibrationSource reads one journal, or merges the chunks of one batched
+// run, and returns the digest that becomes the artifact's
+// sourceJournalSha256.
+//
+// Every real calibration pass is chunked: agentbench-reproduce.sh writes one
+// journal per (repeat chunk x task batch), so a 10-repeat 10-task pass leaves
+// 50 files and the single-journal form could read none of them.
+//
+// The identity differs by arity, deliberately. ONE journal keeps the FILE
+// hash, because existing artifacts and the pre-registrations that pin them were
+// built that way and re-deriving it would invalidate them. SEVERAL journals
+// hash the MERGED journal, which is the only value that pins all of the inputs
+// — a file hash could only name one of them.
+func loadCalibrationSource(paths []string) (agentbench.Journal, string, error) {
+	if len(paths) == 0 {
+		return agentbench.Journal{}, "", fmt.Errorf("no journals to calibrate")
+	}
+	if len(paths) == 1 {
+		journal, err := loadJournal(paths[0])
+		if err != nil {
+			return agentbench.Journal{}, "", err
+		}
+		hash, err := sha256File(paths[0])
+		if err != nil {
+			return agentbench.Journal{}, "", fmt.Errorf("hash calibration journal: %w", err)
+		}
+		return journal, hash, nil
+	}
+
+	journals := make([]agentbench.Journal, 0, len(paths))
+	for _, path := range paths {
+		journal, err := loadJournal(path)
+		if err != nil {
+			return agentbench.Journal{}, "", err
+		}
+		journals = append(journals, journal)
+	}
+	merged, err := agentbench.MergeJournals(journals...)
+	if err != nil {
+		return agentbench.Journal{}, "", err
+	}
+	return merged, merged.SHA256(), nil
 }
 
 func runBenchAgentNoiseFloor(cmd *cobra.Command, args []string) error {

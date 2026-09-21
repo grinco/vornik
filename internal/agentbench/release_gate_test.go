@@ -281,9 +281,15 @@ func releaseGateFixture(t *testing.T) (Journal, Journal, CalibrationManifest, No
 	return baseline, candidate, calibration, noise, policy
 }
 
+// The three tests below exercise scoredReleaseDecision, not EvaluateReleaseGate:
+// the public gate refuses on pinned_case_validation (see
+// ungroundedNumeratorRefusal), so its scored arithmetic is unreachable from
+// there. They are kept pointed at the scored half deliberately — when the
+// numerator is grounded in execution and the refusal is deleted, this
+// arithmetic has to already be known good.
 func TestEvaluateReleaseGate_PassesOnlyCompleteNonRegressingEvidence(t *testing.T) {
 	a, b, calibration, noise, policy := releaseGateFixture(t)
-	got := EvaluateReleaseGate(a, b, calibration, noise, policy)
+	got := scoredReleaseDecision(a, b, calibration, noise, policy)
 	if got.Status != GateStatusPass {
 		t.Fatalf("gate = %+v", got)
 	}
@@ -340,7 +346,7 @@ func TestEvaluateReleaseGate_FailsTripwireScoreAndStepRegressions(t *testing.T) 
 		a, b, c, n, p := releaseGateFixture(t)
 		b.TaskRuns[0].Succeeded = false
 		b.TaskRuns[0].ErrorText = "criteria not met"
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusFail || !strings.Contains(got.Reason, "tripwire") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -352,7 +358,7 @@ func TestEvaluateReleaseGate_FailsTripwireScoreAndStepRegressions(t *testing.T) 
 				b.TaskScores[i].Score = .4
 			}
 		}
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusFail || !strings.Contains(got.Reason, "score") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -361,7 +367,7 @@ func TestEvaluateReleaseGate_FailsTripwireScoreAndStepRegressions(t *testing.T) 
 		a, b, c, n, p := releaseGateFixture(t)
 		b.Records[0].Verdicts[0].Schema.NoOutputByErrorClass["context_overflow"] = 1
 		b.Records[0].Verdicts[0].Schema.NoOutput++
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusFail || !strings.Contains(got.Reason, "context_overflow") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -375,7 +381,7 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 			journal.Manifest.PreRegistration.CalibrationSHA256 = strings.Repeat("f", 64)
 			journal.Manifest.PreRegistrationHash, _ = journal.Manifest.PreRegistration.Hash()
 		}
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusRefused || !strings.Contains(got.Reason, "calibration") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -383,7 +389,7 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 	t.Run("missing step evidence", func(t *testing.T) {
 		a, b, c, n, p := releaseGateFixture(t)
 		b.Records = b.Records[:1]
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusRefused || !strings.Contains(got.Reason, "schema verdict") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -391,7 +397,7 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 	t.Run("missing graded repeat", func(t *testing.T) {
 		a, b, c, n, p := releaseGateFixture(t)
 		b.TaskScores = b.TaskScores[1:]
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusRefused || !strings.Contains(got.Reason, "gate scores") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -400,7 +406,7 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 		a, b, c, n, p := releaseGateFixture(t)
 		a.TaskRuns[0].Succeeded = false
 		a.TaskRuns[0].ErrorText = "criteria not met"
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusRefused || !strings.Contains(got.Reason, "baseline tripwire") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -419,7 +425,7 @@ func TestEvaluateReleaseGate_RefusesInconclusiveOrMismatchedEvidence(t *testing.
 			j.Manifest.PreRegistration.ReleaseGatePolicySHA256 = p.SHA256()
 			j.Manifest.PreRegistrationHash, _ = j.Manifest.PreRegistration.Hash()
 		}
-		got := EvaluateReleaseGate(a, b, c, n, p)
+		got := scoredReleaseDecision(a, b, c, n, p)
 		if got.Status != GateStatusRefused || !strings.Contains(got.Reason, "inconclusive") {
 			t.Fatalf("gate = %+v", got)
 		}
@@ -445,5 +451,42 @@ func TestCalibratedTierSets_RefusesAttemptsBelowTheFloor(t *testing.T) {
 	cal.MinimumAttempts = MinimumCalibrationAttempts
 	if _, _, _, err := calibratedTierSets(cal, tiers); err != nil {
 		t.Fatalf("a calibration at the floor must be accepted: %v", err)
+	}
+}
+
+// TestEvaluateReleaseGate_RefusesAnUngroundedNumerator is the 2026-09-21
+// decision: pinned_case_validation cannot decide a release, because both
+// halves of it are authored by the system under test. The analyst chooses the
+// denominator, and the verifier SELF-REPORTS the numerator — PinnedCaseEvidence
+// is one verifier-emitted testing.cases[] entry, and nothing in the scoring
+// path executes anything.
+//
+// Measured across both hard-tier passes, 200 task runs and 2,585 case rows: no
+// case was EVER reported failed. Every point below 1.0 is a case the verifier
+// never mentioned, never one it judged as failing.
+//
+// REFUSED rather than FAIL: FAIL asserts a measured regression, and there is
+// no measurement here to regress. REFUSED is the status the gate already
+// defines for missing evidence, and an unverified self-report is missing
+// evidence about the thing the gate claims to decide.
+func TestEvaluateReleaseGate_RefusesAnUngroundedNumerator(t *testing.T) {
+	baseline, candidate, calibration, noise, policy := releaseGateFixture(t)
+
+	got := EvaluateReleaseGate(baseline, candidate, calibration, noise, policy)
+
+	if got.Status != GateStatusRefused {
+		t.Fatalf("Status = %q, want REFUSED — the gate decided a release on a "+
+			"self-reported numerator", got.Status)
+	}
+	// The reason has to say WHY, or an operator reads it as one more missing
+	// artifact and goes looking for a calibration pass to run.
+	for _, want := range []string{"SELF-REPORT", "numerator", "https://docs.vornik.io"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Fatalf("Reason = %q, want it to name %q", got.Reason, want)
+		}
+	}
+	// It must not be reported as a measured outcome either way.
+	if got.GateScore.PairCount != 0 || got.GateScore.MeanDelta != 0 {
+		t.Fatalf("a refused gate published score evidence: %+v", got.GateScore)
 	}
 }

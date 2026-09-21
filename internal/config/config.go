@@ -1777,6 +1777,30 @@ type RuntimeConfig struct {
 	// Values: "" | host | none | daemon-only.
 	DefaultNetwork string `yaml:"default_network" doc:"Default network policy for agent roles: host, none, or daemon-only (zero egress; requires server.unix_socket)."`
 
+	// AgentMemoryLimit caps each agent container's memory ("2GiB", "512MiB").
+	//
+	// ABSENT (the shipped case) DERIVES a limit from the host: half of total
+	// memory shared across max_concurrent_tasks, floored at 512MiB. A fixed
+	// default cannot work, because the safety property is a PRODUCT —
+	// concurrency x limit <= headroom — and both inputs are properties of the
+	// host. An earlier draft shipped a fixed 2GiB beside the default
+	// max_concurrent_tasks of 4, which put the over-commit line at 8GiB and
+	// would have refused to boot on any smaller host, on a configuration the
+	// operator never chose.
+	//
+	// "none" or "unbounded" runs containers with no limit: the historical
+	// behaviour, and the fastest way back to a booting daemon. It needs its
+	// own spelling because an absent key and an empty string decode
+	// identically in YAML, and those two must mean different things.
+	//
+	// A value that cannot be parsed is FATAL at load. Falling back to
+	// unbounded would reproduce the defect the limit exists to remove: before
+	// this existed, ContainerConfig.MemoryLimit was declared, plumbed to
+	// podman, and never set by anything — so every agent container ran with
+	// the whole host available, and one agent taking 2.99 GB took the box
+	// down on 2026-09-20.
+	AgentMemoryLimit string `yaml:"agent_memory_limit" doc:"Per-agent-container memory cap (e.g. 2GiB). Absent derives from host memory and concurrency; \"none\" disables the limit."`
+
 	// AgentLLM configures the LLM endpoint injected into agent containers
 	// as environment variables. When empty, values fall back to the chat.*
 	// section so that agents use the same LLM as the Telegram bot.

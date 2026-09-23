@@ -1,0 +1,28 @@
+# Acknowledged template changes this deployment deliberately does NOT take.
+#
+# `config-drift-check.sh --missed-template-changes` reports a drifted file whose
+# TEMPLATE (configs/) carries behaviour lines the DEPLOYED tree lacks, and fails
+# on any not listed here. Listing one says: someone read the template change,
+# decided this deployment should not have it, and recorded why.
+#
+# MOST DRIFT DOES NOT BELONG HERE, and that is the point of the mode rather
+# than of this file. `configs/` is a TEMPLATE — what a fresh install or a CE
+# user receives — and the deployed tree is PRODUCTION, tuned against this
+# host's observed behaviour. A step timeout of 1350s against a template's 15m,
+# or a router timeout of 180s against a template's 5m, is a decision, not a
+# defect; the mode is silent about those by construction (they are `a` and `c`
+# hunks, and a `d` hunk of pure comments is documentation). On this host that
+# reduced a flat 14-entry drift list to 3 actionable ones.
+#
+# So an entry here is rare. It means the asymmetry IS present — the template
+# gained behaviour — and the answer is still "not for this deployment".
+#
+# Format: <path-relative-to-configs> <reason>
+#
+# ---------------------------------------------------------------------------
+# No entries yet. The three production and six bench gaps found on 2026-09-23
+# are being deployed rather than acknowledged, because each is a fix the
+# deployment wants: dev-swarm's `onViolation: warn` (absent defaults to FAIL,
+# so an unrecognised tier failed the step instead of degrading to 1.0x),
+# ibkr-trading-v2's broker-limit paragraph, and dev-pipeline's pinned-case id
+# contract.

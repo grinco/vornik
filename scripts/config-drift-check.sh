@@ -34,6 +34,81 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/config-deployable.sh"
 
 REPO_CONFIGS="${VORNIK_REPO_CONFIGS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/configs}"
+
+# --missed-template-changes: report ONLY the drift that means "the shipped
+# template has something this deployment never got", and stay silent about the
+# operator's own tuning.
+#
+# WHY A FLAT DRIFT LIST IS THE WRONG SHAPE. `configs/` is a TEMPLATE — the
+# starting point a fresh install or a CE user receives. The deployed tree is
+# PRODUCTION, tuned against this host's observed behaviour. So most drift is
+# EXPECTED and permanent: a step timeout of 1350s against a template's 15m is
+# not a defect, and telling someone about it every run is how a check stops
+# being read. On this host the flat list was 14 entries of which 2 mattered.
+#
+# THE SIGNAL IS THE DIFF'S ASYMMETRY, not its size. Reading
+# `diff <template> <deployed>`:
+#
+#   d hunk  lines the TEMPLATE has and the deployment lacks  -> MISSED CHANGE
+#   a hunk  lines only the deployment has                    -> tuning
+#   c hunk  same line, different value                       -> tuning
+#
+# and a d hunk of only comments or blanks is documentation, not behaviour —
+# `research.md`'s template carries a comment explaining why the TEMPLATE omits
+# retry values, which is not something a deployment is missing.
+#
+# It found two real gaps the size-based list had buried, both from 2026-09-18
+# work that never deployed: dev-swarm without `onViolation: warn` (absent
+# defaults to FAIL, so an unrecognised tier failed the step instead of
+# degrading to 1.0x) and dev-pipeline without the pinned-case id contract.
+# assistant-swarm has 1,466 differing lines and ZERO missed changes.
+if [ "${1:-}" = "--missed-template-changes" ]; then
+	shift
+	DEPLOYED="${1:-${VORNIK_CONFIGS_DIR:-$HOME/.config/vornik/configs}}"
+	if [ ! -d "$DEPLOYED" ]; then
+		echo "config-drift-check: deployed configs dir not found: $DEPLOYED" >&2
+		exit 2
+	fi
+	ack_file="$REPO_CONFIGS/config-divergence-acknowledged.txt"
+	[ -f "$ack_file" ] || ack_file="$SCRIPT_DIR/config-divergence-acknowledged.txt"
+	acked="$(sed -e 's/#.*//' -e 's/[[:space:]].*//' "$ack_file" 2>/dev/null | grep -E '^[^[:space:]]+$' || true)"
+	examined=0
+	missed=0
+	unacked=0
+	while IFS= read -r rel; do
+		[ -n "$rel" ] || continue
+		src="$REPO_CONFIGS/$rel"; dep="$DEPLOYED/$rel"
+		[ -f "$src" ] && [ -f "$dep" ] || continue
+		diff -q "$src" "$dep" >/dev/null 2>&1 && continue
+		examined=$((examined + 1))
+		# Template-only lines, from `d` hunks only. `-e` output marks a pure
+		# deletion as `NdM`; awk keeps the `<` lines under such a hunk and
+		# stops at the next hunk header.
+		tmpl_only="$(diff "$src" "$dep" | awk '
+			/^[0-9,]+d[0-9,]+$/ { keep = 1; next }
+			/^[0-9,]+[ac][0-9,]+$/ { keep = 0; next }
+			keep && /^< / { print substr($0, 3) }
+		')"
+		# Comments and blanks are documentation, not a missed behaviour change.
+		behaviour="$(printf '%s\n' "$tmpl_only" | sed -e 's/^[[:space:]]*//' \
+			| grep -vE '^(#|$)' || true)"
+		[ -n "$behaviour" ] || continue
+		missed=$((missed + 1))
+		if printf '%s\n' "$acked" | grep -qxF "$rel"; then
+			echo "ACKNOWLEDGED: $rel carries template changes deliberately not deployed"
+			continue
+		fi
+		unacked=$((unacked + 1))
+		echo "MISSED TEMPLATE CHANGE: $rel"
+		printf '%s\n' "$behaviour" | sed 's/^/    + /'
+	done < <(cd "$REPO_CONFIGS" && find . -type f 2>/dev/null | sed 's|^\./||')
+	# THE DENOMINATOR (tenet 7.4): "none found" and "nothing was examined"
+	# must not render the same.
+	echo "config-drift-check: ${unacked} unacknowledged missed template change(s), ${missed} total, of ${examined} drifted file(s) examined in ${DEPLOYED}"
+	[ "$unacked" -eq 0 ] || exit 1
+	exit 0
+fi
+
 DEPLOYED="${1:-${VORNIK_CONFIGS_DIR:-$HOME/.config/vornik/configs}}"
 
 if [ ! -d "$DEPLOYED" ]; then

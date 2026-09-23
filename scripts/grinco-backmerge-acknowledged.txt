@@ -31,3 +31,58 @@ b7f9d077 2026-07-02 Sync fork
 003dc7ad 2026-07-26 Sync fork
 e8a27706 2026-09-03 Sync fork right after PR #72 merged; content-neutral, verified (`git diff f3803094 e8a27706` empty). Its CI run was cancelled before any job ran, which is why the guard never saw it
 2507aad0 the CE-side export commit itself, ridden in by 435de78c. This is the shape the guard's header calls out as must-NEVER-appear-here; it is 2026-06-29 history and its content is long superseded by later EE work
+
+# ---------------------------------------------------------------------------
+# 2026-09-23 — the twenty-four the scan could not see.
+#
+# Every one is "Merge pull request #N from grinco/sync/release-<sha>": the
+# mirror's own merge of a sync branch, which then reached this fork. The trunk
+# scan's signature list knew GitHub's "Sync fork" wording and not this one, so
+# it reported "7 acknowledged, none new" while twenty-four sat on the trunk.
+# The list is widened; these are the backlog it then surfaced.
+#
+# CHECKED, not assumed: all twenty-four introduce NO CONTENT. Each one's tree
+# is identical to its EE-side parent (`git diff <second-parent> <merge>` is
+# empty for every entry). The harm this guard exists for — the 2026-07-03
+# back-merge that carried a 70MB compiled binary and the operator's annotated
+# trading workflow into the fork, and then into the PUBLIC CE — did not recur
+# in any of them.
+#
+# Kept rather than rewritten, for the same reason the six above are: excising
+# twenty-four merges spread across three months of a SHARED trunk would break
+# other clones and concurrent work, to remove history that carries nothing.
+#
+# The habit is the finding. They are the release flow: the sync PR is merged on
+# grinco/vornik-ee and that merge commit then arrives here. A TWENTY-FIFTH now
+# fails CI, which is the point of recording these rather than widening the
+# allowlist to the shape.
+#
+# LIMIT, stated because it is load-bearing: this guard runs in CI. The
+# 2026-09-23 back-merge was pushed with its CI run CANCELLED, so no guard ran
+# at all. Branch protection would make the check required, and is unavailable
+# on this plan (403, Upgrade to Pro). Until then this makes a back-merge
+# VISIBLE on the next run — it cannot block one.
+51c5124ee 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #79 from grinco/sync/release-f678dfc48ff9)
+e79994151 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #77 from grinco/sync/release-a8575762a2ed)
+d0f06a920 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #76 from grinco/sync/release-bb0e684d9aba)
+1a1c82edf 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #74 from grinco/sync/release-336cd21fd281)
+f0dbe0944 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #73 from grinco/sync/release-2026.9.2)
+f94073f37 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #72 from grinco/sync/release-2026.9.1)
+0f82c0383 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #71 from grinco/sync/release-2026.9.0)
+4e3d63c8c 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #70 from grinco/sync/release-2026.8.9)
+a8d545287 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #69 from grinco/sync/release-2026.8.8)
+dca461518 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #68 from grinco/sync/release-2026.8.7)
+700718bc6 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #67 from grinco/sync/release-2026.8.6)
+f95f3d52c 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #66 from grinco/sync/release-2026.8.5)
+9fe2bb254 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #65 from grinco/sync/release-2026.8.4)
+056c11d79 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #64 from grinco/sync/release-2026.8.3)
+48f4c6600 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #63 from grinco/sync/release-2026.8.2)
+622312374 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #62 from grinco/sync/release-2026.8.1)
+cd818b80d 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #61 from grinco/sync/release-2026.8.0)
+adcc58e58 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #58 from grinco/sync/release-2026.7.6)
+17f991ef1 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #57 from grinco/sync/release-2026.7.5)
+67ee1ffaa 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #56 from grinco/sync/release-2026.7.4)
+61bd00cc7 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #55 from grinco/sync/release-2026.7.3)
+e32a5ba36 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #53 from grinco/sync/release-2026.7.2)
+c2f30decd 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #50 from grinco/sync/release-2026.7.1)
+48bb5a519 2026-09-23 audit: mirror's sync-PR merge, tree identical to its EE parent (Merge pull request #48 from grinco/sync/release-2026.7.0)

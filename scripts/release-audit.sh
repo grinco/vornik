@@ -75,7 +75,38 @@ for tag in $tags; do
 	if [ "$found" -eq 1 ]; then
 		note "- agent image \`$IMAGE:$tag\` resolves"
 	else
-		bad "NO agent image \`$IMAGE:$tag\` — the CE tag fires publish-agent-image, but nothing produced a versioned image for this release"
+		# MISSING vs STILL BUILDING. The image build takes ~18 minutes and this
+		# retry loop waits 30 seconds, so an audit run shortly after a release
+		# would report a red for an image that is on its way. A control that
+		# cannot tell "absent" from "not finished yet" reports the first and
+		# means the second — the same tenet-4 shape this audit exists to catch,
+		# so it asks the build instead of guessing from the registry alone.
+		#
+		# PENDING is not a pass: it is reported and does NOT count as a
+		# problem, because there is nothing for an operator to do yet. A build
+		# that has FAILED or that never started is a problem, and says which.
+		build=$(gh run list -R "${CE_REPO_FOR_IMAGE:-grinco/vornik}" \
+			--workflow publish-agent-image.yml -L 20 \
+			--json status,conclusion,headBranch 2>/dev/null | \
+			python3 -c "
+import json,sys
+tag=sys.argv[1]
+try:
+    for r in json.load(sys.stdin):
+        if r.get('headBranch')==tag:
+            print(r['status'], r.get('conclusion') or ''); break
+    else: print('none')
+except Exception: print('unknown')" "$tag" 2>/dev/null)
+		case "$build" in
+			in_progress*|queued*|requested*|waiting*)
+				note "- agent image \`$IMAGE:$tag\` PENDING — publish-agent-image is still running for this tag" ;;
+			completed*success*)
+				bad "NO agent image \`$IMAGE:$tag\` although publish-agent-image SUCCEEDED for this tag — the build reported success and the registry has nothing" ;;
+			none*)
+				bad "NO agent image \`$IMAGE:$tag\` and publish-agent-image never ran for it — the CE tag should fire it; check the tag exists on the CE repo" ;;
+			*)
+				bad "NO agent image \`$IMAGE:$tag\` — publish-agent-image for this tag is \`$build\`" ;;
+		esac
 	fi
 
 	# --- Gap 6: did the source reach the mirror? --------------------------
@@ -104,6 +135,24 @@ for tag in $tags; do
 		note "- $CE has a release for \`$tag\`"
 	else
 		bad "$CE has a TAG but no RELEASE for \`$tag\`"
+	fi
+
+	# --- the MIRROR release object ----------------------------------------
+	#
+	# Added 2026-09-23, immediately after this audit reported 2026.9.6 fully
+	# green while the mirror had a tag and no release. The audit checked the CE
+	# release object and not the mirror's, so the ONE artifact still created by
+	# hand was the one it could not see — a seventh instance of the shape this
+	# whole amendment is about, inside the control built to catch the other six.
+	#
+	# The mirror's tag is mechanised (gap 1); its release object is not, and
+	# this reports that rather than implying the release is incomplete. It is
+	# presentational on a private source mirror, which is exactly why it gets
+	# forgotten and exactly why it is worth naming.
+	if gh release view "$tag" -R "$MIRROR" >/dev/null 2>&1; then
+		note "- $MIRROR has a release for \`$tag\`"
+	else
+		bad "$MIRROR has a TAG but no RELEASE for \`$tag\` — the mirror tag is mechanised, its release object is still created by hand"
 	fi
 done
 

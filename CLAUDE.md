@@ -72,7 +72,11 @@ hook) rather than relying on a 1-in-600 stochastic reproduction as the gate.
 
 - A number with no scope reads as a guarantee — publish what it does NOT cover.
 - A control that cannot distinguish "examined and clean" from "never examined"
-  reports the first and means the second.
+  reports the first and means the second. **A denylist is that failure by
+  construction** — it reports clean about every shape not on the list, so
+  publish the DENOMINATOR: how many things were examined, not only how many
+  were found. A back-merge guard matching one wording missed twenty-four
+  back-merges of another while printing "none new" (2026-09-23).
 - A documented behaviour nothing implements is worse than an absent one: it
   stops the next person looking.
 - Report failures with their output. "Tests pass" after a partial run is a

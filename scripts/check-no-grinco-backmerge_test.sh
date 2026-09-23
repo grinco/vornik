@@ -109,6 +109,65 @@ else
 fi
 rm -rf "$dir"
 
+
+# --- 2026-09-23: the sync/release PR-merge shape was invisible -------------
+#
+# 24 commits shaped "Merge pull request #N from grinco/sync/release-<sha>" sat
+# on main and the trunk scan reported "7 acknowledged, none new" for every one
+# of them. Its signature list knew GitHub's "Sync fork" wording
+# ("Merge branch 'grinco:main'") and not the wording GitHub uses when a sync PR
+# is merged ON THE MIRROR and that merge commit then reaches this fork.
+#
+# WHY THIS SHAPE IS A BACK-MERGE BY CONSTRUCTION, not by pattern coincidence:
+# `sync/release-*` branches are created by THIS repo and pushed OUT to
+# grinco/vornik-ee. This repo never merges one back in. So a merge of a
+# sync/release branch on this trunk can only have been created on the mirror.
+dir="$(mktemp -d)"
+(
+  cd "$dir" || exit 1
+  git init -q -b main .
+  git config user.email t@example.com
+  git config user.name test
+  git commit -q --allow-empty -m "base"
+  git commit -q --allow-empty -m "Merge pull request #79 from grinco/sync/release-f678dfc48ff98af338899984518996d2537035c4"
+  mkdir -p scripts
+  cp "$script" scripts/
+  printf '# ack — deliberately EMPTY so the merge above is unacknowledged\n' >scripts/grinco-backmerge-acknowledged.txt
+) || { echo "FAIL: sync-PR fixture"; failures=$((failures + 1)); }
+if (cd "$dir" && TRUNK_REF=main bash scripts/check-no-grinco-backmerge.sh --trunk >/dev/null 2>&1); then
+  echo "FAIL: an UNACKNOWLEDGED sync/release PR-merge passed the trunk scan"
+  failures=$((failures + 1))
+else
+  echo "ok: an unacknowledged sync/release PR-merge fails the trunk scan"
+fi
+rm -rf "$dir"
+
+# --- and the scan must publish its DENOMINATOR ------------------------------
+#
+# "none new" is indistinguishable from "looked for nothing". The scan reports
+# how many merge commits it examined, so a signature list that matches none of
+# them is visible instead of reassuring.
+dir="$(mktemp -d)"
+(
+  cd "$dir" || exit 1
+  git init -q -b main .
+  git config user.email t@example.com
+  git config user.name test
+  git commit -q --allow-empty -m "base"
+  git commit -q --allow-empty -m "Merge pull request #3 from grinco/feature/x"
+  mkdir -p scripts
+  cp "$script" scripts/
+  printf '# ack\n' >scripts/grinco-backmerge-acknowledged.txt
+) || { echo "FAIL: denominator fixture"; failures=$((failures + 1)); }
+out="$(cd "$dir" && TRUNK_REF=main bash scripts/check-no-grinco-backmerge.sh --trunk 2>&1)"
+if printf '%s' "$out" | grep -qE 'of [0-9]+ merge commit'; then
+  echo "ok: the trunk scan reports how many merge commits it examined"
+else
+  echo "FAIL: the trunk scan reports no denominator; got: $out"
+  failures=$((failures + 1))
+fi
+rm -rf "$dir"
+
 if [ "$failures" -ne 0 ]; then
   echo "FAILED: $failures case(s)"
   exit 1

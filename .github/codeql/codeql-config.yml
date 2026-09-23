@@ -1,0 +1,46 @@
+# CodeQL configuration for the public Community Edition repo.
+#
+# WHY THIS FILE EXISTS. Until 2026-08-15 the repo used GitHub's DEFAULT code
+# scanning setup, which accepts no configuration. That left 66 open alerts, 63
+# of which were the same false positive repeated: CodeQL does not recognise
+# internal/safepath as a path-injection barrier, so every filesystem call that
+# correctly routes through it was reported anyway.
+#
+# Advanced setup exists here to make that suppressible with a stated reason,
+# rather than dismissing 63 alerts one at a time and losing the signal.
+#
+# WHAT IS AND IS NOT SUPPRESSED. Only the two rules whose every open instance
+# was verified to be sanitised. Everything else — including the critical rules
+# (request-forgery, command-injection, email-injection) — stays on. A real
+# go/request-forgery finding on 2026-08-15 was FIXED in code, not filtered:
+# see isSlackResponseURL in internal/api/slack_interactions.go.
+name: "Vornik CE CodeQL"
+
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  # go/path-injection — 62 open alerts, all sanitised by internal/safepath:
+  # JoinUnder / JoinUnderRel / CleanPathComponent reject absolute and escaping
+  # components, resolve symlinks, and assert containment under the root
+  # (hardened per audit 2026-07-09 O-3). CodeQL misses it because many call
+  # sites sanitise in a DIFFERENT file or package from the sink — e.g.
+  # ui/swarm_delete.go's os.Remove takes a path built by swarmEditData in
+  # ui/swarm_edit.go — and the taint tracking does not carry the barrier across
+  # that boundary.
+  #
+  # This suppression is only safe while the invariant holds, so the invariant is
+  # enforced on OUR side rather than trusted: `make lint-safepath` fails the
+  # build if a filesystem sink in the affected packages takes a path that did
+  # not come from safepath. Losing the scanner rule without that check would be
+  # trading a noisy signal for no signal.
+  - exclude:
+      id: go/path-injection
+
+  # go/zipslip — 1 open alert, in archiveutil.UntarGz, whose extractEntry runs
+  # every entry name through safepath.JoinUnderRel and returns an error on any
+  # escape. Same barrier, same blind spot. The function additionally drops
+  # symlink and hardlink entries so a crafted archive cannot redirect a later
+  # write.
+  - exclude:
+      id: go/zipslip

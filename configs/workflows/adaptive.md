@@ -73,6 +73,12 @@ corrective retry as an out-of-list pick. Do not respond
 with prose explaining what configuration you need — the
 configuration is already complete.
 
+**Route on the task prompt and the candidate list alone.** Do not read
+files, do not fetch web pages, do not search the repository or project
+memory. Picking a workflow needs the request's shape, not its answer —
+and the workflow you pick has the tools to do the work properly. A
+router that researches first spends the worker's budget twice.
+
 Read the task's prompt and any context fields. Match the
 shape of the work to the workflow that's best equipped:
 

@@ -85,4 +85,58 @@ chk "deployments/podman/README.md syncs" test -f "$DST/deployments/podman/README
 chk "nested Makefile syncs" test -f "$DST/services/scraper/Makefile"
 
 echo ">> publish preserve-list: $( [ "$fail" -eq 0 ] && echo CLEAN || echo FAILED )"
+
+# --- 2026-09-23: a PRESERVED path that the destination does NOT have ---------
+#
+# THE INCIDENT. PUBLISH_EXCL is a PRESERVE-list: with `rsync --delete`, an
+# --exclude means "do not sync this path AND do not delete it there", so an
+# operator edit in the public repo survives. That is correct — and it assumes
+# the destination ALREADY HAS the file.
+#
+# .github/workflows/codeql.yml and .github/codeql/codeql-config.yml were added
+# to the templates on 2026-08-15 to move the public repo to CodeQL advanced
+# setup and suppress 63 verified-sanitised path-injection alerts. They are on
+# the preserve-list, and grinco/vornik never had them — so every sync since has
+# faithfully preserved their ABSENCE. Default setup was switched off the same
+# day, the advanced workflow never arrived, and the public repo went 38 days
+# with NO code scanning while 66 stale alerts stayed open.
+#
+# The export's structural check asserted both files exist — in the EXPORT tree,
+# which is not where they have to be. Its own comment predicted the outcome:
+# "the config without the workflow would be a file nothing reads while scanning
+# silently stops."
+#
+# So a preserved path missing at the destination must be CREATED, not preserved.
+echo "ee-codeql-workflow" > "$SRC/.github/workflows/codeql.yml"
+mkdir -p "$SRC/.github/codeql"
+echo "ee-codeql-config"   > "$SRC/.github/codeql/codeql-config.yml"
+# DST deliberately has neither.
+rm -f "$DST/.github/workflows/codeql.yml" "$DST/.github/codeql/codeql-config.yml"
+
+rsync -a --delete --exclude='.git/' "${EXCL[@]}" "$SRC/" "$DST/"
+# The create-half, invoked through the export script's own entry point so this
+# test cannot drift from what the sync runs.
+"$EXPORT" --restore-absent-preserved "$SRC" "$DST" >/dev/null
+
+for f in .github/workflows/codeql.yml .github/codeql/codeql-config.yml; do
+  if [ ! -f "$DST/$f" ]; then
+    echo "  FAIL preserved-but-absent path was never created at the destination: $f"
+    echo "       (this is the 2026-08-15 CodeQL gap: scanning stopped for 38 days)"
+    fail=1
+  else
+    echo "  ok   preserved-but-absent path is created at the destination: $f"
+  fi
+done
+
+# And an operator edit to one of them must still survive a later sync.
+echo "operator-edited" > "$DST/.github/codeql/codeql-config.yml"
+rsync -a --delete --exclude='.git/' "${EXCL[@]}" "$SRC/" "$DST/"
+"$EXPORT" --restore-absent-preserved "$SRC" "$DST" >/dev/null
+if [ "$(cat "$DST/.github/codeql/codeql-config.yml")" = "operator-edited" ]; then
+  echo "  ok   an operator edit at the destination still survives the sync"
+else
+  echo "  FAIL preserve broke: the operator's codeql-config.yml edit was overwritten"
+  fail=1
+fi
+
 exit "$fail"

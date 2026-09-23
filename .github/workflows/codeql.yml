@@ -1,0 +1,62 @@
+# Advanced CodeQL setup for the public CE repo.
+#
+# Replaces GitHub's default setup, which takes no configuration and therefore
+# could not be told that internal/safepath is a path-injection barrier. See
+# .github/codeql/codeql-config.yml for exactly what is suppressed and why.
+#
+# Default setup MUST be disabled on the repository for this to run; the two
+# cannot coexist (Settings > Code security > Code scanning > Advanced).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, matching the cadence default setup used, so a newly published
+    # advisory is still found on a repo nobody has pushed to.
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirrors the language set default setup had enabled. Keep them in step:
+        # dropping one here silently stops scanning that language.
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

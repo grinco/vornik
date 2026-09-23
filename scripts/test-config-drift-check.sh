@@ -196,6 +196,53 @@ else
 	pass "backup copies are filtered from DEPLOYED-ONLY, genuine host-only files are not"
 fi
 
+
+# --- Case 14 (2026-09-23): --missed-template-changes separates a fix the
+# deployment never got from the operator's own tuning. ---
+#
+# The shipped configs/ tree is a TEMPLATE; the deployed tree is production.
+# So most drift is EXPECTED — a tuned timeout is not a defect — and a flat
+# "DRIFT" list makes the two indistinguishable. On this host that was 14
+# entries of which 2 mattered, including a dev-swarm missing `onViolation:
+# warn` (absent defaults to FAIL, so an enum slip failed the step) and a
+# dev-pipeline missing the pinned-case id contract.
+#
+# The signal is the diff's ASYMMETRY. Reading `diff <template> <deployed>`:
+#   d hunk -> the template has lines the deployment lacks  = MISSED CHANGE
+#   a hunk -> the deployment has extra lines               = tuning
+#   c hunk -> same line, different value                   = tuning
+# and a d hunk of only comments/blanks is documentation, not behaviour.
+build_fixture
+# tuning: a changed value, and a deployment-only addition
+printf 'model: a\ntimeout: 5m\n'            > "$REPO/swarms/dev-swarm.md"
+printf 'model: a\ntimeout: 180s\nextra: x\n' > "$DEP/swarms/dev-swarm.md"
+# a MISSED CHANGE: the template has a behaviour line the deployment lacks
+printf 'a: 1\nonViolation: warn\nb: 2\n' > "$REPO/workflows/adaptive.md"
+printf 'a: 1\nb: 2\n'                     > "$DEP/workflows/adaptive.md"
+# comment-only template addition: documentation, NOT a missed change
+printf 'x: 1\n# why this is omitted here\ny: 2\n' > "$REPO/workflows/ingest.md"
+printf 'x: 1\ny: 2\n'                             > "$DEP/workflows/ingest.md"
+printf '# ack\n' > "$REPO/config-divergence-acknowledged.txt"
+out="$(cd "$TMP/repo/.." 2>/dev/null; VORNIK_REPO_CONFIGS_DIR="$REPO" bash "$DRIFT" --missed-template-changes "$DEP" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then
+	fail "an unacknowledged missed template change must be non-zero; got 0: $out"
+elif ! printf '%s' "$out" | grep -q 'adaptive.md'; then
+	fail "the missed template change (onViolation) was not reported; got: $out"
+elif printf '%s' "$out" | grep -q 'dev-swarm.md'; then
+	fail "a tuned value (timeout/extra) was reported as a missed template change; got: $out"
+elif printf '%s' "$out" | grep -q 'ingest.md'; then
+	fail "a comment-only template addition was reported as a missed change; got: $out"
+else
+	pass "missed template changes are separated from tuning and from comments"
+fi
+
+# --- Case 15: and the mode publishes its denominator (tenet 7.4). ---
+if printf '%s' "$out" | grep -qE 'of [0-9]+ drifted file'; then
+	pass "the missed-change scan reports how many drifted files it examined"
+else
+	fail "no denominator; a scan that matches nothing must not read as clean: $out"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "test-config-drift-check: ALL PASS"; exit 0; fi
 echo "test-config-drift-check: $fails case(s) failed"; exit 1

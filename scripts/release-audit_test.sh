@@ -39,11 +39,32 @@ else
 fi
 
 # A missing artifact must be BOTH reported and fatal.
-out="$(RELEASE_AUDIT_IMAGE=ghcr.io/grinco/definitely-not-an-image "$AUDIT" 1 2>&1)"; rc=$?
+#
+# COUNT=2, and the 2 is load-bearing. The audit sweeps from the newest release
+# backwards, and on a release day the newest one's image build is still running
+# — which the audit now correctly reports as PENDING rather than missing. With
+# count=1 this case therefore tested the pending path while claiming to test
+# the missing one, and it failed the moment that distinction was added
+# (2026-09-23, during the 2026.9.6 release itself). Two releases means at least
+# one has a settled build whatever day this runs.
+out="$(RELEASE_AUDIT_IMAGE=ghcr.io/grinco/definitely-not-an-image "$AUDIT" 2 2>&1)"; rc=$?
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'NO agent image'; then
 	pass "a missing agent image is reported and fatal"
 else
 	fail "missing agent image should report and exit non-zero (rc=$rc); got: $out"
+fi
+
+# ...and PENDING is reported WITHOUT counting as a problem. Only assertable
+# while a build is actually in flight, so it self-skips rather than pretending.
+out="$("$AUDIT" 2 2>&1)"
+if printf '%s' "$out" | grep -q 'PENDING — publish-agent-image is still running'; then
+	if printf '%s' "$out" | grep -q '\*\*.*PENDING'; then
+		fail "a pending image was counted as a problem; it is nothing for an operator to do yet"
+	else
+		pass "an in-flight image build is reported as PENDING and is not a problem"
+	fi
+else
+	echo "skip - no image build in flight; the PENDING path is not exercisable right now"
 fi
 
 # A release commit absent from the mirror must be BOTH reported and fatal —

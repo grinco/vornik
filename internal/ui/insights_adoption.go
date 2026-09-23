@@ -612,9 +612,18 @@ func (s *Server) collectKeyActivity(ctx context.Context, st *adoptionStats, quer
 		return r
 	}
 
-	s.addRAGActivity(ctx, st, queryIDs, since, row)
-	s.addMemoryWrites(ctx, st, concreteProjects(queryIDs, allowed), since, row)
-	s.addSpendActivity(ctx, st, queryIDs, since, row)
+	// ONE day index, shared by all three contributors, because ActiveDays is
+	// the UNION of what they each saw. It used to be a local of addRAGActivity
+	// that ASSIGNED r.ActiveDays on the way out, so the retrieval ledger was
+	// the only thing that could ever set the column: a credential with 1,284
+	// LLM calls and no RAG rendered "1,284 calls · 0/30 active days" on one
+	// row. Issue grinco/vornik#14.
+	days := newKeyDayIndex()
+
+	s.addRAGActivity(ctx, st, queryIDs, since, row, days)
+	s.addMemoryWrites(ctx, st, concreteProjects(queryIDs, allowed), since, row, days)
+	s.addSpendActivity(ctx, st, queryIDs, since, row, days)
+	days.apply(row)
 
 	for _, r := range rows {
 		st.Keys = append(st.Keys, *r)
@@ -636,6 +645,83 @@ func (s *Server) collectKeyActivity(ctx context.Context, st *adoptionStats, quer
 	// real credential before the fragments collapse to one row.
 }
 
+// keyDayIndex accumulates the distinct days and projects each credential was
+// active on, across every ledger that contributes to a board row.
+//
+// IT IS A SET, NOT A COUNTER, and that is the whole design. ActiveDays is the
+// UNION of what the three ledgers saw: a credential that queried RAG and spent
+// on an LLM the same afternoon has ONE active day, not two. Sums would also
+// make the ephemeral-key fold wrong in the other direction — 18 one-day
+// per-task credentials collapsing into one actor must report one day, not 18.
+//
+// It lives at the collector level rather than inside a contributor because the
+// previous version did not: addRAGActivity owned the sets and ASSIGNED
+// r.ActiveDays from them, so no other ledger could contribute a day even in
+// principle. Issue grinco/vornik#14.
+type keyDayIndex struct {
+	days     map[string]map[string]bool
+	projects map[string]map[string]bool
+}
+
+func newKeyDayIndex() *keyDayIndex {
+	return &keyDayIndex{
+		days:     map[string]map[string]bool{},
+		projects: map[string]map[string]bool{},
+	}
+}
+
+// markDay records a day already rendered as "2006-01-02" — the shape the
+// repository returns, so no timezone decision is re-made here.
+func (k *keyDayIndex) markDay(keyID, day string) {
+	if keyID == "" || day == "" {
+		return
+	}
+	if k.days[keyID] == nil {
+		k.days[keyID] = map[string]bool{}
+	}
+	k.days[keyID][day] = true
+}
+
+// markTime records the day a timestamp falls on, IN UTC.
+//
+// The explicit .UTC() is load-bearing, not decoration: the SQL side buckets on
+// `recorded_at AT TIME ZONE 'UTC'`, and the ledgers reached through Go used to
+// format in whatever zone the daemon ran in. On a daemon set to Europe/Prague,
+// a 23:30 UTC retrieval was day+1 locally and day in the spend query — the same
+// moment landing in two buckets, inflating a union that exists to deduplicate.
+func (k *keyDayIndex) markTime(keyID string, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	k.markDay(keyID, t.UTC().Format("2006-01-02"))
+}
+
+func (k *keyDayIndex) markProject(keyID, projectID string) {
+	if keyID == "" || projectID == "" {
+		return
+	}
+	if k.projects[keyID] == nil {
+		k.projects[keyID] = map[string]bool{}
+	}
+	k.projects[keyID][projectID] = true
+}
+
+// apply writes the accumulated sizes onto the rows, once, after every
+// contributor has run. Assignment is safe here precisely because it is the only
+// write site and it happens last.
+func (k *keyDayIndex) apply(row func(string) *keyRow) {
+	for id, days := range k.days {
+		if r := row(id); r != nil {
+			r.ActiveDays = len(days)
+		}
+	}
+	for id, projects := range k.projects {
+		if r := row(id); r != nil {
+			r.Projects = len(projects)
+		}
+	}
+}
+
 // shortKeyID renders a credential id compactly without losing its identity —
 // an operator has to be able to match it against `vornikctl` output.
 func shortKeyID(id string) string {
@@ -648,20 +734,10 @@ func shortKeyID(id string) string {
 // addRAGActivity credits memory retrievals to the credential that made them.
 // This is the surface with the best attribution today — actor_kind and actor_id
 // are populated on real traffic — which is why it ranks the table.
-func (s *Server) addRAGActivity(ctx context.Context, st *adoptionStats, queryIDs []string, since time.Time, row func(string) *keyRow) {
+func (s *Server) addRAGActivity(ctx context.Context, st *adoptionStats, queryIDs []string, since time.Time, row func(string) *keyRow, days *keyDayIndex) {
 	if s.memoryRetrievalAudit == nil {
 		return
 	}
-	seenDays := map[string]map[string]bool{}
-	seenProjects := map[string]map[string]bool{}
-	defer func() {
-		for id, days := range seenDays {
-			if r := row(id); r != nil {
-				r.ActiveDays = len(days)
-				r.Projects = len(seenProjects[id])
-			}
-		}
-	}()
 	for _, pid := range projectsToIterate(queryIDs) {
 		audits, err := s.memoryRetrievalAudit.List(ctx, persistence.MemoryRetrievalAuditFilter{
 			ProjectID: pid,
@@ -694,15 +770,8 @@ func (s *Server) addRAGActivity(ctx context.Context, st *adoptionStats, queryIDs
 			// Distinct days and projects, tracked as sets keyed by credential
 			// so folding ephemeral rows later unions them rather than summing
 			// (summing would let 18 one-day agent keys report "18 active days").
-			day := a.RetrievedAt.Format("2006-01-02")
-			if seenDays[r.KeyID] == nil {
-				seenDays[r.KeyID] = map[string]bool{}
-				seenProjects[r.KeyID] = map[string]bool{}
-			}
-			seenDays[r.KeyID][day] = true
-			if a.ProjectID != "" {
-				seenProjects[r.KeyID][a.ProjectID] = true
-			}
+			days.markTime(r.KeyID, a.RetrievedAt)
+			days.markProject(r.KeyID, a.ProjectID)
 		}
 	}
 }
@@ -710,12 +779,13 @@ func (s *Server) addRAGActivity(ctx context.Context, st *adoptionStats, queryIDs
 // addSpendActivity attaches LLM calls, tasks and spend per credential.
 // AggregateByAPIKey already backs the spend UI; reused rather than re-derived so
 // the two surfaces cannot quietly disagree about what a key cost.
-func (s *Server) addSpendActivity(ctx context.Context, st *adoptionStats, queryIDs []string, since time.Time, row func(string) *keyRow) {
+func (s *Server) addSpendActivity(ctx context.Context, st *adoptionStats, queryIDs []string, since time.Time, row func(string) *keyRow, days *keyDayIndex) {
 	if s.llmUsageRepo == nil {
 		return
 	}
+	until := time.Now()
 	for _, scope := range spendScopes(queryIDs) {
-		spends, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, time.Now(), adoptionSampleCap, scope)
+		spends, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, until, adoptionSampleCap, scope)
 		if err != nil {
 			continue
 		}
@@ -723,6 +793,27 @@ func (s *Server) addSpendActivity(ctx context.Context, st *adoptionStats, queryI
 			st.Activity.Truncated = true
 		}
 		applySpendActivity(st, spends, row)
+
+		// A SECOND query, and it has to be: AggregateByAPIKey is pre-aggregated
+		// per credential with no date column, and its only date-bearing sibling
+		// TimeSeriesByDay aggregates across every credential at once. Neither
+		// can answer "on which days did THIS key spend", which is why the board
+		// showed a call count beside zero active days (grinco/vornik#14).
+		byKey, err := s.llmUsageRepo.ActiveDaysByAPIKey(ctx, since, until, scope)
+		if err != nil {
+			// DEGRADE, do not zero. The other ledgers' days are already in the
+			// index and are still true; dropping them would answer a failed
+			// query with a confident "never active".
+			continue
+		}
+		for keyID, spentOn := range byKey {
+			if row(keyID) == nil {
+				continue
+			}
+			for _, day := range spentOn {
+				days.markDay(keyID, day)
+			}
+		}
 	}
 }
 
@@ -1009,7 +1100,7 @@ func machineInitiated(src persistence.TaskCreationSource) bool {
 // are counted toward the instance total but not credited to a credential —
 // a role is not a credential, and mapping one onto the other would put
 // "writer" on a leaderboard of people.
-func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, projects []string, since time.Time, row func(string) *keyRow) {
+func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, projects []string, since time.Time, row func(string) *keyRow, days *keyDayIndex) {
 	if s.memoryIngestAudit == nil {
 		return
 	}
@@ -1057,6 +1148,11 @@ func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, project
 			if r.Kind == "" {
 				r.Kind = *a.ActorKind
 			}
+			// A deposit is activity. Counted here and nowhere else before the
+			// #14 fix, so a companion that only FED memory read as dormant on
+			// the same row that showed its deposits.
+			days.markTime(r.KeyID, a.IngestedAt)
+			days.markProject(r.KeyID, a.ProjectID)
 		}
 	}
 }

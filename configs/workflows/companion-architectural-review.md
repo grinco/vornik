@@ -41,7 +41,7 @@ steps:
     role: "reviewer"
     on_success: "done"
     on_fail: "failed"
-    timeout: "611s"
+    timeout: "814s"
 terminals:
   done:
     status: "COMPLETED"

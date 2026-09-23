@@ -331,3 +331,9 @@ func TestAnswerCheckpoint_BudgetReduceScope_RequeuesNoRaise(t *testing.T) {
 		t.Fatalf("reduce_scope must re-queue (QUEUED), got %v", toStatus)
 	}
 }
+
+// ActiveDaysByAPIKey: this stub predates the per-credential day query
+// (grinco/vornik#14) and no test here exercises it.
+func (f *forecastStubUsageRepo) ActiveDaysByAPIKey(context.Context, time.Time, time.Time, string) (map[string][]string, error) {
+	return nil, nil
+}

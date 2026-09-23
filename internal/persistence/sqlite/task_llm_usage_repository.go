@@ -657,3 +657,53 @@ func (r *TaskLLMUsageRepository) TaskCostBreakdown(ctx context.Context, taskID s
 	}
 	return out, rows.Err()
 }
+
+// ActiveDaysByAPIKey returns the distinct UTC days each attributed credential
+// has usage rows on. See the interface for why neither sibling query can
+// answer this.
+func (r *TaskLLMUsageRepository) ActiveDaysByAPIKey(ctx context.Context, since, until time.Time, projectID string) (map[string][]string, error) {
+	// substr(recorded_at, 1, 10) matches TimeSeriesByDay on this backend:
+	// sqliteTime stores UTC in RFC3339, so the first ten characters ARE the
+	// UTC day. Postgres computes the same value with an explicit AT TIME ZONE
+	// 'UTC' — the shared repotest suite pins both to one contract, because a
+	// day boundary that differs between backends would union into a double
+	// count rather than a merge.
+	var b strings.Builder
+	b.WriteString(`
+		SELECT api_key_id, substr(recorded_at, 1, 10) AS day
+		FROM task_llm_usage
+		WHERE api_key_id IS NOT NULL AND api_key_id <> ''`)
+	args := make([]any, 0, 3)
+	if projectID != "" {
+		b.WriteString(" AND project_id = ?")
+		args = append(args, projectID)
+	}
+	if !since.IsZero() {
+		b.WriteString(" AND recorded_at >= ?")
+		args = append(args, sqliteTime(since))
+	}
+	if !until.IsZero() {
+		b.WriteString(" AND recorded_at < ?")
+		args = append(args, sqliteTime(until))
+	}
+	b.WriteString(" GROUP BY api_key_id, day ORDER BY api_key_id, day")
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("active days by api key: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var keyID, day string
+		if err := rows.Scan(&keyID, &day); err != nil {
+			return nil, fmt.Errorf("scan active day: %w", err)
+		}
+		out[keyID] = append(out[keyID], day)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active days by api key: %w", err)
+	}
+	return out, nil
+}

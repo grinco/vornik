@@ -60,7 +60,6 @@ func (b MissBehavior) String() string {
 // grow.
 var Contract = map[string]MissBehavior{
 	"A2APushConfigRepository.Get":                  MissErrNotFound, // *A2APushConfig
-	"APIKeyRepository.LookupActiveByHash":          MissErrNotFound, // *APIKey
 	"ApplyJournalRepository.Get":                   MissErrNotFound, // *ConfigApplyJournal
 	"ApplyJournalRepository.OpenForProposal":       MissErrNotFound, // *ConfigApplyJournal — no open row is a miss, not a state
 	"ArtifactRepository.Get":                       MissErrNotFound, // *Artifact
@@ -141,13 +140,28 @@ var Excluded = map[string]string{
 	"TaskRepository.LeaseTask":                     "a queue poll: an empty queue is the common case, not a miss",
 	// APIKeyRepository answers with its own ErrAPIKeyNotFound sentinel, which
 	// is a standalone errors.New and NOT persistence.ErrNotFound — so this
-	// two-value vocabulary cannot describe it. GetByID matches its sibling
-	// LookupActiveByHash rather than inventing a third convention, and the
-	// suite asserts that sentinel directly. See the P3 backlog item "The miss
-	// contract declares a behaviour APIKeyRepository does not have": the
-	// LookupActiveByHash row above has the same problem and is NOT excluded,
-	// which is the inconsistency this exclusion deliberately does not copy.
-	"APIKeyRepository.GetByID": "returns ErrAPIKeyNotFound, a sentinel this vocabulary cannot express; asserted directly in RunAPIKeyRepositorySuite",
+	// two-value vocabulary cannot describe it. Neither method invents a third
+	// convention; both are excluded and the suite asserts the sentinel
+	// directly.
+	//
+	// LookupActiveByHash was DECLARED MissErrNotFound until 2026-09-21, which
+	// was false — errors.Is(err, persistence.ErrNotFound) is false for every
+	// API-key miss. It survived because nothing called AssertMiss for it: a
+	// claim with no check behind it, inside the table whose purpose is to stop
+	// exactly that. The comment that used to sit here named the inconsistency
+	// and left it in place; it is now closed, and
+	// RunAPIKeyRepositorySuite/LookupActiveByHash_absent_is_ErrAPIKeyNotFound
+	// asserts both halves — that the sentinel IS returned, and that it is NOT
+	// persistence.ErrNotFound, so a future wrap cannot make this exclusion
+	// silently stale.
+	//
+	// Wrapping the sentinel so the original declaration became true was
+	// considered and refused: it would change what
+	// errors.Is(err, persistence.ErrNotFound) returns on AUTH paths
+	// (git_http_auth, companion_mcp), which is a security-adjacent behaviour
+	// change needing its own measurement rather than a drive-by.
+	"APIKeyRepository.GetByID":            "returns ErrAPIKeyNotFound, a sentinel this vocabulary cannot express; asserted directly in RunAPIKeyRepositorySuite",
+	"APIKeyRepository.LookupActiveByHash": "returns ErrAPIKeyNotFound, a sentinel this vocabulary cannot express; asserted directly in RunAPIKeyRepositorySuite",
 }
 
 // Behavior returns the declared behaviour for key.

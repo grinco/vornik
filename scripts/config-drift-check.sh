@@ -70,9 +70,26 @@ for sub in "${CONFIG_DEPLOYABLE_DIRS[@]}"; do
 		fi
 	done < <(cd "$src" && find . -type f)
 	# reverse: deployed files with no repo counterpart (host-only or orphaned)
+	#
+	# OPERATOR BACKUPS ARE SKIPPED. The documented edit procedure for a deployed
+	# config is "copy it to <name>.bak-<stamp>-<why>, then edit", so every
+	# careful change leaves a file here that is BY DEFINITION not in the repo.
+	# Reporting those is reporting this script's own advice back at the reader:
+	# on the live host, 2026-09-22, the reverse scan emitted 72 backup lines
+	# against 23 real drift lines. At that ratio nobody reads the output, and
+	# the companion reviewer's swarm sat drifted underneath it for weeks until
+	# an unrelated incident surfaced it — a control whose signal is buried is
+	# a control that is not running.
+	#
+	# The filter is on the SUFFIX only. A host-only file with an ordinary name
+	# is still reported, because that is the case this scan exists for: an
+	# orphaned config the daemon loads and the repo has never heard of.
 	if [ -d "$DEPLOYED/$sub" ]; then
 		while IFS= read -r rel; do
 			rel="${rel#./}"
+			case "$rel" in
+				*.bak|*.bak-*|*.bak.*|*.pre-*|*~|*.orig|*.rej) continue ;;
+			esac
 			[ -f "$src/$rel" ] || echo "DEPLOYED-ONLY (not in repo): $sub/$rel"
 		done < <(cd "$DEPLOYED/$sub" && find . -type f)
 	fi

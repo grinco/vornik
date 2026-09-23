@@ -744,3 +744,58 @@ func (r *TaskLLMUsageRepository) AggregateByRoleModel(ctx context.Context, since
 	}
 	return out, rows.Err()
 }
+
+// ActiveDaysByAPIKey returns the distinct UTC days each attributed credential
+// has usage rows on. See the interface for why neither sibling query can
+// answer this.
+func (r *TaskLLMUsageRepository) ActiveDaysByAPIKey(ctx context.Context, since, until time.Time, projectID string) (map[string][]string, error) {
+	// DISTINCT on (key, day) rather than counting rows: the caller unions
+	// these with day sets from the other activity ledgers, so the unit has to
+	// be the day itself.
+	//
+	// The day is computed in UTC explicitly. recorded_at is timestamptz, and
+	// letting the session's TimeZone decide would make a credential's active
+	// days depend on where the daemon happens to run — and would disagree with
+	// the other ledgers' day sets, which the UI formats as UTC.
+	query := `
+		SELECT u.api_key_id,
+		       to_char((u.recorded_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS day
+		FROM task_llm_usage u
+		WHERE u.api_key_id IS NOT NULL AND u.api_key_id <> ''`
+	var args []any
+	pos := 1
+	if projectID != "" {
+		query += fmt.Sprintf(" AND u.project_id = $%d", pos)
+		args = append(args, projectID)
+		pos++
+	}
+	if !since.IsZero() {
+		query += fmt.Sprintf(" AND u.recorded_at >= $%d", pos)
+		args = append(args, since)
+		pos++
+	}
+	if !until.IsZero() {
+		query += fmt.Sprintf(" AND u.recorded_at < $%d", pos)
+		args = append(args, until)
+	}
+	query += ` GROUP BY u.api_key_id, day ORDER BY u.api_key_id, day`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("active days by api key: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := map[string][]string{}
+	for rows.Next() {
+		var keyID, day string
+		if err := rows.Scan(&keyID, &day); err != nil {
+			return nil, fmt.Errorf("scan active day: %w", err)
+		}
+		out[keyID] = append(out[keyID], day)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("active days by api key: %w", err)
+	}
+	return out, nil
+}

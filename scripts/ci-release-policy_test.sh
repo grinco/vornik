@@ -105,5 +105,121 @@ assert 'release-upstream-pr.yaml' in str(dispatch[0]), \
 assert 'publish-ce.yaml' in str(dispatch[0]), \
     'release.yaml must dispatch publish-ce.yaml, or no release is ever exported to CE'
 
+# --- 2026-09-22: assert the PUBLISHER SET, not a list of names ---------------
+#
+# The two assertions above name two arms. The fan-out dispatches THREE — docs
+# is the one nobody pinned, and the 2026.9.5 notes recorded the work as "BOTH
+# publication arms are now asserted". Two of three was written down as all of
+# them, and the arm left out publishes the customer-facing documentation site:
+# delete its line and every test here still passes while docs.vornik.io
+# silently stops tracking releases.
+#
+# A three-name list drifts the day a fourth publisher is added, exactly as the
+# two-name list did. §C of enterprise-packaging-design.md already settled this
+# for a different check: assert the property GENERICALLY, "because an allowlist
+# of job names carries exactly the drift hazard the omission came from". So
+# this is a SET EQUALITY against the designated publishers, and adding a
+# publisher without dispatching it fails here rather than in production.
+PUBLISHERS={'docs.yaml','publish-ce.yaml','release-upstream-pr.yaml'}
+dispatched={w for w in PUBLISHERS|{'ci.yaml','release.yaml','upstream-sync-pr.yaml'}
+            if w in str(dispatch[0])}
+assert dispatched == PUBLISHERS, (
+    'the release fan-out must dispatch exactly the designated publishers; '
+    f'dispatched={sorted(dispatched)} designated={sorted(PUBLISHERS)}')
+
+# --- Gap 1: the mirror's tag push, asserted at the step, not at the dispatch -
+#
+# Nothing has EVER tagged grinco/vornik-ee. The content arrives (PRs #76-78
+# merged for 9.3/9.4/9.5) and the tags do not, because release-upstream-pr.yaml
+# pushes a branch and stops. That is the CE-tag defect of 2026-09-06 one
+# repository over, and it went unexamined for sixteen days because the fix was
+# applied to the instance rather than the class.
+#
+# Asserting only that the workflow is dispatched would repeat the very failure
+# this file catalogues — assert the trigger, not the outcome. Deleting the tag
+# push from the workflow must turn THIS red.
+up=read('.github/workflows/release-upstream-pr.yaml')
+def _d(node, key):
+    # workflow_dispatch: with no body parses as '' under BaseLoader, which is
+    # precisely the pre-fix state this assertion exists to reject.
+    v = node.get(key) if isinstance(node, dict) else None
+    return v if isinstance(v, dict) else {}
+assert 'tag' in _d(_d(_d(up,'on'),'workflow_dispatch'),'inputs'), \
+    'release-upstream-pr.yaml must declare a `tag` input, or the fan-out cannot pass one'
+upbody=str(up['jobs'])
+# The PUSH, not merely the string 'refs/tags/' — the first version of this
+# assertion matched the idempotency `ls-remote ... refs/tags/$TAG` check, so
+# deleting the push left it GREEN. Found by mutation-checking it, which is the
+# only reason it is not still inert.
+assert 'push upstream "HEAD:refs/tags/' in upbody, \
+    'release-upstream-pr.yaml must PUSH a tag to the mirror, or grinco/vornik-ee is never tagged'
+assert 'ls-remote' in upbody, \
+    'the mirror tag push must be idempotent — a re-run must not fail on an existing tag'
+assert '--force' not in upbody and ' -f ' not in upbody, \
+    'the mirror tag must never be moved: a release tag names one artifact forever'
+assert 'tag=' in str(dispatch[0]).split('release-upstream-pr.yaml')[1][:80], \
+    'the fan-out must pass -f tag= to release-upstream-pr.yaml, or the tag step sees nothing'
+
+# --- Gap 3: the installers must be stamped for the tag being released --------
+#
+# RELEASE.md step 1 says to run `make quickstart-stamp-ref REF=<tag>`. It was
+# not run for 2026.9.5, so for five days from 2026-09-17 every fresh Podman and
+# macOS install defaulted to the 2026.9.4 tree — two releases behind what the
+# notes described. Nothing failed loudly, because a stale pin installs a
+# working system, just the wrong one.
+#
+# The release job is the one place that holds both the tag and the stamped ref.
+rbody=str(r['jobs']['goreleaser']['steps'])
+assert 'DEFAULT_VORNIK_REF' in rbody, \
+    'release.yaml must verify the podman installer is stamped for this tag'
+assert 'deployments/macos/install.sh' in rbody, \
+    'release.yaml must verify the macOS installer too — stamping only podman left it behind before'
+
+# AND IT MUST RUN BEFORE ANYTHING PUBLISHES. The first version of this gate sat
+# after "Publish signed checksums and release", so it reported on a release the
+# world could already download — the exact defect that moved the mirror-merge
+# check out of the fan-out and into a separate audit, reintroduced two gaps
+# later in the same change. A gate downstream of the thing it gates is a
+# notification.
+names=[st.get('name','') for st in r['jobs']['goreleaser']['steps']]
+stamp_at=next(i for i,n in enumerate(names) if 'stamped for this tag' in n)
+publish_at=next(i for i,n in enumerate(names) if n.startswith('Publish'))
+build_at=next(i for i,n in enumerate(names) if n.startswith('Build'))
+assert stamp_at < build_at < publish_at, (
+    'the installer-stamp gate must precede the build and the publish; '
+    f'order is {names}')
+
+# --- Gap 2: the CE release workflow, injected into the public repo ----------
+#
+# publish-ce creates the CE TAG and not the CE RELEASE, because the deploy key
+# pushes refs and cannot call the releases API. Filed as a P3 on 2026-09-06
+# with this exact route identified, and unbuilt for sixteen days — during which
+# 2026.9.5 shipped with a tag and no release. A filed P3 with no owner and no
+# date is indistinguishable from a step nobody wrote down.
+tmpl='scripts/public-ce-templates/publish-release.yml'
+assert (root/tmpl).exists(), 'the CE release workflow template must exist'
+assert 'publish-release.yml' in (root/'scripts/export-public-ce.sh').read_text(), \
+    'the CE export must inject publish-release.yml, or the workflow never reaches the public repo'
+pr=read(tmpl)
+pron=pr.get('on',{})
+# TAG PUSH ONLY. A fork cannot push a tag here and pull_request does not fire
+# push:tags, so this reduces the trigger set to holders of tag-push rights. A
+# workflow_dispatch would let any write collaborator fire it at an arbitrary
+# ref carrying a fabricated section — defensible for an idempotent image build,
+# not for a release object.
+assert set(pron.keys()) == {'push'}, \
+    f'the CE release workflow must trigger on tag push ONLY; found {sorted(pron.keys())}'
+assert 'tags' in pron['push'] and 'branches' not in pron['push'], \
+    'the CE release workflow must trigger on tags, never on branch pushes'
+# EXPLICIT permissions. With no block the job inherits the repository default,
+# which is a blast radius nobody chose.
+assert pr.get('permissions') == {'contents': 'write'}, \
+    f"the CE release workflow must declare permissions: contents: write and nothing else; found {pr.get('permissions')}"
+prbody=str(pr['jobs'])
+assert 'gh release view' in prbody, \
+    'creating the CE release must be idempotent — a re-run must not fail on an existing release'
+assert 'docs/public/release-notes/index.md' in prbody, \
+    'the CE release body must come from the curated PUBLIC notes, never the EE ones'
+
 print('CI/release policy: PASS')
 PY

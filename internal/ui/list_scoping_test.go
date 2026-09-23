@@ -325,3 +325,9 @@ func TestListTasksScoped_CapsToPageSize(t *testing.T) {
 		t.Fatalf("cap: got %d rows (%v), want 2 newest [a b]", len(got), got)
 	}
 }
+
+// ActiveDaysByAPIKey: this stub predates the per-credential day query
+// (grinco/vornik#14) and no test here exercises it.
+func (s *stubScopeSpendRepo) ActiveDaysByAPIKey(context.Context, time.Time, time.Time, string) (map[string][]string, error) {
+	return nil, nil
+}

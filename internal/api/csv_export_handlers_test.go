@@ -497,3 +497,9 @@ func (m *mockTaskLLMUsageRepository) SumCostByAPIKey(_ context.Context, _ string
 func (m *mockTaskLLMUsageRepository) MeanCostByWorkflow(_ context.Context, _, _ string, _, _ time.Time) (float64, int, error) {
 	return 0, 0, nil
 }
+
+// ActiveDaysByAPIKey: this stub predates the per-credential day query
+// (grinco/vornik#14) and no test here exercises it.
+func (m *mockTaskLLMUsageRepository) ActiveDaysByAPIKey(context.Context, time.Time, time.Time, string) (map[string][]string, error) {
+	return nil, nil
+}

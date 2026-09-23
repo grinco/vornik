@@ -173,6 +173,29 @@ else
 	fail "strict canonical symlink should exit 3 (rc=$rc); got: $out"
 fi
 
+# --- Case 13 (2026-09-22): operator BACKUP files must not be reported as
+# DEPLOYED-ONLY. On the live host the reverse scan emitted 72 backup lines
+# against 23 real drift lines — a 3:1 noise ratio on a check a human is
+# expected to read, and the companion reviewer's swarm drifted for weeks
+# underneath it. A `.bak-*` / `.pre-*` copy is the operator's own snapshot,
+# taken BY the documented edit procedure; it is never going into the repo, so
+# reporting it as "not in repo" is reporting the tool's own advice back. Real
+# host-only files must still be reported. ---
+build_fixture
+cp "$DEP/swarms/dev-swarm.md" "$DEP/swarms/dev-swarm.md.bak-20260828T142503Z-pre-ghcr-rename"
+cp "$DEP/swarms/dev-swarm.md" "$DEP/swarms/dev-swarm.md.pre-T-9d21"
+cp "$DEP/swarms/dev-swarm.md" "$DEP/swarms/host-only-swarm.md"
+out="$(run_drift)"; rc=$?
+if printf '%s' "$out" | grep -q "bak-20260828T142503Z"; then
+	fail "a .bak-* backup was reported as DEPLOYED-ONLY; got: $out"
+elif printf '%s' "$out" | grep -q "pre-T-9d21"; then
+	fail "a .pre-* backup was reported as DEPLOYED-ONLY; got: $out"
+elif ! printf '%s' "$out" | grep -q "host-only-swarm.md"; then
+	fail "a genuine host-only file stopped being reported — the filter is too wide; got: $out"
+else
+	pass "backup copies are filtered from DEPLOYED-ONLY, genuine host-only files are not"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "test-config-drift-check: ALL PASS"; exit 0; fi
 echo "test-config-drift-check: $fails case(s) failed"; exit 1

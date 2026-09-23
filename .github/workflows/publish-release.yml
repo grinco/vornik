@@ -1,0 +1,127 @@
+# Vornik Community Edition — create the GitHub release for a calendar tag.
+# Injected into the public repo at export time by scripts/export-public-ce.sh.
+#
+# WHY THIS LIVES IN THE PUBLIC REPO. Creating the release needs the releases
+# API on grinco/vornik. The CE deploy key pushes refs and cannot call that API,
+# and minting a cross-owner PAT would reintroduce exactly what the 2026-09-06
+# deploy-key work removed. A workflow running HERE has contents: write on its
+# own repository and needs no new credential — which is the route the
+# 2026-09-06 backlog entry identified and nobody built for sixteen days.
+#
+# It was filed, triaged and written down, and it still did not happen: the CE
+# release stayed manual, and 2026.9.5 shipped with a tag and no release. A P3
+# with no owner and no date is indistinguishable from a step nobody recorded.
+#
+# The workflow is authored and reviewed in the Enterprise tree and injected
+# here, the same arrangement as ci.yaml and publish-agent-image.yml.
+
+name: publish-release
+
+# TAG PUSH ONLY, and the narrowness is the security argument.
+#
+# A fork cannot push a tag to this repository, and a pull_request event does
+# not fire push:tags — so the trigger set reduces to actors who already hold
+# tag-push rights here. There is deliberately NO workflow_dispatch: that would
+# let any write collaborator fire this at an arbitrary ref carrying a
+# fabricated "## <tag>" section. publish-agent-image.yml does carry one, which
+# is defensible for an idempotent image build and is not for a release object.
+#
+# THE FILTER IS NOT AN ACCESS CONTROL. Any write collaborator can push
+# 2026.9.99 and mint a release. A GitHub tag-protection rule restricting the
+# calendar-version namespace to the deploy-key identity is the control; this
+# only decides what the workflow reacts to.
+on:
+  push:
+    tags: ['20[0-9][0-9].*']
+
+# EXPLICIT, not inherited. "A workflow here has contents: write" describes a
+# capability; with no permissions block the job takes the repository default,
+# which is a blast radius nobody chose.
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    name: Create the release from the curated public notes
+    if: github.repository == 'grinco/vornik'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      # The body comes from the CURATED PUBLIC prose, never the Enterprise
+      # notes: those name internal designs, incidents and this deployment's own
+      # history. Extracting mechanically also makes the release reproducible
+      # rather than retyped.
+      - name: Extract this tag's section from the public release notes
+        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="docs/public/release-notes/index.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is absent from the exported tree; nothing to publish from"
+            exit 1
+          fi
+          # Keyed on the HEADING, never on a --- rule: those separators appear
+          # between some sections and not others (present between 2026.9.5 and
+          # 2026.9.4, absent between 2026.9.4 and 2026.9.3), and the file opens
+          # with a YAML front-matter block delimited by the same token.
+          #
+          # Anchored on the tag TOKEN with a boundary, not the whole line, so a
+          # titled heading ("## 2026.9.6 — security") still matches; fail-closed
+          # would otherwise block a correctly written release on its own title.
+          # Extraction stops at the next top-level "## "; the notes convention
+          # forbids a nested "##" inside a section for that reason (subsections
+          # are "###").
+          awk -v tag="$TAG" '
+            $0 ~ "^## " tag "([^0-9.]|$)" { f=1; next }
+            /^## / { f=0 }
+            f { print }
+          ' "$notes" > body.md
+          # Trailing rule + blank lines
+          awk 'BEGIN{n=0}{a[n++]=$0} END{while(n>0 && (a[n-1]=="" || a[n-1]=="---")) n--; for(i=0;i<n;i++) print a[i]}' \
+            body.md > body.trimmed && mv body.trimmed body.md
+          if [ ! -s body.md ]; then
+            # LOCATABLE, not just loud. The pre-export lint reads the
+            # Enterprise tree's copy of this file and this reads the exported
+            # one: two files, two repositories, two checkouts, so they can
+            # disagree and a bare "section missing" sends the reader to the
+            # wrong one. Name the file, its size and hash, and what headings
+            # were actually there.
+            echo "::error::no '## $TAG' section in $notes — refusing to publish an empty release"
+            {
+              echo "### publish-release FAILED"
+              echo "- tag: \`$TAG\`"
+              echo "- file: \`$notes\` ($(wc -c < "$notes") bytes, sha256 $(sha256sum "$notes" | cut -c1-16))"
+              echo "- headings found:"
+              grep -E '^## ' "$notes" | head -20 | sed 's/^/  - /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "bytes=$(wc -c < body.md)" >> "$GITHUB_OUTPUT"
+
+      # Idempotent: a re-run must not fail on a release that already exists,
+      # and must never overwrite one. A published release is a thing people
+      # have already read.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file body.md
+          echo "Published grinco/vornik release $TAG (${{ steps.notes.outputs.bytes }} bytes of notes)" \
+            >> "$GITHUB_STEP_SUMMARY"

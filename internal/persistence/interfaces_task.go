@@ -632,6 +632,29 @@ type TaskLLMUsageRepository interface {
 	// projectID is optional, same convention as AggregateBySource.
 	AggregateByAPIKey(ctx context.Context, since, until time.Time, limit int, projectID string) ([]APIKeySpend, error)
 
+	// ActiveDaysByAPIKey returns the distinct UTC days each attributed
+	// credential has usage rows on, keyed by api_keys.id and formatted
+	// "2006-01-02".
+	//
+	// It exists because neither sibling can answer it. AggregateByAPIKey is
+	// pre-aggregated per credential with NO date column, and TimeSeriesByDay
+	// aggregates across every credential into DailySpend — so "on how many
+	// days did THIS key spend" was unanswerable, and the adoption board
+	// rendered a credential with a non-zero LLM call count beside 0 active
+	// days on the same row. A self-contradicting row is worse than a missing
+	// one: it looks measured. Reported as issue #14 on the public repo.
+	//
+	// DAYS, NOT COUNTS. The caller unions these with day sets from the other
+	// ledgers, so a credential that queried RAG and spent on an LLM the same
+	// day has one active day. Returning counts would make that union
+	// impossible and let a busy afternoon read as a habit.
+	//
+	// Rows with no attributed key are omitted rather than collapsed into an
+	// "" bucket: unattributed spend is real activity but it is not a
+	// credential, and a leaderboard row for it would be a fiction.
+	// projectID is optional, same convention as AggregateBySource.
+	ActiveDaysByAPIKey(ctx context.Context, since, until time.Time, projectID string) (map[string][]string, error)
+
 	// AggregateBySource groups spend by the `source` column
 	// (workflow_step vs dispatcher) within the window. Critical for
 	// the deep-dive: dispatcher overhead (every chat round-trip) is

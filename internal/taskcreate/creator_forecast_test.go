@@ -145,3 +145,9 @@ func TestCreate_ConfiguredBudgetFailsClosedWhenForecastUnavailable(t *testing.T)
 		t.Fatalf("configured budget must fail closed when forecast is unavailable, got %v", err)
 	}
 }
+
+// ActiveDaysByAPIKey: this stub predates the per-credential day query
+// (grinco/vornik#14) and no test here exercises it.
+func (f *fcUsageRepo) ActiveDaysByAPIKey(context.Context, time.Time, time.Time, string) (map[string][]string, error) {
+	return nil, nil
+}

@@ -1175,6 +1175,31 @@ func RunAPIKeyRepositorySuite(t *testing.T, repo persistence.APIKeyRepository) {
 		}
 	})
 
+	// The ABSENT-row miss, which is distinct from the revoked case above: a
+	// revoked key HAS a row and is filtered out, whereas this hash was never
+	// created at all. Both answer ErrAPIKeyNotFound, and until 2026-09-21 only
+	// the revoked path was asserted — so the miss contract's
+	// "APIKeyRepository.LookupActiveByHash: MissErrNotFound" row was a claim
+	// with no check behind it, and the claim was false: the sentinel is a
+	// standalone errors.New with no relationship to persistence.ErrNotFound,
+	// so errors.Is(err, persistence.ErrNotFound) is false for every API-key
+	// miss. The row is now excluded from the contract and this is the
+	// assertion that replaces it.
+	t.Run("LookupActiveByHash_absent_is_ErrAPIKeyNotFound", func(t *testing.T) {
+		ctx := context.Background()
+		_, err := repo.LookupActiveByHash(ctx, uniqueID("never-created-hash"))
+		if !errors.Is(err, persistence.ErrAPIKeyNotFound) {
+			t.Fatalf("LookupActiveByHash(absent) = %v, want ErrAPIKeyNotFound", err)
+		}
+		// And the negative half, which is the whole reason the contract row
+		// was wrong: this sentinel is NOT persistence.ErrNotFound.
+		if errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("LookupActiveByHash(absent) matched persistence.ErrNotFound; "+
+				"if that becomes true the miss-contract exclusion should be revisited "+
+				"and the auth paths that branch on ErrAPIKeyNotFound re-checked: %v", err)
+		}
+	})
+
 	t.Run("GetByID_miss_is_ErrAPIKeyNotFound", func(t *testing.T) {
 		// Asserted directly rather than through the miss contract: this
 		// repository answers with its own ErrAPIKeyNotFound sentinel, which
@@ -1407,6 +1432,98 @@ func RunTaskLLMUsageSuite(t *testing.T, repo persistence.TaskLLMUsageRepository)
 			t.Fatalf("Record %s: %v", rows[i].ID, err)
 		}
 	}
+
+	// ActiveDaysByAPIKey answers "on how many distinct days did THIS credential
+	// have usage", which neither existing query can: AggregateByAPIKey is
+	// pre-aggregated per key with no date column, and TimeSeriesByDay
+	// aggregates across every key. Without it the adoption board showed a
+	// credential with a non-zero LLM call count and 0 active days on the same
+	// row — a self-contradicting row, reported as issue #14 on the public repo.
+	t.Run("ActiveDaysByAPIKey_counts_distinct_days_per_credential", func(t *testing.T) {
+		dayProject := uniqueID("proj-days")
+		keyA, keyB, keyC := uniqueID("key-a"), uniqueID("key-b"), uniqueID("key-c")
+		// Two rows on ONE day for keyA plus one on another day: the answer is
+		// 2, not 3. Days are a set — summing rows would let a busy afternoon
+		// read as a habit, the same reason the UI keys day sets by credential.
+		d1 := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+		// 23:30 UTC ON PURPOSE, not an arbitrary second row. It is the one
+		// instant in this fixture whose bucket differs between a UTC day and a
+		// session-local day: a backend that let the connection's TimeZone
+		// decide puts it on 03-03 east of Greenwich and reports THREE days for
+		// keyA. Moving this to mid-afternoon would keep the test passing and
+		// silently remove its only timezone discrimination.
+		d1NearMidnightUTC := time.Date(2026, 3, 2, 23, 30, 0, 0, time.UTC)
+		d2 := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+		// keyC's row is the SAME instant as d1NearMidnightUTC, written in a zone two
+		// hours east, so its wall clock reads 2026-03-03 01:30 while the
+		// instant is 2026-03-02 23:30Z. It exists to pin the claim each
+		// backend's comment makes about its own day expression — SQLite's
+		// substr of the stored string, Postgres's AT TIME ZONE 'UTC' cast.
+		// Both claims are true today only because every write routes through a
+		// UTC normaliser; with every fixture row already in time.UTC the two
+		// backends agreed trivially and neither claim was load-bearing.
+		// Reported by the review of the #14 part-2 fix.
+		east := time.FixedZone("UTC+2", 2*60*60)
+		dEastLocalNextDay := time.Date(2026, 3, 3, 1, 30, 0, 0, east)
+		for _, row := range []struct {
+			key string
+			at  time.Time
+		}{{keyA, d1}, {keyA, d1NearMidnightUTC}, {keyA, d2}, {keyB, d2}, {keyC, dEastLocalNextDay}} {
+			k := row.key
+			u := persistence.TaskLLMUsage{
+				ID: uniqueID("u"), ProjectID: dayProject, StepID: "s",
+				Role: "worker", Model: "m", PromptTokens: 1, Iterations: 1,
+				APIKeyID: &k, RecordedAt: row.at,
+			}
+			if err := repo.Record(ctx, &u); err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+		}
+
+		got, err := repo.ActiveDaysByAPIKey(ctx,
+			time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), dayProject)
+		if err != nil {
+			t.Fatalf("ActiveDaysByAPIKey: %v", err)
+		}
+		if len(got[keyA]) != 2 {
+			t.Fatalf("keyA days = %v, want 2 distinct days (two rows share one day)", got[keyA])
+		}
+		if len(got[keyB]) != 1 {
+			t.Fatalf("keyB days = %v, want 1", got[keyB])
+		}
+		// The day strings must be comparable with the UI's other day sets,
+		// which format as 2006-01-02 in UTC. A backend returning a different
+		// shape would union into a double count instead of a merge.
+		for _, d := range got[keyA] {
+			if _, err := time.Parse("2006-01-02", d); err != nil {
+				t.Fatalf("day %q is not YYYY-MM-DD: %v", d, err)
+			}
+		}
+
+		// The day a credential is credited with is the UTC day of the instant,
+		// not the wall-clock day of whatever zone the row was written in.
+		if len(got[keyC]) != 1 || got[keyC][0] != "2026-03-02" {
+			t.Fatalf("keyC days = %v, want [2026-03-02]: 2026-03-03T01:30+02:00 is "+
+				"2026-03-02T23:30Z, and this column is UTC on both backends", got[keyC])
+		}
+
+		// The window is honoured, and a row with no attributed key must not
+		// become a credential — the Unattributed bucket is not a row on a
+		// leaderboard.
+		narrow, err := repo.ActiveDaysByAPIKey(ctx,
+			time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC),
+			time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), dayProject)
+		if err != nil {
+			t.Fatalf("ActiveDaysByAPIKey(narrow): %v", err)
+		}
+		if len(narrow[keyA]) != 1 {
+			t.Fatalf("keyA days in narrowed window = %v, want 1", narrow[keyA])
+		}
+		if _, ok := narrow[""]; ok {
+			t.Fatal("an empty api_key_id became a credential row")
+		}
+	})
 
 	// TokensEstimated must survive the round trip on BOTH backends. It is a
 	// boolean that qualifies the token columns, and a backend that silently

@@ -58,7 +58,7 @@ func TestAddMemoryWrites_RespectsTheWindowItRendersUnder(t *testing.T) {
 		return r
 	}
 
-	s.addMemoryWrites(context.Background(), st, []string{"p1"}, since, row)
+	s.addMemoryWrites(context.Background(), st, []string{"p1"}, since, row, newKeyDayIndex())
 
 	require.Equal(t, 1, repo.listCalls, "the filtered List is the collector the panel must use")
 	assert.False(t, repo.byProjectHit, "the unbounded ListByProject must not be reached")

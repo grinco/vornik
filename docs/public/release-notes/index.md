@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: bbc4f025974e150a5a4c0e6873347dd6036a765466ca3a77cef63cc315e15976
+      sha256: 9c6074a10d30227c57722f382ce2b7c4d03840d07d45c5759149e2b56669971a
 ---
 # Release Notes
 
@@ -14,6 +14,73 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.9.6
+
+**One agent can no longer take the host down.** Agent containers ran with no
+memory limit and no CPU quota at all, so a single runaway step was a
+machine-level event rather than a task-level one. They are bounded now. The
+limit is **derived from your host** rather than shipped as a fixed number: a
+constant default beside the shipped `max_concurrent_tasks` would have refused
+to boot on any host under 8GiB, which would have turned a load-dependent risk
+into a certain outage caused by upgrading. Set `runtime.agent_memory_limit`
+to override, or to `"none"` to keep the old unbounded behavior. A limit you set
+that cannot arithmetically fit is refused at startup with the arithmetic in the
+message; one that merely exceeds currently-free memory warns and boots.
+
+**The adoption board stops reporting numbers it did not measure.** Two
+customer-reported defects ([#14](https://github.com/grinco/vornik/issues/14)):
+
+- Credentials were listed only if they had rows in three specific activity
+  ledgers, so a key used for the REST API, the UI, chat or A2A was **absent
+  from the board however heavily it was used** — and the board read as "nobody
+  is using this". Rows now come from your credential list, with authentication
+  itself as evidence of life. The same cause stalled the "last seen" column.
+  The board also silently truncated to 20 rows; it now says how many it is not
+  showing.
+- A row could show a credential's LLM call count beside **"0 of 30 active
+  days"**. The active-days column read one ledger while the counts beside it
+  read another. It is now the union of all three: a credential that queried
+  memory and spent on a model the same afternoon counts as one active day, not
+  two, and the day boundary is UTC regardless of your daemon's timezone.
+
+What is still not counted is now stated on the page rather than left to be
+inferred: a credential whose only traffic is REST or the UI shows a recent
+"last seen" beside zero active days, because a key's last-used timestamp is one
+instant, not a history.
+
+**A config tree your next restart would refuse is caught before it flaps.** A
+deployed workflow naming a step error class the installed binary rejects takes
+the daemon down on restart — and restarts it, forever, under
+`Restart=on-failure`. `vornikctl doctor` now reports it, and the same check runs
+against the **new** binary during `vornik-update.sh`, before the swap. Two other
+doctor checks that could never have passed are fixed: `image_freshness`
+compared a Community label against an Enterprise daemon, and `agent_image_uid`
+outlived the constraint it tested.
+
+**Community edition gains browser login** — a credential exchanged for a
+bounded session, not a password. Revoking a key ends the browser sessions that
+key minted.
+
+**Our release pipeline was publishing inconsistently, and that reached you.**
+Three repositories sat at three different versions on the same day, and the
+Community edition had a `2026.9.5` tag with no release attached to it. The
+causes were all the same shape — a step that worked because someone remembered
+to do it. Creating the Community release is now automatic on a version tag, the
+installers are checked against the version being released (they had been
+pinned two releases behind for five days, so fresh installs quietly took an
+older tree), and a weekly audit verifies each release actually produced the
+versioned agent image it promised. Every release from 2026.7.2 onward now has a
+matching tag and release entry.
+
+**Fixes.** A step prompt of 128 KiB or more is no longer silently dropped.
+`pricing.yaml` now reloads instead of reporting success and continuing to bill
+the old rates — this one was called out in 2026.9.5 as restart-only. A registry
+reload no longer drops a project the daemon is serving. A Slack command the
+daemon does not answer is no longer invisible. The agent image runs under any
+uid. Five dependency alerts on the Community repository are closed.
 
 ---
 

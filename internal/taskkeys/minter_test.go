@@ -3,6 +3,7 @@ package taskkeys
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"vornik.io/vornik/internal/apikey"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
-	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // newMockDB builds a test *postgres.APIKeyRepository backed by sqlmock.
@@ -219,7 +219,11 @@ func (r *inMemAPIKeyRepo) RevokeByName(_ context.Context, name string) error {
 	return nil
 }
 func (r *inMemAPIKeyRepo) LookupActiveByHash(context.Context, string) (*persistence.APIKey, error) {
-	return nil, persistence.ErrNotFound
+	// ErrAPIKeyNotFound, matching BOTH real repositories. This returned
+	// persistence.ErrNotFound until 2026-09-21, certified by a miss-contract
+	// row that was itself false — the divergence the contract exists to catch,
+	// kept alive by the contract.
+	return nil, persistence.ErrAPIKeyNotFound
 }
 func (r *inMemAPIKeyRepo) ListByProject(context.Context, string) ([]*persistence.APIKey, error) {
 	panic("unexpected ListByProject")
@@ -238,11 +242,15 @@ func (*inMemAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.
 	return nil
 }
 
+// LookupActiveByHash is EXCLUDED from the miss contract — its sentinel is not
+// expressible in a two-behaviour vocabulary — so this asserts the sentinel
+// production actually returns rather than a contract row.
 func TestInMemAPIKeyRepo_MissContract(t *testing.T) {
 	repo := &inMemAPIKeyRepo{}
-	repotest.AssertMiss(t, "APIKeyRepository.LookupActiveByHash", func() (*persistence.APIKey, error) {
-		return repo.LookupActiveByHash(context.Background(), "missing")
-	})
+	_, err := repo.LookupActiveByHash(context.Background(), "missing")
+	if !errors.Is(err, persistence.ErrAPIKeyNotFound) {
+		t.Fatalf("double miss = %v, want ErrAPIKeyNotFound (what both real repositories return)", err)
+	}
 }
 
 // ListAttributable satisfies the widened APIKeyRepository. These doubles back

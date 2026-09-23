@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/authz"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
-	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // TestAuthMiddleware_WiresTheOwnerAccessCheck closes a gap this test exists
@@ -59,16 +59,30 @@ func TestAuthMiddleware_WiresTheOwnerAccessCheck(t *testing.T) {
 type stubLookupRepo struct{}
 
 func (stubLookupRepo) LookupActiveByHash(context.Context, string) (*persistence.APIKey, error) {
-	return nil, persistence.ErrNotFound
+	// ErrAPIKeyNotFound, which is what BOTH real repositories return
+	// (postgres/api_key_repository.go, sqlite/api_key_repository.go). This
+	// double returned persistence.ErrNotFound until 2026-09-21 and the miss
+	// contract CERTIFIED it, because the contract's row for this method was
+	// itself false. A double diverging from production is the exact failure
+	// misscontract exists to prevent; here the table was the thing guessing.
+	return nil, persistence.ErrAPIKeyNotFound
 }
 
 // A double that answers a miss differently from the real repositories would
 // make this file's "the door is wired" claim rest on a lookup the daemon
-// never performs. The miss contract keeps the double honest.
+// never performs.
+//
+// This used to call AssertMiss against the miss contract, and that is how the
+// divergence survived: the contract declared MissErrNotFound for this method,
+// production returns ErrAPIKeyNotFound, and the double satisfied the contract
+// rather than production. LookupActiveByHash is now EXCLUDED from the contract
+// (the two-behaviour vocabulary cannot express a domain sentinel), so the
+// assertion names the sentinel production actually returns.
 func TestStubLookupRepo_MissContract(t *testing.T) {
-	repotest.AssertMiss(t, "APIKeyRepository.LookupActiveByHash", func() (*persistence.APIKey, error) {
-		return stubLookupRepo{}.LookupActiveByHash(context.Background(), "missing")
-	})
+	_, err := stubLookupRepo{}.LookupActiveByHash(context.Background(), "missing")
+	if !errors.Is(err, persistence.ErrAPIKeyNotFound) {
+		t.Fatalf("stub miss = %v, want ErrAPIKeyNotFound (what both real repositories return)", err)
+	}
 }
 
 // TestPrimaryChain_JoinsTheDoorFromTheAccountsService asserts the join at the

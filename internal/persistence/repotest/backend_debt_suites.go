@@ -569,6 +569,73 @@ func RunLeaderLockSuite(t *testing.T, repo persistence.DaemonLeaderLockRepositor
 	t.Run("holder_reacquires_keeping_epoch_and_acquired_at", func(t *testing.T) { leaderLockReacquire(ctx, t, repo, worker, now) })
 	t.Run("rival_refused_while_live_and_wins_epoch_plus_one_after_expiry", func(t *testing.T) { leaderLockRival(ctx, t, repo, worker, now) })
 	t.Run("List_orders_by_worker_id", func(t *testing.T) { leaderLockList(ctx, t, repo, worker, now) })
+	t.Run("DeleteExpired_refuses_a_live_row_and_removes_an_expired_one", func(t *testing.T) {
+		leaderLockDeleteExpired(ctx, t, repo, now)
+	})
+}
+
+// leaderLockDeleteExpired pins the predicate that IS the control for
+// `vornikctl leader-lock release` (issue #60).
+//
+// The operator-facing need is clearing rows no elector in this deployment will
+// ever renew — an Enterprise-only subsystem on a Community build, a disabled
+// feature, a deleted project. The hazard is that the same statement, pointed at
+// a LIVE lease, would delete a row whose holder then re-inserts at epoch 1,
+// resetting the fence token below anything a paused holder cached.
+//
+// So expiry is re-evaluated INSIDE the delete rather than by the caller
+// beforehand: a classify-then-delete sequence races BootstrapAcquire, and this
+// shape makes that race refuse itself. Both directions are asserted, because a
+// delete that only ever succeeded would pass a test that checked one.
+func leaderLockDeleteExpired(ctx context.Context, t *testing.T, repo persistence.DaemonLeaderLockRepository, now time.Time) {
+	t.Helper()
+	live := uniqueID("worker-live")
+	if ok, _, err := repo.Acquire(ctx, live, "h1", now, time.Hour); err != nil || !ok {
+		t.Fatalf("Acquire(live): ok=%t err=%v", ok, err)
+	}
+	// A live lease must survive, and say so as "nothing matched" rather than
+	// as an error — the caller distinguishes refusal from failure by the row.
+	row, err := repo.DeleteExpired(ctx, live, now)
+	if err != nil {
+		t.Fatalf("DeleteExpired(live): unexpected error %v", err)
+	}
+	if row != nil {
+		t.Fatalf("DeleteExpired removed a LIVE lease (%+v) — the expiry predicate is not in the statement", row)
+	}
+	if got, err := repo.Get(ctx, live); err != nil || got == nil {
+		t.Fatalf("live row vanished: got=%v err=%v", got, err)
+	}
+
+	// An expired row is removed, and the removed row is RETURNED so the audit
+	// records who held it and at what epoch — facts a reason string cannot
+	// carry and a re-read could not honestly supply.
+	dead := uniqueID("worker-dead")
+	if ok, _, err := repo.Acquire(ctx, dead, "h2", now.Add(-2*time.Hour), time.Hour); err != nil || !ok {
+		t.Fatalf("Acquire(dead): ok=%t err=%v", ok, err)
+	}
+	row, err = repo.DeleteExpired(ctx, dead, now)
+	if err != nil {
+		t.Fatalf("DeleteExpired(dead): %v", err)
+	}
+	if row == nil {
+		t.Fatal("DeleteExpired did not remove an expired row")
+	}
+	if row.WorkerID != dead || row.HolderID != "h2" || row.Epoch == 0 {
+		t.Errorf("returned row lacks the audit facts: %+v", row)
+	}
+	// The row is gone, asserted through the SAME miss-contract key the suite
+	// already pins above rather than a new one — inventing a key here would
+	// register a second row for one call, which is the defect the miss contract
+	// itself was built to stop.
+	AssertMiss(t, "DaemonLeaderLockRepository.Get",
+		func() (*persistence.DaemonLeaderLock, error) { return repo.Get(ctx, dead) })
+
+	// An unknown id is the same "nothing matched" answer, never an error: a
+	// typo must not read as success, and must not read as a failure either.
+	row, err = repo.DeleteExpired(ctx, uniqueID("worker-absent"), now)
+	if err != nil || row != nil {
+		t.Errorf("DeleteExpired(unknown): row=%v err=%v, want nil/nil", row, err)
+	}
 }
 
 func leaderLockFirstAcquire(ctx context.Context, t *testing.T, repo persistence.DaemonLeaderLockRepository, worker string, now time.Time) {

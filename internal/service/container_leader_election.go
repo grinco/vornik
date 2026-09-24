@@ -62,6 +62,33 @@ func (c *Container) initWorkerElector(workerID string) *leaderelection.Elector {
 	)
 }
 
+// WiredWorkerIDs reports the worker id of every elector this container
+// constructed — the set daemon_leader_locks_health uses to tell "a leader is
+// missing and one should be there" from "no leader should be there, by
+// configuration" (issue #60).
+//
+// It reads allElectors() on every call rather than caching, because the set is
+// only complete after RegisterExtraElector has run and a value captured at
+// wiring time would omit exactly the EE clustering and per-project electors
+// that make it complete.
+//
+// KNOWN LIMIT, and it is a boot-time truth: nothing deregisters an elector
+// when its subsystem or project stops, so a daemon that booted before a
+// project was deleted still reports that project's worker as wired until
+// restart. Its row then keeps ERROR rather than reading ORPHANED. Closing that
+// belongs to the subsystem lifecycle, not to a doctor check; `leader-lock
+// release` is the interim remediation.
+func (c *Container) WiredWorkerIDs() []string {
+	electors := c.allElectors()
+	out := make([]string, 0, len(electors))
+	for _, e := range electors {
+		if id := e.WorkerID(); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // allElectors returns every elector this container constructed,
 // in no particular order. Skips nil entries so callers don't
 // need per-elector nil checks. Used by the shutdown sequence to

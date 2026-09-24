@@ -9,6 +9,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // fakeRepo is an in-memory DaemonLeaderLockRepository that
@@ -430,4 +431,26 @@ func TestElector_VerifyEpoch_ReadErrorFailsClosed(t *testing.T) {
 	if ok {
 		t.Errorf("VerifyEpoch on repo error: expected ok=false (fail closed)")
 	}
+}
+
+func (f *fakeRepoCountingReleases) DeleteExpired(context.Context, string, time.Time) (*persistence.DaemonLeaderLock, error) {
+	return nil, nil
+}
+
+// Required by the repo-double conformance gate: this package's leader-lock
+// doubles must state what DeleteExpired returns when nothing matches.
+// MissNilNil, not MissErrNotFound — a release that matches nothing is a
+// refusal (unknown worker, row no longer expired, someone else first), never a
+// fault. Issue #60.
+func TestLeaderLockDoubles_StateTheMissContract(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	repotest.AssertMiss(t, "DaemonLeaderLockRepository.DeleteExpired",
+		func() (*persistence.DaemonLeaderLock, error) {
+			return (&fakeRepo{}).DeleteExpired(ctx, "absent", now)
+		})
+	repotest.AssertMiss(t, "DaemonLeaderLockRepository.DeleteExpired",
+		func() (*persistence.DaemonLeaderLock, error) {
+			return (&fakeRepoCountingReleases{}).DeleteExpired(ctx, "absent", now)
+		})
 }

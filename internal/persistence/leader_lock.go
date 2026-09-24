@@ -60,6 +60,27 @@ type DaemonLeaderLockRepository interface {
 	// expires_at and returns (true, same_epoch, nil).
 	Acquire(ctx context.Context, workerID, holderID string, now time.Time, ttl time.Duration) (bool, int64, error)
 
+	// DeleteExpired removes the lock row for workerID ONLY IF it is already
+	// expired, and reports what it removed. Returns (nil, nil) when nothing
+	// matched — an unknown worker id, a row that is no longer expired, or one
+	// another caller got to first are all that same outcome, and none of them
+	// can be mistaken for success.
+	//
+	// THE PREDICATE IS THE CONTROL, and it lives in the WHERE clause. A
+	// classify-then-delete sequence races BootstrapAcquire: the caller reads a
+	// row as expired, a holder inserts a fresh lease, and the delete then takes
+	// a live one. Re-evaluating expiry atomically at delete time makes that
+	// race self-refuse. It is NOT scoped by holder_id, deliberately — the
+	// holder is gone or unknown by hypothesis and expiry is time-based.
+	//
+	// DELETE, not the expire-in-place Release: expiring an already-expired
+	// orphan changes nothing, and the operator needs the row gone so
+	// daemon_leader_locks_health stops reporting it (issue #60). Deleting a row
+	// resets the epoch fence for that worker, which is why this refuses
+	// anything still live — see horizontal-scaling-design.md amendment
+	// 2026-09-23.
+	DeleteExpired(ctx context.Context, workerID string, now time.Time) (*DaemonLeaderLock, error)
+
 	// Renew extends the lock's expires_at when holderID
 	// matches the current holder. Returns true on success;
 	// false when the lock has been taken by another daemon.

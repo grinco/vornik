@@ -164,3 +164,9 @@ func (r *renewCountingRepo) Renew(ctx context.Context, workerID, holderID string
 // Sanity guard: compile-time check that the embedded fakeRepo
 // satisfies the persistence.DaemonLeaderLockRepository interface.
 var _ persistence.DaemonLeaderLockRepository = (*fakeRepo)(nil)
+
+// DeleteExpired: the release path (issue #60) is exercised by the repotest
+// contract suite against the real backends, not by this double.
+func (f *fakeRepo) DeleteExpired(context.Context, string, time.Time) (*persistence.DaemonLeaderLock, error) {
+	return nil, nil
+}

@@ -133,6 +133,40 @@ WHERE worker_id = $1 AND holder_id = $2`
 	return nil
 }
 
+// DeleteExpired removes an already-expired lock row and returns what it
+// removed, or (nil, nil) when nothing matched.
+//
+// ONE STATEMENT, predicate in the WHERE, rows-affected as the verdict. A
+// caller that classified first and deleted second would race BootstrapAcquire:
+// the row reads expired, a holder inserts a fresh lease, and the delete takes a
+// live one. Re-evaluating `expires_at < $2` inside the statement makes that
+// race refuse itself, and every refusal — unknown worker, no longer expired,
+// someone else got there first — arrives as the same zero-row answer that
+// cannot be mistaken for success.
+//
+// RETURNING carries the audit facts. Re-reading the row to log it would
+// reintroduce exactly the skew this shape removes, and holder_id + epoch are
+// what tell the next reader FROM WHOM a lock was taken.
+//
+// Not scoped by holder_id, deliberately: the holder is gone or unknown by
+// hypothesis and expiry is time-based. See horizontal-scaling-design.md
+// amendment 2026-09-23 and issue #60.
+func (r *LeaderLockRepository) DeleteExpired(ctx context.Context, workerID string, now time.Time) (*persistence.DaemonLeaderLock, error) {
+	const q = `
+DELETE FROM daemon_leader_locks
+WHERE worker_id = $1 AND expires_at < $2
+RETURNING worker_id, holder_id, acquired_at, renewed_at, expires_at, epoch`
+	row := r.db.QueryRowContext(ctx, q, workerID, now)
+	var l persistence.DaemonLeaderLock
+	if err := row.Scan(&l.WorkerID, &l.HolderID, &l.AcquiredAt, &l.RenewedAt, &l.ExpiresAt, &l.Epoch); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("leader_lock: delete expired: %w", err)
+	}
+	return &l, nil
+}
+
 // Get returns the current row by workerID. Used by diagnostics
 // + the doctor check.
 func (r *LeaderLockRepository) Get(ctx context.Context, workerID string) (*persistence.DaemonLeaderLock, error) {

@@ -87,6 +87,18 @@ type Elector struct {
 // boot_uuid` so a daemon restart's holder_id differs from its
 // predecessor's (an old crashed leader's row gets taken over
 // after the TTL).
+// WorkerID reports the singleton worker this elector campaigns for.
+//
+// Exposed for daemon_leader_locks_health, which needs the set of workers THIS
+// process wired in order to tell a missing leader from a lock row nothing will
+// ever renew (issue #60). Read-only and set at construction.
+func (e *Elector) WorkerID() string {
+	if e == nil {
+		return ""
+	}
+	return e.workerID
+}
+
 func New(repo persistence.DaemonLeaderLockRepository, workerID, holderID string, ttl time.Duration, logger zerolog.Logger) *Elector {
 	if ttl < MinTTL {
 		ttl = DefaultTTL

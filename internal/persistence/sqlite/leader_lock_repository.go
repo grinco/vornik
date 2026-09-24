@@ -123,6 +123,58 @@ func (r *LeaderLockRepository) Release(_ context.Context, _, _ string) error {
 	return nil
 }
 
+// DeleteExpired removes an already-expired lock row and returns what it
+// removed, or (nil, nil) when nothing matched.
+//
+// REAL HERE, unlike Release, which is a no-op on this backend because a
+// single-process deployment has no peer to hand a lease to. The row still
+// EXISTS on sqlite — Acquire writes it and the doctor check reads it — so an
+// orphaned row is just as visible and just as un-clearable, and issue #60 is
+// reproducible on a sqlite box.
+//
+// Two statements under one transaction rather than DELETE … RETURNING, which
+// sqlite gained only recently and which this driver cannot be assumed to
+// support: the SELECT and the DELETE share the same `expires_at < ?` predicate
+// and the same transaction, so the atomicity the Postgres statement gets from
+// RETURNING is preserved rather than approximated.
+func (r *LeaderLockRepository) DeleteExpired(ctx context.Context, workerID string, now time.Time) (*persistence.DaemonLeaderLock, error) {
+	nowStr := now.UTC().Format(time.RFC3339Nano)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("leader_lock: delete expired: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		l                          persistence.DaemonLeaderLock
+		acquired, renewed, expires string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT worker_id, holder_id, acquired_at, renewed_at, expires_at, epoch
+FROM daemon_leader_locks
+WHERE worker_id = ? AND expires_at < ?`, workerID, nowStr).
+		Scan(&l.WorkerID, &l.HolderID, &acquired, &renewed, &expires, &l.Epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("leader_lock: delete expired: select: %w", err)
+	}
+	l.AcquiredAt, _ = time.Parse(time.RFC3339Nano, acquired)
+	l.RenewedAt, _ = time.Parse(time.RFC3339Nano, renewed)
+	l.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
+
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM daemon_leader_locks
+WHERE worker_id = ? AND expires_at < ?`, workerID, nowStr); err != nil {
+		return nil, fmt.Errorf("leader_lock: delete expired: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("leader_lock: delete expired: commit: %w", err)
+	}
+	return &l, nil
+}
+
 // Get returns the current row by workerID. Returns
 // persistence.ErrNotFound when the table has no row yet (fresh
 // deployment before any Acquire call).

@@ -9,6 +9,7 @@ import (
 
 	"vornik.io/vornik/internal/leaderelection"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // stubLockRepo implements persistence.DaemonLeaderLockRepository
@@ -30,6 +31,13 @@ func (s *stubLockRepo) Release(context.Context, string, string) error { panic("n
 func (s *stubLockRepo) Get(_ context.Context, _ string) (*persistence.DaemonLeaderLock, error) {
 	panic("not used")
 }
+func (s *stubLockRepo) DeleteExpired(context.Context, string, time.Time) (*persistence.DaemonLeaderLock, error) {
+	// (nil, nil) is the DECLARED contract, not a convenience: a release that
+	// matches nothing is a refusal, not a missing row. Panicking here would
+	// make the double unable to state the contract its package now asserts.
+	return nil, nil
+}
+
 func (s *stubLockRepo) List(_ context.Context) ([]*persistence.DaemonLeaderLock, error) {
 	return s.rows, s.listErr
 }
@@ -213,4 +221,106 @@ func TestHumanLeaderLockDuration_Buckets(t *testing.T) {
 			t.Errorf("humanLeaderLockDuration(%v) = %q, want %q", tc.d, got, tc.want)
 		}
 	}
+}
+
+// Issue grinco/vornik-enterprise#60, reported 2026-09-23 against CE 2026.9.6.
+//
+// A Community operator got ERROR on every doctor run for six rows the
+// deployment STRUCTURALLY cannot reacquire: three Enterprise-only subsystems
+// absent from a CE build, a telegram poller with telegram disabled, a scanner
+// behind an off feature flag, and a per-project elector whose project was
+// deleted. EXPIRED was a true statement about each row; ERROR was the wrong
+// severity, because ERROR means "a leader is missing and one should be there"
+// and here none should be, by configuration. With no release verb and editing
+// the table by hand ruled out, the check had no reachable green state — and a
+// check with no reachable green state is one the operator learns to ignore.
+//
+// The set that answers it is the electors this process actually constructed:
+// a nil elector when a flag is off, an absent EE subsystem in CE, and a
+// deleted project's elector are all absent from it by construction, with no
+// hand-kept list of "EE-only worker names" to drift.
+func TestCheckLeaderLocksHealth_ExpiredButNotWiredHereIsOrphanedNotError(t *testing.T) {
+	past := time.Now().Add(-2 * time.Hour)
+	repo := &stubLockRepo{rows: []*persistence.DaemonLeaderLock{
+		{WorkerID: "blackbox_detector", HolderID: "gone", RenewedAt: past, ExpiresAt: past},
+		{WorkerID: "telegram_poller", HolderID: "gone", RenewedAt: past, ExpiresAt: past},
+	}}
+	h := &DoctorHandlers{
+		leaderLockRepo: repo,
+		// Neither worker is wired in this build/config.
+		wiredWorkerIDs: func() []string { return []string{"autonomy", "retention_sweeper"} },
+	}
+
+	got := h.checkLeaderLocksHealth()
+	if got.Status == "ERROR" {
+		t.Fatalf("expired rows for workers this deployment never wires must not be ERROR; got %q: %s",
+			got.Status, got.Message)
+	}
+	if got.Status != "WARNING" {
+		t.Fatalf("status = %q, want WARNING (orphaned rows are reported, not fatal)", got.Status)
+	}
+	joined := strings.Join(got.Items, "\n")
+	if !strings.Contains(joined, "ORPHANED") {
+		t.Errorf("orphaned rows are not labelled as such; items:\n%s", joined)
+	}
+	if !strings.Contains(got.Message, "leader-lock release") {
+		t.Errorf("the message must name the remediation; got: %s", got.Message)
+	}
+}
+
+// The severity-preservation half, and the reason this fix is not just
+// "downgrade the noisy check": a worker this build DOES wire, whose lease has
+// expired, is the genuine failure the check was written for and keeps ERROR.
+func TestCheckLeaderLocksHealth_ExpiredAndWiredHereStaysError(t *testing.T) {
+	past := time.Now().Add(-2 * time.Hour)
+	repo := &stubLockRepo{rows: []*persistence.DaemonLeaderLock{
+		{WorkerID: "autonomy", HolderID: "gone", RenewedAt: past, ExpiresAt: past},
+	}}
+	h := &DoctorHandlers{
+		leaderLockRepo: repo,
+		wiredWorkerIDs: func() []string { return []string{"autonomy"} },
+	}
+
+	got := h.checkLeaderLocksHealth()
+	if got.Status != "ERROR" {
+		t.Fatalf("status = %q, want ERROR: a wired worker holding no lease is the real failure", got.Status)
+	}
+}
+
+// Without the accessor the check cannot distinguish the two, so it must keep
+// the old conservative behaviour rather than silently calling everything
+// orphaned — the fail-safe direction for a check whose whole point is severity.
+func TestCheckLeaderLocksHealth_NoWiringAccessorKeepsErrorSeverity(t *testing.T) {
+	past := time.Now().Add(-2 * time.Hour)
+	repo := &stubLockRepo{rows: []*persistence.DaemonLeaderLock{
+		{WorkerID: "blackbox_detector", HolderID: "gone", RenewedAt: past, ExpiresAt: past},
+	}}
+	h := &DoctorHandlers{leaderLockRepo: repo} // no wiredWorkerIDs
+
+	got := h.checkLeaderLocksHealth()
+	if got.Status != "ERROR" {
+		t.Fatalf("status = %q, want ERROR when the wiring set is unknown", got.Status)
+	}
+}
+
+// TestDaemonLeaderLockDoubles_StateTheMissContract — required by the
+// repo-double conformance gate, and the gate is right to require it.
+//
+// A double for a single-entity lookup states what production does when nothing
+// matches. When that statement is wrong, every test of the caller's miss path
+// takes a branch production never takes. DeleteExpired's contract is
+// MissNilNil and NOT MissErrNotFound, which is the distinction worth pinning:
+// a release that matches nothing is the operator being told "no" — unknown
+// worker, row no longer expired, someone else first — never the database
+// reporting a fault.
+func TestDaemonLeaderLockDoubles_StateTheMissContract(t *testing.T) {
+	ctx := context.Background()
+	repotest.AssertMiss(t, "DaemonLeaderLockRepository.DeleteExpired",
+		func() (*persistence.DaemonLeaderLock, error) {
+			return (&stubLockRepo{}).DeleteExpired(ctx, "absent", time.Now())
+		})
+	repotest.AssertMiss(t, "DaemonLeaderLockRepository.DeleteExpired",
+		func() (*persistence.DaemonLeaderLock, error) {
+			return stubLeaderLocks{}.DeleteExpired(ctx, "absent", time.Now())
+		})
 }

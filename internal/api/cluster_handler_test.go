@@ -26,6 +26,13 @@ type stubLeaderLocks struct {
 	locks []*persistence.DaemonLeaderLock
 }
 
+func (s stubLeaderLocks) DeleteExpired(context.Context, string, time.Time) (*persistence.DaemonLeaderLock, error) {
+	// (nil, nil) is the DECLARED contract, not a convenience: a release that
+	// matches nothing is a refusal, not a missing row. Panicking here would
+	// make the double unable to state the contract its package now asserts.
+	return nil, nil
+}
+
 func (s stubLeaderLocks) Acquire(context.Context, string, string, time.Time, time.Duration) (bool, int64, error) {
 	return true, 1, nil
 }

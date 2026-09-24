@@ -1623,6 +1623,10 @@ func (c *Container) initHTTPServer() error {
 		dh.SetGatewayURL(c.Config.Gateway.Address) // empty when unconfigured → SKIPPED
 		if c.repos != nil && c.repos.LeaderLocks != nil {
 			dh.SetLeaderLockRepository(c.repos.LeaderLocks)
+			// Passed as a closure, evaluated per doctor run: the elector set
+			// is only complete after RegisterExtraElector, which happens after
+			// this wiring. Issue #60.
+			dh.SetWiredWorkerIDs(c.WiredWorkerIDs)
 		}
 		// Live model-health circuit line: when the chat router has the
 		// health-gate layer enabled it implements chat.ModelHealthReporter,

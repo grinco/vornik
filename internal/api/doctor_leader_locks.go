@@ -60,19 +60,44 @@ func (h *DoctorHandlers) checkLeaderLocksHealth() DoctorCheck {
 	active := 0
 	stale := 0
 	expired := 0
+	orphaned := 0
+	// The wiring set is resolved ONCE per check run rather than per row, but
+	// still at run time — see DoctorHandlers.wiredWorkerIDs for why it is a
+	// func. A nil accessor leaves `wired` nil, and knownWiring false keeps the
+	// pre-#60 severity.
+	var wired map[string]bool
+	knownWiring := h.wiredWorkerIDs != nil
+	if knownWiring {
+		ids := h.wiredWorkerIDs()
+		wired = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			wired[id] = true
+		}
+	}
 	items := make([]string, 0, len(rows))
 	for _, r := range rows {
 		if r == nil {
 			continue
 		}
 		classification, detail := classifyLeaderLock(r, now)
-		items = append(items, fmt.Sprintf("[%s] %s: %s", classification, r.WorkerID, detail))
-		switch classification {
-		case "ACTIVE":
+		// ORPHANED is a severity qualifier on an already-classified row, not a
+		// fourth classification: the row IS expired or stale: the question is
+		// whether anything in this deployment could ever renew it again.
+		isOrphan := knownWiring && !wired[r.WorkerID] && classification != "ACTIVE"
+		label := classification
+		if isOrphan {
+			label = classification + "/ORPHANED"
+			detail += " — no elector for this worker in this build/config"
+		}
+		items = append(items, fmt.Sprintf("[%s] %s: %s", label, r.WorkerID, detail))
+		switch {
+		case isOrphan:
+			orphaned++
+		case classification == "ACTIVE":
 			active++
-		case "STALE":
+		case classification == "STALE":
 			stale++
-		case "EXPIRED":
+		case classification == "EXPIRED":
 			expired++
 		}
 	}
@@ -89,15 +114,29 @@ func (h *DoctorHandlers) checkLeaderLocksHealth() DoctorCheck {
 			),
 			Items: items,
 		}
-	case stale > 0:
+	case stale > 0 || orphaned > 0:
+		// WARNING, not ERROR, for a row nothing in this deployment will ever
+		// renew — and the remediation is IN the message, because a check with
+		// no reachable green state is one the operator stops reading (#60).
+		msg := fmt.Sprintf(
+			"%d leader-lock row(s) stale (holder hasn't renewed within one TTL). %d active.",
+			stale, active,
+		)
+		if orphaned > 0 {
+			msg = fmt.Sprintf(
+				"%d leader-lock row(s) ORPHANED — no elector for that worker in this build/config, "+
+					"so nothing will ever renew them (Enterprise-only subsystem on a Community build, "+
+					"a disabled feature, or a deleted project). Clear them with "+
+					"`vornikctl leader-lock release <worker>` or `--all-orphaned`. "+
+					"%d stale, %d active.",
+				orphaned, stale, active,
+			)
+		}
 		return DoctorCheck{
-			Name:   name,
-			Status: "WARNING",
-			Message: fmt.Sprintf(
-				"%d leader-lock row(s) stale (holder hasn't renewed within one TTL). %d active.",
-				stale, active,
-			),
-			Items: items,
+			Name:    name,
+			Status:  "WARNING",
+			Message: msg,
+			Items:   items,
 		}
 	default:
 		return DoctorCheck{

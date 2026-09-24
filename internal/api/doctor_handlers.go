@@ -179,6 +179,22 @@ type DoctorHandlers struct {
 	// or any deployment that hasn't migrated to 57).
 	leaderLockRepo persistence.DaemonLeaderLockRepository
 
+	// wiredWorkerIDs reports the singleton workers THIS process actually
+	// constructed an elector for. It is what lets daemon_leader_locks_health
+	// tell "a leader is missing and one should be there" (ERROR) from "no
+	// leader should be there, by configuration" (ORPHANED) — issue #60, where
+	// a CE box ERRORed forever on six rows it structurally cannot reacquire.
+	//
+	// A FUNC, never a materialised slice: electors registered after wiring —
+	// RegisterExtraElector extras, which include the EE clustering electors —
+	// would be missing from a snapshot taken at construction, and their rows
+	// would then read as orphaned. This codebase has shipped that init-order
+	// bug before.
+	//
+	// nil means the wiring set is unknown, and the check then keeps its old
+	// conservative ERROR severity rather than calling everything orphaned.
+	wiredWorkerIDs func() []string
+
 	// configReloader is the daemon's config reload trigger. Used by
 	// the feature-enable endpoint's real Reloader implementation.
 	// Nil-safe — the enable endpoint returns 503 when absent.
@@ -322,6 +338,21 @@ func (h *DoctorHandlers) SetLeaderLockRepository(repo persistence.DaemonLeaderLo
 		return
 	}
 	h.leaderLockRepo = repo
+}
+
+// SetWiredWorkerIDs wires the accessor reporting which singleton workers this
+// process constructed an elector for, so daemon_leader_locks_health can tell a
+// missing leader from a lock row nothing will ever renew (issue #60).
+//
+// An ACCESSOR, not a slice: the set is only complete after
+// RegisterExtraElector has run, and a value captured here would omit the EE
+// clustering and per-project electors. Optional — left nil the check keeps its
+// pre-#60 ERROR severity rather than guessing.
+func (h *DoctorHandlers) SetWiredWorkerIDs(fn func() []string) {
+	if h == nil {
+		return
+	}
+	h.wiredWorkerIDs = fn
 }
 
 // SetServer wires the API server back-reference so the feature-doctor

@@ -73,6 +73,14 @@ var Contract = map[string]MissBehavior{
 	"CrossProjectCallRepository.GetByCalleeTaskID": MissErrNotFound, // *CrossProjectCall
 	"CrossProjectCallRepository.Get":               MissErrNotFound, // *CrossProjectCall
 	"DaemonLeaderLockRepository.Get":               MissErrNotFound, // *DaemonLeaderLock
+	// DeleteExpired is MissNilNil, and the difference from Get above is the
+	// point: Get asking for a row that is not there is a miss, while
+	// DeleteExpired matching nothing is a REFUSAL — an unknown worker, a row
+	// no longer expired, or another caller first. All three are the operator
+	// being told "no", not the database being told "absent", and returning
+	// ErrNotFound would make a refused release indistinguishable from a broken
+	// one. Issue #60; see horizontal-scaling-design.md amendment 2026-09-23.
+	"DaemonLeaderLockRepository.DeleteExpired": MissNilNil, // *DaemonLeaderLock
 	// (nil, nil): a PR with no review state is the ORDINARY first-delivery
 	// case, and callers read it as "never reviewed, nothing in flight" — the
 	// fail-toward-more-review direction. ErrNotFound here would make every

@@ -43,6 +43,24 @@ func (c *Container) observabilityRegistry() *prometheus.Registry {
 	return c.Observability.Metrics.Registry()
 }
 
+// observabilityRegisterer is THE way to hand the registry to a
+// prometheus.Registerer parameter. It returns an UNTYPED nil when
+// observability is not wired yet.
+//
+// The typed-nil trap it closes: observabilityRegistry() returns a concrete
+// *prometheus.Registry, and a nil one assigned to a Registerer is a NON-nil
+// interface — the callee's `reg == nil` guard passes and promauto panics in
+// MustRegister. Four startup crash-loops came from it (2026-06-06,
+// 2026-06-27, the route-queue registry panic, and 2026-09-24's
+// linkCodeExposureGuard). TestNoCallPassesObservabilityRegistryDirectly
+// keeps new call sites from repeating it.
+func (c *Container) observabilityRegisterer() prometheus.Registerer {
+	if r := c.observabilityRegistry(); r != nil {
+		return r
+	}
+	return nil
+}
+
 // instrumentedDB returns a DBTX that wraps database queries with Prometheus
 // metrics when observability is initialized. Falls back to the raw *sql.DB
 // when metrics are not available.

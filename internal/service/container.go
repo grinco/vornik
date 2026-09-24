@@ -1010,8 +1010,12 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 	//
 	// Sweeper interval = 10 minutes; idle-stream eviction bounds
 	// memory on a daemon that sees millions of distinct executions.
+	// Bound first: livepubsub.NewMetrics takes the concrete *Registry and
+	// nil-checks it, but no call may take observabilityRegistry() directly
+	// (TestNoCallPassesObservabilityRegistryDirectly — the typed-nil trap).
+	liveReg := c.observabilityRegistry()
 	c.livePub, c.livePubShutdown = livepubsub.NewWithSweeper(0, 10*time.Minute,
-		livepubsub.WithMetrics(livepubsub.NewMetrics(c.observabilityRegistry())))
+		livepubsub.WithMetrics(livepubsub.NewMetrics(liveReg)))
 	// Cross-replica fanout — wrap the in-process publisher with
 	// the Postgres-backed layer when the LiveEvents repo is
 	// wired AND the daemon is on Postgres. SQLite + single-

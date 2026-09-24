@@ -26,7 +26,10 @@ func (c *Container) linkCodeExposureGuard() *chatauth.ExposureGuard {
 		}
 		c.exposureGuard = chatauth.NewExposureGuard(
 			burner,
-			chatauth.NewExposureMetrics(c.observabilityRegistry()),
+			// observabilityRegisterer, not observabilityRegistry: this runs from
+			// initTelegram, before observability is wired, and a typed-nil
+			// Registerer crash-looped startup (2026-09-24).
+			chatauth.NewExposureMetrics(c.observabilityRegisterer()),
 			c.Logger,
 		)
 	})

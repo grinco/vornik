@@ -75,8 +75,8 @@ func (c *Container) initNarrator() {
 	}
 	c.narratorWorker = n
 
-	if c.observabilityRegistry() != nil {
-		n.Metrics = narrator.NewMetrics(c.observabilityRegistry())
+	if reg := c.observabilityRegistry(); reg != nil {
+		n.Metrics = narrator.NewMetrics(reg)
 	}
 
 	// Startup visibility for the active budget/line-cap (design §9
